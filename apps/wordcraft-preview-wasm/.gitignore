@@ -1,0 +1,6 @@
+# wasm-pack build output, rebuild with: wasm-pack build --target web --release
+/pkg/
+/pkg-node/
+/target/
+# Local smoke-test scratch: a synthetic (non-customer) probe docx and its render.
+/smoketest/
