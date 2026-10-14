@@ -951,7 +951,9 @@ impl Writer<'_> {
             ShapeKind::Rectangle | ShapeKind::TextBox | ShapeKind::Freeform => "rect",
             ShapeKind::RoundedRectangle => "roundRect",
             ShapeKind::Ellipse => "ellipse",
+            ShapeKind::FlowchartOr => "flowChartOr",
             ShapeKind::Triangle => "triangle",
+            ShapeKind::RightTriangle => "rtTriangle",
             ShapeKind::Diamond => "diamond",
             ShapeKind::Line => "line",
             ShapeKind::StraightConnector => "straightConnector1",
@@ -974,7 +976,14 @@ impl Writer<'_> {
         match fill.filter(|_| !ink && !kind.is_open()) {
             Some(c) => {
                 w.open("a:solidFill", &[]);
-                w.empty("a:srgbClr", &[("val", &c.hex())]);
+                let opacity = extra.fill_opacity();
+                if opacity < 1.0 {
+                    w.open("a:srgbClr", &[("val", &c.hex())]);
+                    w.empty("a:alpha", &[("val", &n((opacity * 100_000.0).round() as i64))]);
+                    w.close("a:srgbClr");
+                } else {
+                    w.empty("a:srgbClr", &[("val", &c.hex())]);
+                }
                 w.close("a:solidFill");
             }
             None => w.empty("a:noFill", &[]),
