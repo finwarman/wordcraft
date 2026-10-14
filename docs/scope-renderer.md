@@ -16,7 +16,7 @@ no customer documents, reference PDFs or proprietary fonts are added to this rep
 | [#1614](https://github.com/storytold/wordcraft/pull/1614) | Layout: an empty section mark stays on a full page | `e59cc484b3222f5551b7c023bc4de1196ed5c3aa` |
 | [#1615](https://github.com/storytold/wordcraft/pull/1615) | Layout: a bookmark after a page break takes no line | `ceab2074fe73724bcddab24b8a20e11eecc81ecf` |
 | [#1616](https://github.com/storytold/wordcraft/pull/1616) | Layout: a numbered paragraph opening with a page break takes its number along | `948b51c56601ea137b557bfd6ba096c7ded94cd2` |
-| [#1617](https://github.com/storytold/wordcraft/pull/1617) | Tables: text running past an exact-height row is cut off | `b37ff1f6af0f282418e911400c9132f2d8a5b0ba` |
+| [#1617](https://github.com/storytold/wordcraft/pull/1617) | Tables: text running past an exact-height row is cut off | `61e9c8b52dfef2491c7502c9e97df35725a6fe06` |
 | [#1618](https://github.com/storytold/wordcraft/pull/1618) | Tables: a row with less room than its minimum height moves on whole | `b8e801afb8fd124a2cf271de17d6b6faa7d0de85` |
 | [#1619](https://github.com/storytold/wordcraft/pull/1619) | Fonts: a Bidi theme slot names the theme's complex-script font | `a66510a2bcbe66118e29c2d5e70b952a468a44a8` |
 | [#1620](https://github.com/storytold/wordcraft/pull/1620) | Layout: an inherited footer sizes its percentage tables by its own section | `ddab476026b8a913ce79f2ed624eec7206de795f` |
