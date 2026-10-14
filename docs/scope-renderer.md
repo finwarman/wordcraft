@@ -37,14 +37,16 @@ It is an integration build, not an upstream release or a claim of full Word pari
 | [#1598](https://github.com/storytold/wordcraft/pull/1598) | `695e05326628ca6e2229dc7d368e64f24d0ffd29` |
 | [#1598](https://github.com/storytold/wordcraft/pull/1598) | `fa97ab0c2803bb0e305993c4a409cca0d78a05a0` |
 | [#1838](https://github.com/storytold/wordcraft/pull/1838) | `6e6d04f55bbf321057f6e6084e097dbd7f000fbd` |
+| [#1871](https://github.com/storytold/wordcraft/pull/1871) | `f8bbf45df6cfb4370fe56ec0679f298b52fde87c` |
+| [#1883](https://github.com/storytold/wordcraft/pull/1883) | `1316890f7fd05a67d679e7b78a1fc63dfc4fa705` |
 
 ## Remaining comparison gaps
 
-- EEMUA blank-cell picture frames sit too low; footer totals differ from both Adobe and native Word.
-- SGS column widths and table flow still need comparison after rotated text is restored.
+- EEMUA footer totals differ from both Adobe and native Word. Behind-text blank frames now align; broader image positioning still needs comparison.
+- SGS preferred columns no longer equalize under spanning images. Residual width, row height and pagination drift remains.
 - Rosen photo layout and pagination need a new corpus render.
 - Adobe and native Word differ on spacing after manual page breaks and caption pagination.
-- Synthetic Code A Weld signature JPEGs need repair before stamp background comparisons are valid.
+- Scope’s synthetic signature JPEGs were repaired. Code A Weld stamp and signature placement still differ.
 
 Scope supplies its font bundle in its separate container build. No customer documents,
 Word exports, Adobe exports or proprietary fonts are included in this snapshot.

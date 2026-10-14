@@ -6551,3 +6551,91 @@ fn a_percentage_width_past_the_text_column_is_kept() {
     // Two equal columns of 614.4 pt from x = 0: the second starts past the middle of the page.
     assert!(x > 307.0, "the second column starts at {x}");
 }
+
+/// Word and Adobe: a behind-text frame participates in a cell's vertical alignment,
+/// even when its anchor paragraph has no inline picture (synthetic two-cell probe).
+#[test]
+fn cell_frame_centres_empty() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    use wordcraft_doc::props::{HeightRule, VAlign};
+    let mut d = Document::new();
+    let mut t = Table::new(1, 2, 468.0);
+    t.rows[0].props.height = Some(182.5);
+    t.rows[0].props.height_rule = HeightRule::Exact;
+    for (ci, cell) in t.rows[0].cells.iter_mut().enumerate() {
+        cell.props.valign = VAlign::Center;
+        cell.props.margins = Some([0.0; 4]);
+        let mut p = wordcraft_doc::Paragraph::with_text("", Default::default());
+        p.props.space_before = Some(0.0);
+        p.props.space_after = Some(0.0);
+        let float = Float { wrap: Wrap::BehindText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, y: -12.75, ..Default::default() };
+        p.insert_object(0, picture(231.0, 180.75, float), &Default::default()).unwrap();
+        if ci == 0 {
+            p.insert_object(p.text.len(), picture(207.0, 155.25, Default::default()), &Default::default()).unwrap();
+        }
+        cell.blocks = vec![wordcraft_doc::para_block(p)];
+    }
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    let l = lay(&d);
+    let frames: Vec<_> = l.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| if let Placed::Object { rect, wrap: Wrap::BehindText, .. } = item { Some(rect) } else { None })
+        .collect();
+    assert_eq!(frames.len(), 2);
+    assert!((frames[0].y - frames[1].y).abs() < 0.01, "frames must align: {frames:?}");
+    assert!((frames[0].y - 66.5).abs() < 0.5, "Word frame top: {frames:?}");
+}
+
+enum SpanWidth {
+    Preferred,
+    Automatic,
+}
+
+fn banner_layout(width: SpanWidth) -> DocLayout {
+    let widths = [150.0, 100.0, 25.0, 25.0];
+    let mut d = Document::new();
+    let mut t = Table::new(2, widths.len(), 300.0);
+    t.grid = widths.to_vec();
+    t.props.width = match width {
+        SpanWidth::Preferred => Some(300.0),
+        SpanWidth::Automatic => None,
+    };
+    t.props.cell_margins = Some([0.0; 4]);
+    t.rows[0].cells.truncate(1);
+    t.rows[0].cells[0].props.span = 4;
+    t.rows[0].cells[0].props.width = t.props.width;
+    let mut banner = wordcraft_doc::Paragraph::new();
+    banner.insert_object(0, picture(300.0, 30.0, Default::default()), &Default::default()).unwrap();
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(banner)];
+    for (i, cell) in t.rows[1].cells.iter_mut().enumerate() {
+        cell.props.width = match width {
+            SpanWidth::Preferred => Some(widths[i]),
+            SpanWidth::Automatic => None,
+        };
+        cell.blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("A", Default::default()))];
+    }
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    lay(&d)
+}
+
+#[test]
+fn spanning_banner_keeps_columns() {
+    let widths = [150.0, 100.0, 25.0, 25.0];
+    let l = banner_layout(SpanWidth::Preferred);
+    let actual: Vec<_> =
+        l.pages[0].items.iter().filter_map(|it| if let Placed::Cell { rect, row: 1, .. } = it { Some(rect.w) } else { None }).collect();
+    assert_eq!(actual.len(), widths.len());
+    for (got, want) in actual.iter().zip(widths) {
+        assert!((got - want).abs() < 0.01, "spanning banner changed columns: {actual:?}");
+    }
+}
+
+#[test]
+fn automatic_banner_shares_width() {
+    let l = banner_layout(SpanWidth::Automatic);
+    let widths: Vec<_> =
+        l.pages[0].items.iter().filter_map(|it| if let Placed::Cell { rect, row: 1, .. } = it { Some(rect.w) } else { None }).collect();
+    assert_eq!(widths.len(), 4);
+    assert!(widths.iter().all(|w| (w - 75.0).abs() < 0.01), "automatic widths: {widths:?}");
+}

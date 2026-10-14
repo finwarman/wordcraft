@@ -1,6 +1,6 @@
 # Where WordCraft falls short of Word
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (title rename and account settings; previously trivial: ODT tracked insertions and deletions, gap 19; previously trivial: RTF tracked insertions and deletions, gap 19; previously trivial: the Font list no longer keeps every previewed font in memory, #848; previously trivial: table column and row markers on the rulers, #700; previously trivial: table borders and the resize handle drag on the page, #217; previously trivial: formatting revisions landed, #41; previously trivial: Draw Table and Eraser landed, #303; previously minor: beta distance restated: ~15 points, ~150–230 h; previously: first version; every known shortfall from the 2026-10-10 re-measure, ranked) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** trivial (Scope snapshot adds cell-frame alignment and spanning-column allocation with their source regressions; previously trivial: title rename and account settings; previously trivial: ODT tracked insertions and deletions, gap 19; previously trivial: RTF tracked insertions and deletions, gap 19; previously trivial: the Font list no longer keeps every previewed font in memory, #848; previously trivial: table column and row markers on the rulers, #700; previously trivial: table borders and the resize handle drag on the page, #217; previously trivial: formatting revisions landed, #41; previously trivial: Draw Table and Eraser landed, #303; previously minor: beta distance restated: ~15 points, ~150–230 h; previously: first version; every known shortfall from the 2026-10-10 re-measure, ranked) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -82,6 +82,7 @@ The same gaps grouped the way the parity documents are, for agents working in on
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | trivial | Scope snapshot adds cell-frame alignment and spanning-column allocation with their source regressions; remaining drift in docs/scope-renderer.md |
 | 2026-10-12 | trivial | Document title opens Rename Document; the account badge opens Options › General for user name and initials. |
 | 2026-10-13 | trivial | Replace All checks content-control locks before editing; a refused batch leaves the document and undo history unchanged; existing deletion-lock rules reused, with tracked/untracked regression coverage |
 | 2026-10-12 | trivial | Sample-text formulas on Enter (#1067) implemented; numerical limits not compared in Word |
