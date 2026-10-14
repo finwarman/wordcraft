@@ -5558,3 +5558,81 @@ fn space_after_stays_clear_before_a_numbered_paragraph_without_a_label() {
         wordcraft_doc::resolve::AUTO_SPACING,
     );
 }
+
+#[test]
+fn row_borders_stay_on_row() {
+    let mut d = Document::from_text("before\nafter");
+    let mut t = Table::new(2, 2, 200.0);
+    t.props.style = None;
+    t.rows[0].props.borders = Some(Borders::all(Border::single(1.0)));
+    t.rows[0].cells[0].props.borders = Some(Borders { top: Some(Border::single(2.0)), ..Default::default() });
+    d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+    let rules = rules_on_page0(&lay(&d));
+    assert_eq!(rules.len(), 8);
+    assert_eq!(rules.iter().filter(|w| **w == 2.0).count(), 1);
+    assert_eq!(rules.iter().filter(|w| **w == 1.0).count(), 7);
+}
+
+#[test]
+fn row_nil_overrides_style() {
+    let mut d = Document::from_text("before\nafter");
+    let mut t = Table::new(1, 1, 200.0);
+    t.rows[0].props.borders = Some(Borders::all(Border { style: BorderStyle::None, width: 0.0, color: None, space: 0.0 }));
+    t.rows[0].cells[0].props.borders = Some(Borders { right: Some(Border::single(2.0)), ..Default::default() });
+    d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+    assert_eq!(rules_on_page0(&lay(&d)), vec![2.0]);
+}
+
+#[test]
+fn cell_widths_override_grid() {
+    for fixed in [false, true] {
+        let mut t = Table::new(2, 3, 450.0);
+        t.props.fixed = fixed;
+        t.grid = vec![40.0, 175.0, 235.0];
+        for row in &mut t.rows {
+            for (cell, width) in row.cells.iter_mut().zip([50.0, 60.0, 340.0]) {
+                cell.props.width = Some(width);
+                cell.blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("A", Default::default()))];
+            }
+        }
+        let mut d = Document::from_text("After");
+        d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+        let l = lay(&d);
+        let [(x0, _, _)] = para_at(&l, &[0, 0, 0, 0])[..] else { panic!("cell missing") };
+        let [(x1, _, _)] = para_at(&l, &[0, 0, 1, 0])[..] else { panic!("cell missing") };
+        let [(x2, _, _)] = para_at(&l, &[0, 0, 2, 0])[..] else { panic!("cell missing") };
+        assert!((x1 - x0 - 50.0).abs() < 0.01);
+        assert!((x2 - x0 - 110.0).abs() < 0.01);
+    }
+}
+
+#[test]
+fn ambiguous_widths_keep_grid() {
+    let mut t = Table::new(2, 3, 450.0);
+    t.grid = vec![40.0, 175.0, 235.0];
+    for row in &mut t.rows {
+        for (cell, width) in row.cells.iter_mut().zip([50.0, 60.0, 340.0]) {
+            cell.props.width = Some(width);
+            cell.blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("A", Default::default()))];
+        }
+    }
+    let mut conflicting = t.clone();
+    conflicting.rows[1].cells[0].props.width = Some(60.0);
+    let mut percentage = t.clone();
+    percentage.rows[0].cells[0].props.width_pct = Some(10.0);
+    let mut invalid = t.clone();
+    invalid.rows[0].cells[0].props.width = Some(f32::NAN);
+    let mut different_total = t.clone();
+    different_total.rows.iter_mut().for_each(|r| r.cells[0].props.width = Some(60.0));
+    let mut spanned = t;
+    spanned.rows[0].cells.remove(1);
+    spanned.rows[0].cells[0].props.span = 2;
+    for table in [conflicting, percentage, invalid, different_total, spanned] {
+        let mut d = Document::from_text("After");
+        d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(table)).unwrap();
+        let l = lay(&d);
+        let [(x0, _, _)] = para_at(&l, &[0, 1, 0, 0])[..] else { panic!("cell missing") };
+        let [(x1, _, _)] = para_at(&l, &[0, 1, 1, 0])[..] else { panic!("cell missing") };
+        assert!((x1 - x0 - 40.0).abs() < 0.01);
+    }
+}

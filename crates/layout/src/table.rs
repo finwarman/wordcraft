@@ -326,6 +326,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
     } else {
         vec![avail / ncols as f32; ncols]
     };
+    apply_cell_widths(t, &mut grid);
     let mut total: f32 = grid.iter().sum();
     // A top-level table in an inherited header or footer takes its share of the defining
     // section's width (`Ctx::pct_base`).
@@ -482,15 +483,31 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             let edge =
                 |own: Option<Border>, outer: bool, outer_b: Option<Border>, inner_b: Option<Border>| own.or(if outer { outer_b } else { inner_b });
             let cb = cell.props.borders.unwrap_or_default();
+            let row_borders = row.props.borders.unwrap_or_default();
             let (first_g, last_g) = (g == 0, g + span >= ncols);
             let rb = parts
                 .map(|p| region_borders(p, (ri, nrows), (first_g, last_g), [is_header, is_total, first_col, last_col, band, col_band]))
                 .unwrap_or_default();
             let mut borders = Borders {
-                top: edge(cb.top.or(rb.top), ri == 0, tb.top, tb.between),
-                bottom: edge(cb.bottom.or(rb.bottom), ri + 1 == nrows, tb.bottom, tb.between),
-                left: edge(cb.left.or(if first_g { rb.left } else { rb.inside_v }), first_g, tb.left, tb.inside_v),
-                right: edge(cb.right.or(if last_g { rb.right } else { rb.inside_v }), last_g, tb.right, tb.inside_v),
+                top: edge(cb.top.or(if ri == 0 { row_borders.top } else { row_borders.between }).or(rb.top), ri == 0, tb.top, tb.between),
+                bottom: edge(
+                    cb.bottom.or(if ri + 1 == nrows { row_borders.bottom } else { row_borders.between }).or(rb.bottom),
+                    ri + 1 == nrows,
+                    tb.bottom,
+                    tb.between,
+                ),
+                left: edge(
+                    cb.left.or(if first_g { row_borders.left } else { row_borders.inside_v }).or(if first_g { rb.left } else { rb.inside_v }),
+                    first_g,
+                    tb.left,
+                    tb.inside_v,
+                ),
+                right: edge(
+                    cb.right.or(if last_g { row_borders.right } else { row_borders.inside_v }).or(if last_g { rb.right } else { rb.inside_v }),
+                    last_g,
+                    tb.right,
+                    tb.inside_v,
+                ),
                 between: None,
                 inside_v: None,
             };
@@ -1035,6 +1052,28 @@ fn is_automatic(t: &Table) -> bool {
     t.props.width.is_none()
         && t.props.width_pct.is_none()
         && t.rows.iter().all(|r| r.cells.iter().all(|c| c.props.width.is_none() && c.props.width_pct.is_none()))
+}
+
+/// Consistent cell widths replace a stale grid without changing the table's total width.
+/// Conflicting widths, spans and percentages need the full shared-grid algorithm.
+fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
+    let Some(first) = t.rows.first() else { return };
+    if first.cells.len() != grid.len() {
+        return;
+    }
+    let widths: Option<Vec<f32>> = first.cells.iter().map(|c| c.props.width.filter(|w| w.is_finite() && *w > 0.0)).collect();
+    let Some(widths) = widths else { return };
+    let total: f32 = widths.iter().sum();
+    if !total.is_finite() || (total - grid.iter().sum::<f32>()).abs() > 0.01 {
+        return;
+    }
+    if t.rows.iter().any(|r| {
+        r.cells.len() != grid.len()
+            || r.cells.iter().zip(&widths).any(|(c, w)| c.span() != 1 || c.props.width_pct.is_some() || c.props.width != Some(*w))
+    }) {
+        return;
+    }
+    grid.copy_from_slice(&widths);
 }
 
 /// Word's autofit for a table whose widths may follow its content (`tblLayout` not fixed).

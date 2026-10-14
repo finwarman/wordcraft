@@ -1,6 +1,6 @@
 # Layout and pagination parity with Microsoft Word
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (Scope renderer integration: 20 parity fixes; source PRs and limits in scope-renderer.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (consistent preferred cell widths; previously trivial: row table border exceptions draw without leaking into other rows; previously trivial: Scope renderer integration: 20 parity fixes; source PRs and limits in scope-renderer.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 A document only "opens correctly" if its pages break where Word breaks them: the same lines, the
 same page count, footnotes and pictures on the same pages. This checklist covers line breaking,
@@ -42,8 +42,9 @@ font can't match Word's metrics.
 | Footnotes at the page bottom, endnotes at the end, note numbering | 🟡 | A long note continues onto the next page at a line boundary (its first line stays with the reference), first in that page's note area under a full-width continuation separator (#352); the document's own separator, continuation separator and continuation notice are drawn (the notice under a note that continues); on a page with footnotes a paragraph ending there keeps its space after above the separator, or its last lines go to the next page with the note (#1116); a long endnote continues on the next column or page at a line boundary (#456), and the caret finds note text on its continuation page (#457); per-section restart partial | 1–3 |
 | Body top below a tall header, footer pushes body up | ✅ | #138 | — |
 | Footnotes at the page bottom, endnotes at the end, note numbering | 🟡 | A long note continues onto the next page at a line boundary (its first line stays with the reference), first in that page's note area under a full-width continuation separator (#352); the document's own separator, continuation separator and continuation notice are drawn (the notice under a note that continues; endnotes use the document's separator but don't continue onto a page of their own); each section's note options: footnotes below the text, endnotes at the end of each section, start at, numbering restarted each section or each page (counted from where the notes land, at most three passes) (#385) | 1–2 |
+| Tables: row border exceptions (`w:tblPrEx/w:tblBorders`) | ✅ | #1708; `row_borders_stay_on_row`, `row_nil_overrides_style`: explicit cell borders win; row exceptions precede table styles and table borders | — |
 | Tables: row heights (at least/exact), rows split across pages, header rows repeat, Can't Split | ✅ | 2026-10-06, #138 | — |
-| Tables: autofit to contents/window, fixed widths, Word 2013 edge | 🟡 | #137; #44: AutoFit Contents measures each column's narrowest and widest text and shares the width like Word, once (not live as you type); a percentage width past 100% is kept, as Word does; cell preferred widths and spans still differ | 3–5 |
+| Tables: autofit to contents/window, fixed widths, Word 2013 edge | 🟡 | #137; #44: AutoFit Contents measures each column's narrowest and widest text and shares the width like Word, once (not live as you type); a percentage width past 100% is kept, as Word does; consistent cell widths override a stale grid when their totals agree (#1709); conflicting widths and spans still differ | 3–5 |
 
 | Tables: row heights (at least/exact), rows split across pages, header rows repeat, Can't Split | ✅ | An exact-height row that fits a fresh page moves there whole if it cannot fit in the remaining space; `layout::tests::an_exact_row_that_fits_a_fresh_page_moves_on_whole`; 2026-10-06, #138 | — |
 | Tables: autofit to contents/window, fixed widths, Word 2013 edge | 🟡 | #137; #44: AutoFit Contents measures each column's narrowest and widest text and shares the width like Word, once (not live as you type); cell preferred widths and spans still differ | 3–5 |
@@ -84,6 +85,8 @@ font can't match Word's metrics.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | trivial | Consistent cell widths override a stale table grid (#1709). |
+| 2026-10-14 | trivial | Row table border exceptions draw without leaking into other rows |
 | 2026-10-14 | trivial | A table's percentage width past 100% is kept, so a table pulled into the margins spans them as in Word |
 
 | 2026-10-14 | trivial | A section can restart its page numbers at 0 (`w:pgNumType w:start="0"`), as a cover page numbered 0 does; the restart was read but laid out from 1 |

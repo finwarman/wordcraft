@@ -2,7 +2,7 @@
 
 **Stage: alpha** · next: beta, ~15 points (60% → 75% ready for real work) and ~150–230 h away
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (Scope renderer integration: 20 parity fixes; source PRs and limits in scope-renderer.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (consistent preferred cell widths; previously trivial: progress log: row table border exceptions; previously trivial: Scope renderer integration: 20 parity fixes; source PRs and limits in scope-renderer.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -135,6 +135,8 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 | Date | What landed |
 |---|---|
+| 2026-10-14 | Consistent cell widths override stale table grid proportions when their totals agree (#1709). Conflicting widths, spans and percentages remain unchanged. |
+| 2026-10-14 | DOCX row table border exceptions render and survive saving (#1708). |
 | 2026-10-14 | Exact-height table rows that fit a fresh page move there whole when they do not fit in the remaining space, matching Word pagination |
 
 | 2026-10-14 | Grouped `flowChartOr` shapes draw their circle and crossing spokes, as in Word |
@@ -295,6 +297,8 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | trivial | Consistent cell widths override stale table grid proportions when their totals agree (#1709). Conflicting widths, spans and percentages remain unchanged. |
+| 2026-10-14 | trivial | Progress log: row table border exceptions |
 | 2026-10-14 | trivial | Floating-table overlap checks use visible line content; empty line-break lines no longer move a table |
 
 | 2026-10-14 | trivial | Field instructions spanning paragraphs no longer add blank lines during pagination; empty result paragraphs still take a line. |

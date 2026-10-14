@@ -26,6 +26,8 @@ no customer documents, reference PDFs or proprietary fonts are added to this rep
 | [#1658](https://github.com/storytold/wordcraft/pull/1658) | Layout: empty line breaks do not move floating tables | `5a4e34dd810be6d4f9502cfaa0baf73a649ca6fd` |
 | [#1665](https://github.com/storytold/wordcraft/pull/1665) | Layout: field instructions do not add blank paragraphs | `d870d32ebe9073f7c69aa56f6d4497fd04e8c0fa` |
 | [#1673](https://github.com/storytold/wordcraft/pull/1673) | Layout: hide labels on page-break-only list paragraphs | `acd40c3730e4403c0e253ad35a9bb384a738840e` |
+| [#1708](https://github.com/storytold/wordcraft/pull/1708) | Tables: preserve row table border exceptions | `8d7ed1ab67e9025ca7713c18484068fb6c3419a9` |
+| [#1709](https://github.com/storytold/wordcraft/pull/1709) | Tables: honor consistent preferred cell widths | `42f0ad3997a54bb019ecfc53819fb87746fedd16` |
 
 Merge resolution preserves both row-height rules, both percentage-width rules, the hidden-field
 marks and every synthetic regression. Upstream status lines and revision entries are combined.

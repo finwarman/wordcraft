@@ -1,6 +1,6 @@
 # Where WordCraft falls short of Word
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (Scope renderer integration: 20 parity fixes; source PRs and limits in scope-renderer.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (consistent preferred cell widths; previously trivial: row table border exceptions; previously trivial: Scope renderer integration: 20 parity fixes; source PRs and limits in scope-renderer.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -10,6 +10,10 @@ wall-clock estimate, and which parity document tracks it. Agents: pick from the 
 first (`gh pr list`), and update this file and the parity doc when a gap closes.
 
 Native save reliability: synthetic cases on macOS reproduced loss through the predictable temporary-file name. Saves now use owned, exclusively created siblings, synchronize before replacement and clean up on failure; originals survive pre-replacement errors. This narrows save-path reliability under gap #3; the listed field failures and broader stability work remain open. See [save-path guarantees](file-format-parity.md#native-save-path-guarantees).
+
+Row table border exceptions are supported (#1708); other row table exceptions remain unsupported.
+
+Consistent preferred cell widths fixed (#1709); conflicting widths, spans and percentages remain unsupported.
 
 ## Ranked
 
@@ -84,6 +88,8 @@ The same gaps grouped the way the parity documents are, for agents working in on
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | trivial | Consistent preferred cell widths fixed (#1709); conflicting widths, spans and percentages remain unsupported. |
+| 2026-10-14 | trivial | Row table border exceptions |
 | 2026-10-14 | trivial | Pagination: exact-height rows that fit a fresh page move there whole when they do not fit in the remaining space; other layout gaps remain |
 
 | 2026-10-14 | trivial | Field report: grouped `flowChartOr` omitted its crossing spokes; the preset now draws them; wider DOCX corpus work remains open |
