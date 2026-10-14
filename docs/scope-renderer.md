@@ -28,6 +28,7 @@ no customer documents, reference PDFs or proprietary fonts are added to this rep
 | [#1673](https://github.com/storytold/wordcraft/pull/1673) | Layout: hide labels on page-break-only list paragraphs | `acd40c3730e4403c0e253ad35a9bb384a738840e` |
 | [#1708](https://github.com/storytold/wordcraft/pull/1708) | Tables: preserve row table border exceptions | `8d7ed1ab67e9025ca7713c18484068fb6c3419a9` |
 | [#1709](https://github.com/storytold/wordcraft/pull/1709) | Tables: honor consistent preferred cell widths | `42f0ad3997a54bb019ecfc53819fb87746fedd16` |
+| [#1715](https://github.com/storytold/wordcraft/pull/1715) | Tables: wrap turned text at minimum row heights | `c12b6b2f3e4eeb3555ce07b976d7b79d379f6802` |
 
 Merge resolution preserves both row-height rules, both percentage-width rules, the hidden-field
 marks and every synthetic regression. Upstream status lines and revision entries are combined.

@@ -1,6 +1,6 @@
 # Where WordCraft falls short of Word
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (consistent preferred cell widths; previously trivial: row table border exceptions; previously trivial: Scope renderer integration: 20 parity fixes; source PRs and limits in scope-renderer.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (turned text wraps within at-least rows; previously trivial: consistent preferred cell widths; previously trivial: row table border exceptions; previously trivial: Scope renderer integration: 20 parity fixes; source PRs and limits in scope-renderer.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -88,6 +88,7 @@ The same gaps grouped the way the parity documents are, for agents working in on
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | trivial | Turned text wraps within minimum-height rows when the lines fit across the column (#1715) |
 | 2026-10-14 | trivial | Consistent preferred cell widths fixed (#1709); conflicting widths, spans and percentages remain unsupported. |
 | 2026-10-14 | trivial | Row table border exceptions |
 | 2026-10-14 | trivial | Pagination: exact-height rows that fit a fresh page move there whole when they do not fit in the remaining space; other layout gaps remain |
