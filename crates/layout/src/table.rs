@@ -11,6 +11,9 @@ use wordcraft_geom::Rect;
 use crate::para::{CellText, ClKind, ParaLayout};
 use crate::{BoxLayout, Ctx, Placed, layout_box};
 
+/// Largest preferred table width, as a share of the text column, that a file can ask for.
+const MAX_WIDTH_SHARE: f32 = 10.0;
+
 pub struct RowLayout {
     pub height: f32,
     /// Items relative to the table's top-left (x) and the row's top (y).
@@ -339,9 +342,14 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
     } else {
         vec![avail / ncols as f32; ncols]
     };
+    apply_cell_widths(t, &mut grid);
     let mut total: f32 = grid.iter().sum();
+    // A top-level table in an inherited header or footer takes its share of the defining
+    // section's width (`Ctx::pct_base`).
+    let pct_base = if depth <= 1 { ctx.pct_base.unwrap_or(avail) } else { avail };
     let target = match (t.props.width_pct, t.props.width) {
-        (Some(p), _) if p > 0.0 => Some(avail * (p / 100.0).min(1.0)),
+        // Word keeps a percentage past 100%; the cap only bounds hostile input.
+        (Some(p), _) if p > 0.0 => Some(pct_base * (p / 100.0).min(MAX_WIDTH_SHARE)),
         (_, Some(w)) if w > 0.0 => Some(w),
         _ => None,
     };
@@ -502,15 +510,31 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             let edge =
                 |own: Option<Border>, outer: bool, outer_b: Option<Border>, inner_b: Option<Border>| own.or(if outer { outer_b } else { inner_b });
             let cb = cell.props.borders.unwrap_or_default();
+            let row_borders = row.props.borders.unwrap_or_default();
             let (first_g, last_g) = (g == 0, g + span >= ncols);
             let rb = parts
                 .map(|p| region_borders(p, (ri, nrows), (first_g, last_g), [is_header, is_total, first_col, last_col, band, col_band]))
                 .unwrap_or_default();
             let mut borders = Borders {
-                top: edge(cb.top.or(rb.top), ri == 0, tb.top, tb.between),
-                bottom: edge(cb.bottom.or(rb.bottom), ri + 1 == nrows, tb.bottom, tb.between),
-                left: edge(cb.left.or(if first_g { rb.left } else { rb.inside_v }), first_g, tb.left, tb.inside_v),
-                right: edge(cb.right.or(if last_g { rb.right } else { rb.inside_v }), last_g, tb.right, tb.inside_v),
+                top: edge(cb.top.or(if ri == 0 { row_borders.top } else { row_borders.between }).or(rb.top), ri == 0, tb.top, tb.between),
+                bottom: edge(
+                    cb.bottom.or(if ri + 1 == nrows { row_borders.bottom } else { row_borders.between }).or(rb.bottom),
+                    ri + 1 == nrows,
+                    tb.bottom,
+                    tb.between,
+                ),
+                left: edge(
+                    cb.left.or(if first_g { row_borders.left } else { row_borders.inside_v }).or(if first_g { rb.left } else { rb.inside_v }),
+                    first_g,
+                    tb.left,
+                    tb.inside_v,
+                ),
+                right: edge(
+                    cb.right.or(if last_g { row_borders.right } else { row_borders.inside_v }).or(if last_g { rb.right } else { rb.inside_v }),
+                    last_g,
+                    tb.right,
+                    tb.inside_v,
+                ),
                 between: None,
                 inside_v: None,
             };
@@ -536,11 +560,18 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             } else if turn.is_turned() {
                 collapsed = false;
                 // Turned text: its lines run along the cell's height. An exact row height sets
-                // their length; otherwise they get the length the text needs unwrapped and the row
-                // grows to fit (the second pass lays them out again if the row ends up taller).
+                // their length. A minimum height wraps text when it fits across the column;
+                // otherwise the row grows to fit its unwrapped text.
                 let snap = (ctx.counters.clone(), ctx.eq_count);
-                let len = match (row.props.height, row.props.height_rule) {
-                    (Some(h), HeightRule::Exact) if h > 0.0 => (h + row_bottom - insets).clamp(4.0, TURNED_LIMIT),
+                let preferred = row.props.height.filter(|h| h.is_finite() && *h > 0.0).map(|h| h.clamp(4.0, TURNED_LIMIT));
+                let wrapped = preferred.filter(|_| row.props.height_rule != HeightRule::Exact).filter(|h| {
+                    let probe = layout_box(ctx, story, &cell.blocks, &cpath, *h, text, depth, None);
+                    (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
+                    probe.height.max(probe.floats_bottom) <= cw + 0.01
+                });
+                let len = match (row.props.height, row.props.height_rule, wrapped) {
+                    (Some(h), HeightRule::Exact, _) if h > 0.0 => (h + row_bottom - insets).clamp(4.0, TURNED_LIMIT),
+                    (_, _, Some(h)) => h,
                     _ => {
                         let probe = layout_box(ctx, story, &cell.blocks, &cpath, TURNED_MAX, text, depth, None).items;
                         (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
@@ -641,6 +672,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
     let mut out = Vec::with_capacity(rows.len());
     for (ri, cells) in rows.into_iter().enumerate() {
         let rh = heights.get(ri).copied().unwrap_or(0.0);
+        let exact = t.rows.get(ri).is_some_and(|r| r.props.height_rule == HeightRule::Exact && r.props.height.is_some_and(|h| h > 0.0));
         let mut items = Vec::new();
         let mut parts = Vec::with_capacity(cells.len());
         for (ci, c) in cells.into_iter().enumerate() {
@@ -732,6 +764,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 row: ri,
                 cell: ci,
                 story,
+                clip: exact && c.h > span_h + 0.01,
             });
             parts.push(CellPart { items: first..items.len(), end });
         }
@@ -909,9 +942,10 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                     a.extend(above.map(|rect| Placed::Fill { rect, color: *color }));
                     b.extend(below.map(|rect| Placed::Fill { rect, color: *color }));
                 }
-                Placed::Cell { rect, covered, table, row: r, cell, story } => {
+                Placed::Cell { rect, covered, table, row: r, cell, story, clip } => {
                     let (above, below) = split_rect(*rect, cut, geo_shift(rect.bottom(), shift));
-                    let cell_at = |rect| Placed::Cell { rect, covered: *covered, table: table.clone(), row: *r, cell: *cell, story: *story };
+                    let cell_at =
+                        |rect| Placed::Cell { rect, covered: *covered, table: table.clone(), row: *r, cell: *cell, story: *story, clip: *clip };
                     a.extend(above.map(cell_at));
                     b.extend(below.map(cell_at));
                 }
@@ -1161,6 +1195,28 @@ fn is_automatic(t: &Table) -> bool {
     t.props.width.is_none()
         && t.props.width_pct.is_none()
         && t.rows.iter().all(|r| r.cells.iter().all(|c| c.props.width.is_none() && c.props.width_pct.is_none()))
+}
+
+/// Consistent cell widths replace a stale grid without changing the table's total width.
+/// Conflicting widths, spans and percentages need the full shared-grid algorithm.
+fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
+    let Some(first) = t.rows.first() else { return };
+    if first.cells.len() != grid.len() {
+        return;
+    }
+    let widths: Option<Vec<f32>> = first.cells.iter().map(|c| c.props.width.filter(|w| w.is_finite() && *w > 0.0)).collect();
+    let Some(widths) = widths else { return };
+    let total: f32 = widths.iter().sum();
+    if !total.is_finite() || (total - grid.iter().sum::<f32>()).abs() > 0.01 {
+        return;
+    }
+    if t.rows.iter().any(|r| {
+        r.cells.len() != grid.len()
+            || r.cells.iter().zip(&widths).any(|(c, w)| c.span() != 1 || c.props.width_pct.is_some() || c.props.width != Some(*w))
+    }) {
+        return;
+    }
+    grid.copy_from_slice(&widths);
 }
 
 /// Word's autofit for a table whose widths may follow its content (`tblLayout` not fixed).

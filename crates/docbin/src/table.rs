@@ -289,6 +289,7 @@ pub(crate) fn assemble(paras: Vec<ParaOut>) -> Blocks {
                 header: info.header,
                 cant_split: info.cant_split,
                 fmt_change: None,
+                borders: None,
             },
             cells,
             controls: Default::default(),

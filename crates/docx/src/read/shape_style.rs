@@ -29,7 +29,9 @@ pub(crate) fn preset_kind(prst: &str) -> ShapeKind {
         "ellipse" | "wedgeEllipseCallout" | "cloudCallout" | "cloud" | "flowChartConnector" | "donut" | "flowChartOnlineStorage" => {
             ShapeKind::Ellipse
         }
-        "triangle" | "rtTriangle" | "flowChartExtract" | "flowChartMerge" => ShapeKind::Triangle,
+        "flowChartOr" => ShapeKind::FlowchartOr,
+        "triangle" | "flowChartExtract" | "flowChartMerge" => ShapeKind::Triangle,
+        "rtTriangle" => ShapeKind::RightTriangle,
         "diamond" | "flowChartDecision" => ShapeKind::Diamond,
         "line" | "lineInv" => ShapeKind::Line,
         "straightConnector1" => ShapeKind::StraightConnector,
@@ -120,6 +122,11 @@ mod tests {
         assert_eq!(p.stroke, Some(THEME_COLORS[7]));
         assert_eq!(p.stroke_width, 0.5);
         assert_eq!(p.fill, None);
+    }
+
+    #[test]
+    fn flowchart_or_keeps_its_spokes() {
+        assert_eq!(preset_kind("flowChartOr"), ShapeKind::FlowchartOr);
     }
 
     #[test]

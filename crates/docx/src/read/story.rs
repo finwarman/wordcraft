@@ -389,6 +389,11 @@ impl Reader<'_> {
         para.text = pb.text;
         para.runs = pb.runs;
         para.objects = pb.objects;
+        // Paragraph boundaries inside an instruction are hidden with the field code.
+        // The result paragraph still takes a line, even when its cached text is empty.
+        if sc.fields.iter().any(|f| f.phase == Phase::Instr) && para.plain_text().is_empty() {
+            para.mark.hidden = Some(true);
+        }
         para.normalize();
         para
     }
@@ -605,6 +610,9 @@ impl Reader<'_> {
             }
             "w:tab" | "w:ptab" => self.emit_text(sc, pb, "\t", props),
             "w:br" => {
+                if sc.fields.iter().any(|f| f.phase == Phase::Instr) {
+                    return;
+                }
                 let c = match k.attr("w:type") {
                     Some("page") => "\u{000C}",
                     Some("column") => "\u{000E}",
@@ -612,7 +620,11 @@ impl Reader<'_> {
                 };
                 self.emit_text(sc, pb, c, props);
             }
-            "w:cr" => self.emit_text(sc, pb, "\n", props),
+            "w:cr" => {
+                if !sc.fields.iter().any(|f| f.phase == Phase::Instr) {
+                    self.emit_text(sc, pb, "\n", props);
+                }
+            }
             "w:noBreakHyphen" => self.emit_text(sc, pb, "\u{2011}", props),
             "w:softHyphen" => self.emit_text(sc, pb, "\u{00AD}", props),
             "w:sym" => {
@@ -1247,6 +1259,7 @@ impl Reader<'_> {
             if let Some(a) = bp.attr("anchor") {
                 part.body.anchor = wordcraft_doc::props::valign_from_anchor(a);
             }
+            part.body.upright = on_off_attr(bp, "upright");
             // Internal margins, each defaulting to Word's (#743).
             let mut inset = wordcraft_doc::TEXT_BOX_INSET;
             for (slot, n) in inset.iter_mut().zip(["lIns", "tIns", "rIns", "bIns"]) {
@@ -1283,6 +1296,7 @@ impl Reader<'_> {
             self.glued.extend(extra.start.iter().chain(extra.end.iter()).map(|e| e.id));
         }
         extra.warp = wsp.child("wps:bodyPr").and_then(|b| b.child("a:prstTxWarp")).and_then(text_warp);
+        extra.fill_transparency = fill_transparency(sppr);
         // A freeform: its custom geometry (#743: in a group too).
         let freeform = sppr.and_then(|s| super::freeform::cust_geom(s, w, h)).map(|mut f| {
             f.alpha = super::freeform::line_alpha(ln);
@@ -1455,6 +1469,7 @@ impl Reader<'_> {
         collect(t, "w:tr", &mut rows, &mut Vec::new(), 0);
         for (tr, row_controls) in rows.into_iter().take(MAX_ROWS) {
             let mut row = Row { props: tr.child("w:trPr").map(trpr).unwrap_or_default(), cells: Vec::new(), controls: row_controls };
+            row.props.borders = tr.child("w:tblPrEx").and_then(|p| p.child("w:tblBorders")).map(super::props::borders);
             if let Some(ch) = tr.child("w:trPr").and_then(|p| p.child("w:trPrChange")) {
                 let old = ch.child("w:trPr").map(trpr).unwrap_or_default();
                 row.props.fmt_change = PropChange::boxed(self.revision(RevisionKind::Format, ch), old);
@@ -1796,6 +1811,13 @@ fn effect_color(e: &El) -> (Option<Rgb>, f32) {
     // `a:alpha`: opacity in 1000ths of a percent.
     let opacity = c.child("a:alpha").and_then(|a| a.attr("val")).and_then(int).map(|v| v.clamp(0, 100_000) as f32 / 1000.0).unwrap_or(100.0);
     (rgb, 100.0 - opacity)
+}
+
+/// A solid fill's transparency, percent: its colour's `a:alpha` is the opacity in 1000ths of a
+/// percent. 0 when opaque or not a solid fill.
+fn fill_transparency(sppr: Option<&El>) -> f32 {
+    let alpha = sppr.and_then(|s| s.child("a:solidFill")).and_then(|f| f.els().next()).and_then(|c| c.child("a:alpha"));
+    alpha.and_then(|a| a.attr("val")).and_then(int).map_or(0.0, |v| (100_000 - v.clamp(0, 100_000)) as f32 / 1000.0)
 }
 
 /// A DrawingML `a:xfrm` (ECMA-376 §20.1.7.5/6) in points: offset, extent and, for a group, its

@@ -278,6 +278,8 @@ pub struct Part {
 pub struct TextBody {
     pub vert: props::TextVert,
     pub anchor: props::VAlign,
+    /// `a:bodyPr/@upright`: text stays upright when its shape turns.
+    pub upright: bool,
     /// Create Link: the text box (another `TextBox` part, shown by its own shape) the text
     /// continues in when it doesn't fit this one. The linked box shows the rest of this box's
     /// story; its own blocks are unused. See [`Document::text_box_chains`].
@@ -464,6 +466,14 @@ pub struct Settings {
     /// 2013 and later, which places a table's border at the margin rather than its text and lets
     /// justified lines shrink their spaces to fit more text.
     pub compat_mode: u32,
+    /// Fonts the document's font table classes as roman (serif, `w:family w:val="roman"`): Word
+    /// draws one that isn't installed in a serif face.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roman_fonts: Vec<String>,
+    /// `w:doNotUseHTMLParagraphAutoSpacing`: the space between two paragraphs is the first's space
+    /// after plus the second's space before, not the larger of the two.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sum_paragraph_spacing: bool,
     /// Drawing grid spacing in points, across and down (View › Gridlines); ECMA-376's default is 1/8 inch.
     pub grid_h: f32,
     pub grid_v: f32,
@@ -560,6 +570,8 @@ impl Default for Settings {
             protect_formatting: false,
             protect_hash: Vec::new(),
             compat_mode: COMPAT_MODE_CURRENT,
+            roman_fonts: Vec::new(),
+            sum_paragraph_spacing: false,
             grid_h: DEFAULT_GRID,
             grid_v: DEFAULT_GRID,
             math: None,

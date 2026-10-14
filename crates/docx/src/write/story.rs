@@ -955,7 +955,9 @@ impl Writer<'_> {
             ShapeKind::Rectangle | ShapeKind::TextBox | ShapeKind::Freeform => "rect",
             ShapeKind::RoundedRectangle => "roundRect",
             ShapeKind::Ellipse => "ellipse",
+            ShapeKind::FlowchartOr => "flowChartOr",
             ShapeKind::Triangle => "triangle",
+            ShapeKind::RightTriangle => "rtTriangle",
             ShapeKind::Diamond => "diamond",
             ShapeKind::Line => "line",
             ShapeKind::StraightConnector => "straightConnector1",
@@ -986,7 +988,14 @@ impl Writer<'_> {
         match fill.filter(|_| !ink && !kind.is_open()) {
             Some(c) => {
                 w.open("a:solidFill", &[]);
-                w.empty("a:srgbClr", &[("val", &c.hex())]);
+                let opacity = extra.fill_opacity();
+                if opacity < 1.0 {
+                    w.open("a:srgbClr", &[("val", &c.hex())]);
+                    w.empty("a:alpha", &[("val", &n((opacity * 100_000.0).round() as i64))]);
+                    w.close("a:srgbClr");
+                } else {
+                    w.empty("a:srgbClr", &[("val", &c.hex())]);
+                }
                 w.close("a:solidFill");
             }
             None => w.empty("a:noFill", &[]),
@@ -1048,6 +1057,9 @@ impl Writer<'_> {
         }
         if body.anchor != wordcraft_doc::props::VAlign::Top {
             attrs.push(("anchor", wordcraft_doc::props::anchor_ooxml(body.anchor)));
+        }
+        if body.upright {
+            attrs.push(("upright", "1"));
         }
         // Internal margins, when the box has its own.
         let inset = body.inset.map(|i| i.map(|v| v.min(wordcraft_doc::MAX_TEXT_BOX_INSET).to_string()));
@@ -1179,6 +1191,11 @@ impl Writer<'_> {
                 open_rows += 1;
             }
             w.open("w:tr", &[]);
+            if let Some(b) = &r.props.borders {
+                w.open("w:tblPrEx", &[]);
+                borders(w, "w:tblBorders", b, Some("w:insideH"), &[]);
+                w.close("w:tblPrEx");
+            }
             let chg = r.props.fmt_change.as_ref().map(|c| self.change_attrs(c.rev));
             trpr(w, &r.props, chg.as_ref());
             let mut open_cells = 0u32;
