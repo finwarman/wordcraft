@@ -261,6 +261,17 @@ named! {
     }
 }
 
+named! {
+    /// How comments are shown beside the page.
+    CommentDisplay {
+        /// Every comment in the margin, as in Word.
+        #[default]
+        Margin = "margin",
+        /// Only the comment of the text under the caret (or the clicked one) floats beside the page.
+        Selected = "selected",
+    }
+}
+
 /// Track Changes Options: what markup shows and how revisions are drawn. A per-user preference,
 /// as in Word (saved with the interface settings, not the document).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -271,6 +282,7 @@ pub struct MarkupOptions {
     pub insertions_deletions: bool,
     pub formatting: bool,
     pub balloons: BalloonMode,
+    pub comment_display: CommentDisplay,
     pub insert_mark: InsertMark,
     /// `None` = by author.
     pub insert_color: Option<Rgb>,
@@ -292,6 +304,7 @@ impl Default for MarkupOptions {
             insertions_deletions: true,
             formatting: true,
             balloons: BalloonMode::default(),
+            comment_display: CommentDisplay::default(),
             insert_mark: InsertMark::default(),
             insert_color: None,
             delete_mark: DeleteMark::default(),
@@ -769,8 +782,10 @@ fn lines(
                             text.push_str(&wordcraft_doc::symbol_fonts::map_text(&st.rc.font, t));
                         } else if st.rc.caps || st.rc.small_caps {
                             // All Caps and Small Caps read as the capitals drawn (#1473), mapped
-                            // as the shaper maps them, so a glyph never stands for two cases.
-                            text.extend(t.chars().map(|ch| crate::para::caps_char(&st.rc, ch)));
+                            // as drawn, so a glyph never stands for two cases and ß reads as SS (#1581).
+                            for ch in t.chars() {
+                                crate::para::push_caps(&st.rc, ch, &mut text);
+                            }
                         } else {
                             text.push_str(t);
                         }

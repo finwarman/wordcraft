@@ -1,9 +1,9 @@
 # Scope renderer snapshot
 
-Base: `482401f3c47825b0aeb6e1250f8a4a84e4654e0a` from storytold/wordcraft.
+Base: `45709520696db6ae6287e16f42f5c15fd4249c39` from storytold/wordcraft.
 
 This fork snapshot integrates the patches below with the base's newer layout fixes.
-Source regressions are retained. Shared documentation conflicts are consolidated here.
+Upstream now includes #1598, #1599 and #1601. The VML fixture expectation also follows upstream fix `3b16fac`. The remaining source regressions are retained. Shared documentation conflicts are consolidated here.
 It is an integration build, not an upstream release or a claim of full Word parity.
 
 | Upstream PR | Source commit |
