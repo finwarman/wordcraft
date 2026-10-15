@@ -1024,7 +1024,14 @@ impl Writer<'_> {
         match fill.filter(|_| !ink && !kind.is_open()) {
             Some(c) => {
                 w.open("a:solidFill", &[]);
-                w.empty("a:srgbClr", &[("val", &c.hex())]);
+                let opacity = extra.fill_opacity();
+                if opacity < 1.0 {
+                    w.open("a:srgbClr", &[("val", &c.hex())]);
+                    w.empty("a:alpha", &[("val", &n((opacity * 100_000.0).round() as i64))]);
+                    w.close("a:srgbClr");
+                } else {
+                    w.empty("a:srgbClr", &[("val", &c.hex())]);
+                }
                 w.close("a:solidFill");
             }
             None => w.empty("a:noFill", &[]),
@@ -1086,6 +1093,9 @@ impl Writer<'_> {
         }
         if body.anchor != wordcraft_doc::props::VAlign::Top {
             attrs.push(("anchor", wordcraft_doc::props::anchor_ooxml(body.anchor)));
+        }
+        if body.upright {
+            attrs.push(("upright", "1"));
         }
         // Internal margins, when the box has its own.
         let inset = body.inset.map(|i| i.map(|v| v.min(wordcraft_doc::MAX_TEXT_BOX_INSET).to_string()));

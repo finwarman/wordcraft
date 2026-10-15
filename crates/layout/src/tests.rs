@@ -3412,6 +3412,27 @@ fn exact_rows_add_only_the_bottom_margin() {
     assert!((tops[0] - (72.0 + 0.5 + 4.0)).abs() < 0.01, "first cell text at {}", tops[0]);
 }
 
+#[test]
+fn exact_row_moves_whole() {
+    use wordcraft_doc::props::HeightRule;
+    let lines: Vec<String> = (1..=200).map(|i| format!("Filler {i}")).collect();
+    let one_page = lay(&Document::from_text(&lines.join("\n"))).pages[0].items.iter().filter(|i| matches!(i, Placed::Lines { .. })).count();
+    let mut t = Table::new(1, 1, 400.0);
+    t.rows[0].props.height = Some(63.6);
+    t.rows[0].props.height_rule = HeightRule::Exact;
+    for height in [40.0, 50.0] {
+        let mut p = wordcraft_doc::Paragraph::with_text("", Default::default());
+        p.insert_object(0, picture(30.0, height, Default::default()), &Default::default()).unwrap();
+        t.rows[0].cells[0].blocks.push(wordcraft_doc::para_block(p));
+    }
+    let mut d = Document::from_text(&lines[..one_page - 2].join("\n"));
+    let end = d.body.len();
+    d.insert_block(StoryRef::Body, &Path::top(end), wordcraft_doc::Block::Table(t)).unwrap();
+    let l = lay(&d);
+    let row_page = l.pages.iter().position(|p| p.items.iter().any(|i| matches!(i, Placed::Cell { row: 0, .. })));
+    assert_eq!(row_page, Some(1), "Word keeps an exact row together when it fits on the next page");
+}
+
 /// `cell_margins` is what the layout uses: a cell's own margins, else the table's, else Word's;
 /// each cell's text starts its left margin inside the cell.
 #[test]
@@ -4508,6 +4529,29 @@ fn a_percentage_width_past_the_text_column_is_kept() {
     let [(x, _, _)] = para_at(&lay(&d), &[0, 0, 1, 0])[..] else { panic!("second cell missing") };
     // Two equal columns of 614.4 pt from x = 0: the second starts past the middle of the page.
     assert!(x > 307.0, "the second column starts at {x}");
+}
+
+#[test]
+fn a_translucent_shape_fill_is_drawn_translucent() {
+    let mut d = Document::from_text("Wash");
+    let extra = wordcraft_doc::connector::ShapeExtra { fill_transparency: 69.0, ..Default::default() };
+    let wash = InlineObject::Shape {
+        kind: wordcraft_doc::para::ShapeKind::Rectangle,
+        w: 100.0,
+        h: 50.0,
+        fill: Some(wordcraft_doc::props::Rgb::WHITE),
+        stroke: None,
+        stroke_width: 0.0,
+        float: Default::default(),
+        story: None,
+        freeform: None,
+        effects: Default::default(),
+        extra,
+    };
+    d.insert_object(&Pos::body(0, 0), wash, &Default::default()).unwrap();
+    let draws = flat(display::page_display(&d, &lay(&d).pages[0], &Default::default()));
+    let alpha = draws.iter().find_map(|x| if let display::Draw::Shape { fill_alpha, .. } = x { Some(*fill_alpha) } else { None });
+    assert!(alpha.is_some_and(|a| (a - 0.31).abs() < 0.001), "fill opacity {alpha:?}");
 }
 
 #[test]
@@ -7262,4 +7306,413 @@ fn row_nil_overrides_style() {
     t.rows[0].cells[0].props.borders = Some(Borders { right: Some(Border::single(2.0)), ..Default::default() });
     d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
     assert_eq!(rules_on_page0(&lay(&d)), vec![2.0]);
+}
+
+#[test]
+fn turned_text_uses_min_height() {
+    for turn in [TextDirection::Up, TextDirection::Down] {
+        let mut d = Document::from_text("After");
+        let mut t = Table::new(1, 2, 160.0);
+        t.props.style = None;
+        t.rows[0].props.height = Some(80.0);
+        t.rows[0].cells[1].props.text_direction = turn;
+        t.rows[0].cells[1].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Compensation pad type", Default::default()))];
+        d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+        let l = lay(&d);
+        let rect = l.pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Cell { rect, cell: 1, .. } => Some(*rect),
+                _ => None,
+            })
+            .unwrap();
+        assert!((rect.h - 80.0).abs() < 0.01, "{rect:?}");
+        let lines = l.pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Lines { path, l0, l1, .. } if path.0 == [0, 0, 1, 0] => Some(l1 - l0),
+                _ => None,
+            })
+            .unwrap();
+        assert!(lines > 1);
+    }
+}
+
+#[test]
+fn narrow_turned_cell_grows() {
+    let mut d = Document::from_text("After");
+    let mut t = Table::new(1, 1, 20.0);
+    t.props.style = None;
+    t.props.fixed = true;
+    t.rows[0].props.height = Some(20.0);
+    t.rows[0].cells[0].props.text_direction = TextDirection::Up;
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Compensation pad type", Default::default()))];
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    let l = lay(&d);
+    let h = l.pages[0]
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Placed::Cell { rect, .. } => Some(rect.h),
+            _ => None,
+        })
+        .unwrap();
+    assert!(h > 80.0, "the text must fit across the narrow cell: {h}");
+}
+
+/// Word and Adobe: a behind-text frame participates in a cell's vertical alignment,
+/// even when its anchor paragraph has no inline picture (synthetic two-cell probe).
+#[test]
+fn cell_frame_centres_empty() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    use wordcraft_doc::props::{HeightRule, VAlign};
+    let mut d = Document::new();
+    let mut t = Table::new(1, 2, 468.0);
+    t.rows[0].props.height = Some(182.5);
+    t.rows[0].props.height_rule = HeightRule::Exact;
+    for (ci, cell) in t.rows[0].cells.iter_mut().enumerate() {
+        cell.props.valign = Some(VAlign::Center);
+        cell.props.margins = Some([0.0; 4]);
+        let mut p = wordcraft_doc::Paragraph::with_text("", Default::default());
+        p.props.space_before = Some(0.0);
+        p.props.space_after = Some(0.0);
+        let float = Float { wrap: Wrap::BehindText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, y: -12.75, ..Default::default() };
+        p.insert_object(0, picture(231.0, 180.75, float), &Default::default()).unwrap();
+        if ci == 0 {
+            p.insert_object(p.text.len(), picture(207.0, 155.25, Default::default()), &Default::default()).unwrap();
+        }
+        cell.blocks = vec![wordcraft_doc::para_block(p)];
+    }
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    let l = lay(&d);
+    let frames: Vec<_> = l.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| if let Placed::Object { rect, wrap: Wrap::BehindText, .. } = item { Some(rect) } else { None })
+        .collect();
+    assert_eq!(frames.len(), 2);
+    assert!((frames[0].y - frames[1].y).abs() < 0.01, "frames must align: {frames:?}");
+    assert!((frames[0].y - 66.5).abs() < 0.5, "Word frame top: {frames:?}");
+}
+
+enum SpanWidth {
+    Preferred,
+    Automatic,
+    TextOnly,
+}
+
+fn banner_layout(width: SpanWidth) -> DocLayout {
+    let widths = [150.0, 100.0, 25.0, 25.0];
+    let mut d = Document::new();
+    let mut t = Table::new(2, widths.len(), 300.0);
+    t.grid = widths.to_vec();
+    t.props.width = match width {
+        SpanWidth::Preferred => Some(300.0),
+        SpanWidth::Automatic | SpanWidth::TextOnly => None,
+    };
+    t.props.cell_margins = Some([0.0; 4]);
+    t.rows[0].cells.truncate(1);
+    t.rows[0].cells[0].props.span = 4;
+    t.rows[0].cells[0].props.width = t.props.width;
+    let mut banner = wordcraft_doc::Paragraph::new();
+    if !matches!(width, SpanWidth::TextOnly) {
+        banner.insert_object(0, picture(300.0, 30.0, Default::default()), &Default::default()).unwrap();
+    }
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(banner)];
+    for (i, cell) in t.rows[1].cells.iter_mut().enumerate() {
+        cell.props.width = match width {
+            SpanWidth::Preferred => Some(widths[i]),
+            SpanWidth::Automatic | SpanWidth::TextOnly => None,
+        };
+        cell.blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("A", Default::default()))];
+    }
+    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+    lay(&d)
+}
+
+#[test]
+fn spanning_banner_uses_weights() {
+    let text = banner_layout(SpanWidth::TextOnly);
+    let minimum = text.pages[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Placed::Cell { rect, row: 1, .. } => Some(rect.w),
+            _ => None,
+        })
+        .unwrap();
+    let widths = [150.0 - minimum, 100.0 - minimum / 3.0, 25.0 + 2.0 * minimum / 3.0, 25.0 + 2.0 * minimum / 3.0];
+    let l = banner_layout(SpanWidth::Preferred);
+    let actual: Vec<_> =
+        l.pages[0].items.iter().filter_map(|it| if let Placed::Cell { rect, row: 1, .. } = it { Some(rect.w) } else { None }).collect();
+    assert_eq!(actual.len(), widths.len());
+    for (got, want) in actual.iter().zip(widths) {
+        assert!((got - want).abs() < 0.01, "spanning banner changed columns: {actual:?}");
+    }
+}
+
+fn header_body_doc(wrap: wordcraft_doc::para::Wrap) -> Document {
+    use wordcraft_doc::para::{Anchor, Float};
+    let mut d = Document::from_text(&"Original body words ".repeat(600));
+    let float = Float { wrap, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 300.0, y: 60.0, dist: 9.0, ..Default::default() };
+    let mut header = wordcraft_doc::Paragraph::new();
+    header.insert_object(0, rect_shape(240.0, 40.0, float), &Default::default()).unwrap();
+    let id = d.add_part(wordcraft_doc::PartKind::Header, vec![wordcraft_doc::para_block(header)]);
+    d.last_section.headers.default = Some(id);
+    d
+}
+
+#[test]
+fn header_picture_wraps_body_text() {
+    let d = header_body_doc(wordcraft_doc::para::Wrap::Square);
+    let l = lay(&d);
+    assert!(l.pages.len() > 1);
+    for page in 0..l.pages.len() {
+        let lines = line_boxes(&l, page, 0, d.last_section.margin_left);
+        assert_clear_of(&lines, Rect::new(300.0, 60.0, 240.0, 40.0), "body around header picture");
+    }
+}
+
+#[test]
+fn header_wrap_uses_the_page_slot() {
+    let mut d = header_body_doc(wordcraft_doc::para::Wrap::Square);
+    let empty = d.add_part(wordcraft_doc::PartKind::Header, vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::new())]);
+    d.last_section.title_page = true;
+    d.settings.even_odd_headers = true;
+    d.last_section.headers.first = Some(empty);
+    d.last_section.headers.even = Some(empty);
+    let l = lay(&d);
+    assert!(l.pages.len() >= 3);
+    for page in 0..3 {
+        let lines = line_boxes(&l, page, 0, d.last_section.margin_left);
+        let first = lines.iter().find(|(x, _, right, _)| right - x > 1.0).unwrap();
+        if page < 2 {
+            assert!(first.2 > 300.0, "first/even header has no picture: {first:?}");
+        } else {
+            assert!(first.2 <= 291.01, "default header wraps: {first:?}");
+        }
+    }
+}
+
+#[test]
+fn nonwrapping_header_leaves_body() {
+    use wordcraft_doc::para::Wrap;
+    for wrap in [Wrap::BehindText, Wrap::InFrontOfText] {
+        let d = header_body_doc(wrap);
+        let l = lay(&d);
+        let lines = line_boxes(&l, 0, 0, d.last_section.margin_left);
+        assert!(lines[0].2 > 300.0, "nonwrapping header: {:?}", lines[0]);
+    }
+}
+
+#[test]
+fn automatic_banner_shares_width() {
+    let l = banner_layout(SpanWidth::Automatic);
+    let widths: Vec<_> =
+        l.pages[0].items.iter().filter_map(|it| if let Placed::Cell { rect, row: 1, .. } = it { Some(rect.w) } else { None }).collect();
+    assert_eq!(widths.len(), 4);
+    assert!(widths.iter().all(|w| (w - 75.0).abs() < 0.01), "automatic widths: {widths:?}");
+}
+
+#[test]
+fn leading_break_spacing_flag() {
+    enum Spacing {
+        Keep,
+        Suppress,
+        SuppressSummed,
+    }
+    let top = |spacing, after| {
+        let mut d = Document::from_text(&format!("Filler\n{}Probe", wordcraft_doc::para::PAGE_BREAK));
+        d.settings.suppress_break_spacing = !matches!(spacing, Spacing::Keep);
+        d.settings.sum_paragraph_spacing = matches!(spacing, Spacing::SuppressSummed);
+        d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.space_after = Some(after);
+        d.para_mut(StoryRef::Body, &Path::top(1)).unwrap().props.space_before = Some(6.0);
+        let l = lay(&d);
+        let c = l.caret(&Pos::body(1, 1)).unwrap();
+        assert_eq!(c.page, 1);
+        c.top
+    };
+    let plain = top(Spacing::Suppress, 6.0);
+    for after in [0.0f32, 2.0, 6.0, 10.0] {
+        let expected = (6.0 - after).max(0.0);
+        assert!((top(Spacing::Suppress, after) - plain - expected).abs() < 0.05, "flagged, after={after}");
+        assert!((top(Spacing::Keep, after) - plain - 6.0).abs() < 0.05, "unflagged, after={after}");
+        assert!((top(Spacing::SuppressSummed, after) - plain - 6.0).abs() < 0.05, "summed, after={after}");
+    }
+}
+
+#[test]
+fn header_wrap_clears_body_table() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    for (wrap, y) in [(Wrap::TopAndBottom, 60.0), (Wrap::TopAndBottom, 80.0), (Wrap::InFrontOfText, 60.0)] {
+        let mut d = Document::new();
+        d.body = vec![std::sync::Arc::new(Block::Table(Table::new(2, 1, 468.0)))];
+        let float = Float { wrap, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y, ..Default::default() };
+        let mut p = wordcraft_doc::Paragraph::new();
+        p.insert_object(0, rect_shape(468.0, 40.0, float), &Default::default()).unwrap();
+        let id = d.add_part(wordcraft_doc::PartKind::Header, vec![wordcraft_doc::para_block(p)]);
+        d.last_section.headers.default = Some(id);
+        let l = lay(&d);
+        let top = l.pages[0]
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Placed::Cell { rect, .. } => Some(rect.y),
+                _ => None,
+            })
+            .fold(f32::MAX, f32::min);
+        let expected = if wrap == Wrap::TopAndBottom { y + 40.0 } else { 72.0 };
+        assert!((top - expected).abs() < 0.01, "table top {top}, expected {expected}");
+    }
+}
+
+#[test]
+fn header_table_clears_body_table() {
+    use wordcraft_doc::para::Anchor;
+    use wordcraft_doc::props::TableFloat;
+    let mut d = Document::new();
+    d.body = vec![std::sync::Arc::new(Block::Table(Table::new(80, 1, 468.0)))];
+    let mut header = Table::new(2, 1, 468.0);
+    header.props.float = Some(TableFloat { h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 80.0, ..Default::default() });
+    let id = d.add_part(wordcraft_doc::PartKind::Header, vec![std::sync::Arc::new(Block::Table(header))]);
+    d.last_section.headers.default = Some(id);
+    let l = lay(&d);
+    assert!(l.pages.len() > 1);
+    for page in &l.pages {
+        let bottom = page
+            .header
+            .iter()
+            .filter_map(|it| match it {
+                Placed::Cell { rect, .. } => Some(rect.bottom()),
+                _ => None,
+            })
+            .fold(0.0, f32::max);
+        let top = page
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Placed::Cell { rect, .. } => Some(rect.y),
+                _ => None,
+            })
+            .fold(f32::MAX, f32::min);
+        assert!(top >= bottom - 0.01, "body table {top} overlaps header ending at {bottom}");
+    }
+}
+
+#[test]
+fn footer_wrap_reserves_body() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    use wordcraft_doc::props::LineSpacing;
+    for wrap in [Wrap::TopAndBottom, Wrap::BehindText] {
+        let mut d = Document::new();
+        let mut table = Table::new(32, 1, 468.0);
+        table.props.cell_margins = Some([0.0; 4]);
+        for row in &mut table.rows {
+            let mut p = wordcraft_doc::Paragraph::with_text("Technical reading", Default::default());
+            p.props =
+                ParaProps { space_before: Some(0.0), space_after: Some(0.0), line_spacing: Some(LineSpacing::Exactly(20.0)), ..Default::default() };
+            row.cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+            row.props.cant_split = true;
+        }
+        d.body = vec![std::sync::Arc::new(Block::Table(table))];
+        let float = Float { wrap, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 650.0, ..Default::default() };
+        let mut p = wordcraft_doc::Paragraph::new();
+        p.insert_object(0, rect_shape(468.0, 40.0, float), &Default::default()).unwrap();
+        let id = d.add_part(wordcraft_doc::PartKind::Footer, vec![wordcraft_doc::para_block(p)]);
+        d.last_section.footers.default = Some(id);
+        let l = lay(&d);
+        let bottom = l.pages[0].items.iter().map(v_span).map(|(_, bottom)| bottom).fold(0.0, f32::max);
+        if wrap == Wrap::TopAndBottom {
+            assert!(bottom <= 650.01, "table bottom {bottom} crosses wrapping footer");
+            assert!(l.pages.len() > 1);
+        } else {
+            assert!(bottom > 650.0, "nonwrapping footer must not reserve body space");
+        }
+    }
+}
+
+#[test]
+fn section_mark_after_break() {
+    use wordcraft_doc::section::SectionProps;
+    for text in ["", "Section boundary"] {
+        let mut d = Document::from_text(&format!("Before\n\u{000C}\n{text}\nAfter"));
+        d.para_mut(StoryRef::Body, &Path::top(2)).unwrap().section = Some(Box::new(SectionProps::default()));
+        let l = lay(&d);
+        let empty = text.is_empty();
+        assert_eq!(l.pages.len(), if empty { 2 } else { 3 }, "section text: {text:?}");
+        assert_eq!(l.caret(&Pos::body(3, 0)).unwrap().page, if empty { 1 } else { 2 });
+        assert_eq!(l.caret(&Pos::body(2, 0)).unwrap().page, if empty { 0 } else { 1 });
+    }
+}
+
+fn fit_image(float: wordcraft_doc::para::Float) -> InlineObject {
+    InlineObject::Image { media: "original-probe".into(), w: 400.0, h: 280.0, alt: String::new(), float, crop: [0.0; 4], ole: None }
+}
+
+fn image_rects(items: &[Placed]) -> Vec<Rect> {
+    items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Image { rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn paragraph_floats_fit_the_page() {
+    use wordcraft_doc::para::{Anchor, Float, GroupChild, Wrap};
+    for grouped in [false, true] {
+        let mut d = Document::from_text("\n\n");
+        for block in 0..3 {
+            let p = d.para_mut(StoryRef::Body, &Path::top(block)).unwrap();
+            p.props.space_after = Some(280.0);
+            let f = Float { wrap: Wrap::Square, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, dist: 9.0, ..Default::default() };
+            let o = if grouped {
+                InlineObject::Group {
+                    w: 400.0,
+                    h: 280.0,
+                    float: f,
+                    ch_w: 400.0,
+                    ch_h: 280.0,
+                    children: vec![GroupChild { x: 0.0, y: 0.0, obj: fit_image(Default::default()) }],
+                    canvas: None,
+                }
+            } else {
+                fit_image(f)
+            };
+            p.insert_object(0, o, &Default::default()).unwrap();
+        }
+        let l = lay(&d);
+        assert_eq!(l.pages.iter().map(|p| image_rects(&p.items).len()).sum::<usize>(), 3);
+        for page in &l.pages {
+            for r in image_rects(&page.items) {
+                assert!(r.bottom() <= page.body.bottom() + 0.01, "picture {r:?} overflows body {:?}", page.body);
+            }
+        }
+    }
+}
+
+#[test]
+fn page_float_keeps_its_position() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    let mut d = Document::from_text("Before\n");
+    d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.space_after = Some(520.0);
+    let f = Float { wrap: Wrap::Square, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 100.0, y: 650.0, ..Default::default() };
+    d.insert_object(&Pos::body(1, 0), fit_image(f), &Default::default()).unwrap();
+    let l = lay(&d);
+    assert_eq!(l.pages.len(), 1);
+    assert!((image_rects(&l.pages[0].items)[0].y - 650.0).abs() < 0.01);
+}
+
+#[test]
+fn annotation_keeps_its_anchor() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    let mut d = Document::from_text("Before\nAnchor");
+    d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.space_after = Some(520.0);
+    let f = Float { wrap: Wrap::Square, v_rel: Anchor::Paragraph, y: 300.0, ..Default::default() };
+    d.insert_object(&Pos::body(1, 0), rect_shape(10.0, 10.0, f), &Default::default()).unwrap();
+    assert_eq!(lay(&d).pages.len(), 1);
 }

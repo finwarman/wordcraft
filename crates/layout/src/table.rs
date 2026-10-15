@@ -381,7 +381,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
     if !t.props.fixed {
         // Measuring lays paragraphs out once more; it mustn't count their equations twice.
         let eq_count = ctx.eq_count;
-        let content = column_content(ctx, t, style.as_ref(), depth);
+        let content = column_content(ctx, t, style.as_ref(), depth, &grid);
         ctx.eq_count = eq_count;
         if let Some(content) = content {
             autofit(&mut grid, &content, t, avail);
@@ -543,11 +543,18 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             } else if turn.is_turned() {
                 collapsed = false;
                 // Turned text: its lines run along the cell's height. An exact row height sets
-                // their length; otherwise they get the length the text needs unwrapped and the row
-                // grows to fit (the second pass lays them out again if the row ends up taller).
+                // their length. A minimum height wraps text when it fits across the column;
+                // otherwise the row grows to fit its unwrapped text.
                 let snap = (ctx.counters.clone(), ctx.eq_count);
-                let len = match (row.props.height, row.props.height_rule) {
-                    (Some(h), HeightRule::Exact) if h > 0.0 => (h + row_bottom - insets).clamp(4.0, TURNED_LIMIT),
+                let preferred = row.props.height.filter(|h| h.is_finite() && *h > 0.0).map(|h| h.clamp(4.0, TURNED_LIMIT));
+                let wrapped = preferred.filter(|_| row.props.height_rule != HeightRule::Exact).filter(|h| {
+                    let probe = layout_box(ctx, story, &cell.blocks, &cpath, *h, super::BoxContext::Cell(text), depth, None);
+                    (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
+                    probe.height.max(probe.floats_bottom) <= cw + 0.01
+                });
+                let len = match (row.props.height, row.props.height_rule, wrapped) {
+                    (Some(h), HeightRule::Exact, _) if h > 0.0 => (h + row_bottom - insets).clamp(4.0, TURNED_LIMIT),
+                    (_, _, Some(h)) => h,
                     _ => {
                         let probe = layout_box(ctx, story, &cell.blocks, &cpath, TURNED_MAX, BoxContext::Cell(text), depth, None).items;
                         (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
@@ -560,7 +567,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 turned = Some(Turned { turn, len, across, snap, region, ci, top: margins[0] + band_t });
                 (items, len)
             } else {
-                let BoxLayout { mut items, mut height, floats_bottom, last_top } =
+                let BoxLayout { mut items, mut height, floats_bottom, last_top, .. } =
                     layout_box(ctx, story, &cell.blocks, &cpath, cw, BoxContext::Cell(text), depth, None);
                 // A hidden end-of-cell mark: an empty last paragraph takes no room (Word for
                 // Windows: a row of empty such cells is only its borders).
@@ -671,10 +678,20 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             {
                 items.push(Placed::Fill { rect, color: f });
             }
+            // Behind-text frames count towards vertical alignment even without inline content.
+            // They do not increase the row's flow height.
+            let align_h = c
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Placed::Object { rect, wrap: wordcraft_doc::para::Wrap::BehindText, .. } => Some(rect.bottom()),
+                    _ => None,
+                })
+                .fold(c.h, f32::max);
             let mut dy = match c.valign {
                 VAlign::Top => 0.0,
-                VAlign::Center => ((span_h - c.h) / 2.0).max(0.0),
-                VAlign::Bottom => (span_h - c.h).max(0.0),
+                VAlign::Center => ((span_h - align_h) / 2.0).max(0.0),
+                VAlign::Bottom => (span_h - align_h).max(0.0),
             };
             let end = (c.vmerge != VMerge::Continue && c.turned.is_none()).then_some(c.end + dy);
             let mut cell_items = c.items;
@@ -1039,7 +1056,7 @@ fn region_text(st: &TableStyleProps, region: Region) -> CellText {
 /// Each column's narrowest and widest content, cell margins included: its longest word and its
 /// longest line. A cell spanning columns shares what they lack between them; nested tables count
 /// with their own. `None` when every cell is empty.
-fn column_content(ctx: &mut Ctx, t: &Table, style: Option<&TableStyleProps>, depth: usize) -> Option<Vec<(f32, f32)>> {
+fn column_content(ctx: &mut Ctx, t: &Table, style: Option<&TableStyleProps>, depth: usize, grid: &[f32]) -> Option<Vec<(f32, f32)>> {
     let margins_def = default_margins(t, style);
     let mut cols = vec![(0.0f32, 0.0f32); t.cols().max(1)];
     let mut spanning = Vec::new();
@@ -1065,13 +1082,34 @@ fn column_content(ctx: &mut Ctx, t: &Table, style: Option<&TableStyleProps>, dep
     for (g, span, need) in spanning {
         let Some(cs) = cols.get_mut(g..(g + span).min(t.cols())) else { continue };
         let n = cs.len().max(1) as f32;
-        let (have_lo, have_hi) = cs.iter().fold((0.0, 0.0), |(l, h), c| (l + c.0, h + c.1));
+        let have_hi: f32 = cs.iter().map(|c| c.1).sum();
+        let preferred = (!is_automatic(t)).then(|| grid.get(g..g + cs.len())).flatten();
+        share_span_min(cs, preferred, need.0);
         for c in cs {
-            c.0 += (need.0 - have_lo).max(0.0) / n;
             c.1 += (need.1 - have_hi).max(0.0) / n;
         }
     }
     any.then_some(cols)
+}
+
+// Share a span's extra minimum in preferred-column proportions. Each column keeps
+// its own text minimum; automatic tables share the extra equally.
+fn share_span_min(cols: &mut [(f32, f32)], grid: Option<&[f32]>, need: f32) {
+    let extra = (need - cols.iter().map(|c| c.0).sum::<f32>()).max(0.0);
+    let weight = |w: &f32| if w.is_finite() { w.clamp(0.0, UNBOUNDED) } else { 0.0 };
+    let total = grid.map_or(0.0, |grid| grid.iter().take(cols.len()).map(weight).sum::<f32>());
+    if total > 0.0 {
+        if let Some(grid) = grid {
+            for (c, w) in cols.iter_mut().zip(grid) {
+                c.0 += extra * weight(w) / total;
+            }
+        }
+        return;
+    }
+    let share = extra / cols.len().max(1) as f32;
+    for c in cols {
+        c.0 += share;
+    }
 }
 
 /// The narrowest and widest a block list can be laid out.
@@ -1092,7 +1130,7 @@ fn blocks_content(ctx: &mut Ctx, blocks: &Blocks, text: Option<&CellText>, depth
                     (width, width)
                 } else {
                     let style = table_style(ctx, nt);
-                    let cols = column_content(ctx, nt, style.as_ref(), depth + 1).unwrap_or_default();
+                    let cols = column_content(ctx, nt, style.as_ref(), depth + 1, &nt.grid).unwrap_or_default();
                     let (l, h) = cols.iter().fold((0.0, 0.0), |(l, h), c| (l + c.0, h + c.1));
                     (width.max(l), width.max(h))
                 }

@@ -2257,6 +2257,25 @@ fn cover_page_relative_position_and_freeform_drawn_back_to_its_start() {
 }
 
 #[test]
+fn upright_text_box_roundtrips() {
+    let shape = anchored_wsp(
+        "Upright",
+        889000,
+        190500,
+        r#"<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>"#,
+        "",
+        r#"<wps:cNvSpPr txBox="1"/><wps:txbx><w:txbxContent><w:p><w:r><w:t>Heading</w:t></w:r></w:p></w:txbxContent></wps:txbx>"#,
+    )
+    .replace("<wps:bodyPr/>", r#"<wps:bodyPr upright="1"/>"#);
+    let d = read_body(&format!("<w:p>{shape}</w:p>"));
+    let check = |doc: &Document| {
+        assert!(doc.parts.values().any(|part| part.kind == wordcraft_doc::PartKind::TextBox && part.body.upright));
+    };
+    check(&d);
+    check(&wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap());
+}
+
+#[test]
 fn embedded_fonts_survive_a_round_trip() {
     let table = r#"<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:font w:name="Roboto"><w:embedRegular r:id="rId1"/><w:embedBold r:id="rId2"/></w:font></w:fonts>"#;
     let table_rels = rels(&[("rId1", "font", "fonts/Roboto-regular.ttf"), ("rId2", "font", "fonts/Roboto-bold.ttf")]);
@@ -2829,4 +2848,36 @@ fn row_table_borders_round_trip() {
     assert!(xml.contains("<w:insideV"));
     let again = wordcraft_docx::read(&saved).unwrap();
     assert_eq!(d.body, again.body);
+}
+
+/// A fill's `a:alpha` is its opacity: a translucent white wash over a picture stayed opaque and
+/// hid the picture.
+#[test]
+fn a_shape_fill_keeps_its_transparency() {
+    let fill =
+        r#"<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FFFFFF"><a:alpha val="30980"/></a:srgbClr></a:solidFill>"#;
+    let d = read_body(&format!("<w:p>{}</w:p>", anchored_wsp("Wash", 1270000, 635000, fill, "", "<wps:cNvSpPr/>")));
+    let transparency = |d: &Document| match &paras(d)[0].objects[0] {
+        InlineObject::Shape { fill, extra, .. } => (*fill, extra.fill_transparency),
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(transparency(&d), (Some(Rgb(255, 255, 255)), 69.02));
+    let again = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
+    assert_eq!(transparency(&again), (Some(Rgb(255, 255, 255)), 69.02));
+}
+
+#[test]
+fn break_spacing_flag_roundtrips() {
+    for (flag, expected) in [
+        ("", false),
+        (r#"<w:suppressSpBfAfterPgBrk w:val="0"/>"#, false),
+        (r#"<w:suppressSpBfAfterPgBrk/>"#, true),
+        (r#"<w:suppressSpBfAfterPgBrk w:val="1"/>"#, true),
+    ] {
+        let settings = format!("<w:compat>{flag}</w:compat>");
+        let d = with_settings(Some(&settings));
+        assert_eq!(d.settings.suppress_break_spacing, expected, "{flag}");
+        let reopened = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
+        assert_eq!(reopened.settings.suppress_break_spacing, expected, "{flag}");
+    }
 }
