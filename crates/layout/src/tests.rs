@@ -1182,12 +1182,12 @@ fn turned_lines(l: &DocLayout) -> &Placed {
     l.pages[0].items.iter().find(|it| matches!(it, Placed::Lines { path, .. } if path.0 == [1, 0, 1, 0])).unwrap()
 }
 
-/// Table Layout › Text Direction (#226): turned cell text runs along the cell's height, the row
-/// grows to fit it, and caret, clicks and drawing follow the turn.
+/// Table Layout › Text Direction (#226): turned cell text runs along a fixed-height cell,
+/// and caret, clicks and drawing follow the turn.
 #[test]
 fn turned_cell_text_runs_down_the_cell() {
     let text = "Turned cell text";
-    let d = turned_table(TextDirection::Down, text, None);
+    let d = turned_table(TextDirection::Down, text, Some(120.0));
     let l = lay(&d);
     let it = turned_lines(&l);
     assert!(matches!(it, Placed::Lines { turn: TextDirection::Down, l0: 0, l1: 1, .. }), "one unwrapped line: {it:?}");
@@ -1195,7 +1195,7 @@ fn turned_cell_text_runs_down_the_cell() {
     // Tall and narrow, against the cell's right edge (cell 2 spans x 228..384, 5.4pt margins).
     assert!(b.h > 60.0 && b.w < 20.0, "{b:?}");
     assert!((b.right() - (72.0 + 312.0 - 5.4)).abs() < 1.0 && b.x > 72.0 + 156.0, "{b:?}");
-    // The row grew to hold the text: the next paragraph starts below it.
+    // The next paragraph starts below the fixed-height row.
     let after = l.caret(&Pos::body(2, 0)).unwrap();
     assert!(after.top > b.bottom(), "{after:?} vs {b:?}");
     let cell = l.pages[0].items.iter().find_map(|i| if let Placed::Cell { rect, cell: 1, .. } = i { Some(*rect) } else { None }).unwrap();
@@ -1216,7 +1216,14 @@ fn turned_cell_text_runs_down_the_cell() {
     assert!(sel.iter().all(|(_, r)| r.h > r.w && r.x >= b.x - 1.0 && r.right() <= b.right() + 1.0), "{sel:?}");
     // Drawn in a turned frame.
     let draws = display::page_display(&d, &l.pages[0], &Default::default());
-    let turned = draws.iter().find_map(|x| if let display::Draw::Turned { turn, items, .. } = x { Some((*turn, items)) } else { None });
+    fn turned_draw(draws: &[display::Draw]) -> Option<(TextDirection, &[display::Draw])> {
+        draws.iter().find_map(|draw| match draw {
+            display::Draw::Turned { turn, items, .. } => Some((*turn, items.as_slice())),
+            display::Draw::Clip { items, .. } => turned_draw(items),
+            _ => None,
+        })
+    }
+    let turned = turned_draw(&draws);
     let (turn, items) = turned.expect("turned draw");
     assert_eq!(turn, TextDirection::Down);
     assert!(items.iter().any(|x| matches!(x, display::Draw::Glyphs { text, .. } if text.contains("Turned"))), "{items:?}");
@@ -1225,7 +1232,7 @@ fn turned_cell_text_runs_down_the_cell() {
 #[test]
 fn turned_up_cell_text_reads_bottom_to_top() {
     let text = "Bottom to top";
-    let d = turned_table(TextDirection::Up, text, None);
+    let d = turned_table(TextDirection::Up, text, Some(120.0));
     let l = lay(&d);
     let b = turned_lines(&l).turned_bounds().unwrap();
     // Against the cell's left edge; the text starts at the bottom and climbs.
@@ -4686,6 +4693,67 @@ fn a_row_with_less_room_than_its_minimum_height_moves_on_whole() {
 }
 
 #[test]
+fn row_minimum_includes_insets() {
+    use wordcraft_doc::props::LineSpacing;
+    for (top, prefix) in [(0.0, false), (2.0, false), (0.0, true), (2.0, true)] {
+        let mut d = Document::new();
+        d.styles = wordcraft_doc::StyleSheet::empty();
+        d.styles.default_chr = CharProps { font: Some("Source Sans 3".into()), size: Some(10.0), ..Default::default() };
+        d.styles.default_para =
+            ParaProps { line_spacing: Some(LineSpacing::Exactly(14.0)), space_before: Some(0.0), space_after: Some(0.0), ..Default::default() };
+        d.last_section.page_w = 600.0;
+        d.last_section.page_h = 300.0;
+        d.last_section.margin_top = 20.0;
+        d.last_section.margin_bottom = 20.0;
+        let caption_row = if prefix { 2 } else { 1 };
+        let mut table = Table::new(caption_row + 1, 2, 500.0);
+        table.props.style = None;
+        table.props.cell_margins = Some([top, 5.4, 0.0, 5.4]);
+        table.rows[0].props.height = Some(if prefix { 224.0 } else { 240.0 });
+        table.rows[0].props.height_rule = HeightRule::Exact;
+        table.rows[caption_row].props.height = Some(18.45);
+        table.rows[caption_row].props.height_rule = HeightRule::AtLeast;
+        for cell in &mut table.rows[caption_row].cells {
+            cell.blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Caption", Default::default()))];
+        }
+        table.rows[caption_row].cells[1].blocks.push(wordcraft_doc::para_block(Paragraph::new()));
+        if prefix {
+            let mut p = Paragraph::with_text("Keep", Default::default());
+            p.props.keep_next = Some(true);
+            table.rows[1].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+        }
+        d.body = vec![Arc::new(Block::Table(table))];
+        let l = lay(&d);
+        let page = l
+            .pages
+            .iter()
+            .position(|p| {
+                p.items.iter().any(|item| {
+                    matches!(item,
+                        Placed::Lines { path, .. } if path.0 == vec![0, caption_row as u32, 0, 0]
+                    )
+                })
+            })
+            .unwrap();
+        assert_eq!(page, usize::from(top > 0.0), "top inset {top}, prefix {prefix}");
+        if prefix {
+            let prefix_page = l
+                .pages
+                .iter()
+                .position(|p| {
+                    p.items.iter().any(|item| {
+                        matches!(item,
+                            Placed::Lines { path, .. } if path.0 == vec![0, 1, 0, 0]
+                        )
+                    })
+                })
+                .unwrap();
+            assert_eq!(prefix_page, page, "the kept prefix uses the same inset-aware minimum");
+        }
+    }
+}
+
+#[test]
 fn exact_row_hides_partial_lines() {
     use wordcraft_doc::props::HeightRule;
     // An exactly 12 pt row holding three lines: Word shows what fits and cuts the rest at the row's
@@ -7522,6 +7590,88 @@ fn row_nil_overrides_style() {
 }
 
 #[test]
+fn automatic_turned_rows_wrap() {
+    // Word for Mac16.113.2: automatic rows wrap turned text at the horizontal
+    // neighbor's height, even when the resulting columns overflow the cell.
+    for turn in [TextDirection::Up, TextDirection::Down] {
+        for count in [1, 3] {
+            let mut d = Document::new();
+            let mut t = Table::new(1, 2, 160.0);
+            t.props.style = None;
+            t.props.fixed = true;
+            t.props.cell_margins = Some([0.0; 4]);
+            let paragraph = |text| {
+                let mut p = Paragraph::with_text(
+                    text,
+                    wordcraft_doc::CharProps { font: Some("Source Sans 3".into()), size: Some(11.0), ..Default::default() },
+                );
+                p.props = ParaProps {
+                    space_before: Some(0.0),
+                    space_after: Some(0.0),
+                    line_spacing: Some(wordcraft_doc::props::LineSpacing::Exactly(16.0)),
+                    ..Default::default()
+                };
+                wordcraft_doc::para_block(p)
+            };
+            t.rows[0].cells[0].blocks = (0..count).map(|_| paragraph("A")).collect();
+            t.rows[0].cells[1].props.text_direction = turn;
+            t.rows[0].cells[1].blocks = vec![paragraph("Compensation pad type")];
+            d.body = vec![Arc::new(Block::Table(t))];
+            let l = lay(&d);
+            let cell = l.pages[0]
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    Placed::Cell { rect, cell: 1, .. } => Some(rect),
+                    _ => None,
+                })
+                .unwrap();
+            assert!((cell.h - count as f32 * 16.0).abs() < 0.01, "{turn:?}, {count}: {cell:?}");
+            let lines = l.pages[0]
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    Placed::Lines { path, l0, l1, .. } if path.0 == [0, 0, 1, 0] => Some(l1 - l0),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(lines > 1, "turned text wraps at the row height");
+            assert!(l.pages[0].items.iter().any(|it| matches!(it, Placed::Cell { cell: 1, clip: true, .. })), "columns clip to the cell");
+        }
+    }
+}
+
+#[test]
+fn automatic_turned_only_height() {
+    for turn in [TextDirection::Up, TextDirection::Down] {
+        for height in [16.0, 24.0] {
+            let mut d = Document::new();
+            let mut t = Table::new(1, 1, 60.0);
+            t.props.style = None;
+            t.props.fixed = true;
+            t.props.cell_margins = Some([0.0; 4]);
+            let mut p = Paragraph::with_text("Compensation pad type", Default::default());
+            p.props.space_before = Some(0.0);
+            p.props.space_after = Some(0.0);
+            p.props.line_spacing = Some(wordcraft_doc::props::LineSpacing::Exactly(height));
+            t.rows[0].cells[0].props.text_direction = turn;
+            t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+            d.body = vec![Arc::new(Block::Table(t))];
+            let l = lay(&d);
+            let cell = l.pages[0]
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    Placed::Cell { rect, clip: true, .. } => Some(rect),
+                    _ => None,
+                })
+                .unwrap();
+            assert!((cell.h - height).abs() < 0.01, "{turn:?}, {height}: {cell:?}");
+        }
+    }
+}
+
+#[test]
 fn turned_text_uses_min_height() {
     for turn in [TextDirection::Up, TextDirection::Down] {
         let mut d = Document::from_text("After");
@@ -7554,7 +7704,7 @@ fn turned_text_uses_min_height() {
 }
 
 #[test]
-fn narrow_turned_cell_grows() {
+fn narrow_turned_cell_wraps() {
     let mut d = Document::from_text("After");
     let mut t = Table::new(1, 1, 20.0);
     t.props.style = None;
@@ -7572,7 +7722,8 @@ fn narrow_turned_cell_grows() {
             _ => None,
         })
         .unwrap();
-    assert!(h > 80.0, "the text must fit across the narrow cell: {h}");
+    assert!((h - 20.0).abs() < 0.01, "overflowing columns do not grow a minimum-height row: {h}");
+    assert!(l.pages[0].items.iter().any(|it| matches!(it, Placed::Cell { clip: true, .. })));
 }
 
 /// Word and Adobe: a behind-text frame participates in a cell's vertical alignment,
@@ -9234,4 +9385,116 @@ fn continued_cell_float_stack() {
             cell_lines.iter().filter(|(_, path, ..)| path.0[3] == paragraph as u32).flat_map(|(_, _, first, last, _, _)| *first..*last).collect();
         assert_eq!(seen, (0..count).collect::<Vec<_>>(), "each line of cell paragraph {paragraph} appears once");
     }
+}
+
+fn cell_break_doc(text: &str) -> Document {
+    use wordcraft_doc::props::{HeightRule, LineSpacing, VAlign};
+    let mut d = Document::new();
+    d.last_section.page_w = 344.0;
+    d.last_section.margin_left = 72.0;
+    d.last_section.margin_right = 72.0;
+    let mut p = Paragraph::with_text(text, CharProps { size: Some(11.0), ..Default::default() });
+    p.props.line_spacing = Some(LineSpacing::Exactly(12.0));
+    p.props.space_before = Some(3.0);
+    p.props.space_after = Some(3.0);
+    let prefix = text.bytes().take_while(|&c| c == wordcraft_doc::para::PAGE_BREAK as u8 || c == b'\n').count();
+    p.format(0, prefix, &|props| props.size = Some(3.0)).unwrap();
+    let mut t = Table::new(1, 1, 200.0);
+    t.props.cell_margins = Some([0.0; 4]);
+    t.rows[0].props.height = Some(20.0);
+    t.rows[0].props.height_rule = HeightRule::AtLeast;
+    t.rows[0].cells[0].props.valign = Some(VAlign::Center);
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+    d.body = vec![Arc::new(Block::Table(t))];
+    d
+}
+
+#[test]
+fn cell_breaks_take_no_height() {
+    let height = |d: &Document| {
+        lay(d).pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Cell { rect, .. } => Some(rect.h),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let plain = height(&cell_break_doc("Heading"));
+    for text in ["\u{000c}Heading", "\u{000c}\u{000c}\u{000c}Heading", "Head\u{000c}ing", "Heading\u{000c}\u{000c}\u{000c}", "é\u{000c}界"] {
+        let d = cell_break_doc(text);
+        assert_eq!(height(&d), plain, "cell page breaks take no height: {text:?}");
+        let l = lay(&d);
+        let para = l.pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Lines { para, .. } => Some(para),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(para.lines.len(), 1);
+        assert!(!para.clusters.iter().any(|c| c.kind == para::ClKind::PageBreak));
+        for c in &para.clusters {
+            assert!(text.is_char_boundary(c.start) && text.is_char_boundary(c.end));
+            if text.get(c.start..c.end) == Some("\u{000c}") {
+                assert_eq!(c.kind, para::ClKind::Marker);
+            }
+        }
+        let starts: Vec<_> = para.clusters.iter().filter(|c| c.kind == para::ClKind::Text).map(|c| c.start).collect();
+        let expected: Vec<_> = text.char_indices().filter_map(|(i, c)| (c != '\u{000c}').then_some(i)).collect();
+        assert_eq!(starts, expected, "visible clusters retain source offsets");
+    }
+    assert!(height(&cell_break_doc("\n\n\nHeading")) > plain, "ordinary line breaks retain their lines");
+}
+
+#[test]
+fn cell_break_cache_is_scoped() {
+    let mut d = cell_break_doc("\u{000c}Heading");
+    let Block::Table(t) = &*d.body[0] else { panic!("table") };
+    let p = t.rows[0].cells[0].blocks[0].clone();
+    d.body.push(p);
+    assert_eq!(lay(&d).pages.len(), 2, "a reused paragraph's body page break still starts a page");
+}
+
+#[test]
+fn cell_breaks_with_bookmarks() {
+    for offset in [0, 1, 3] {
+        let mut d = cell_break_doc("\u{000c}\u{000c}\u{000c}Heading");
+        let Block::Table(t) = Arc::make_mut(&mut d.body[0]) else { panic!("table") };
+        let Block::Para(p) = Arc::make_mut(&mut t.rows[0].cells[0].blocks[0]) else { panic!("paragraph") };
+        p.insert_object(offset, InlineObject::BookmarkStart { name: "control".into() }, &Default::default()).unwrap();
+        let original = p.clone();
+        let l = lay(&d);
+        let para = l.pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Lines { para, .. } => Some(para),
+                _ => None,
+            })
+            .unwrap();
+        assert!(!para.clusters.iter().any(|c| c.kind == para::ClKind::PageBreak));
+        assert_eq!(para.lines.len(), 1);
+        assert_eq!(para.clusters.iter().find(|c| c.kind == para::ClKind::Text).unwrap().start, 6);
+        let Block::Table(t) = &*d.body[0] else { panic!("table") };
+        let Block::Para(p) = &*t.rows[0].cells[0].blocks[0] else { panic!("paragraph") };
+        assert_eq!(p, &original, "layout preserves bookmark objects and source bytes");
+    }
+}
+
+#[test]
+fn cell_break_only_is_marker() {
+    let d = cell_break_doc("\u{000c}");
+    let l = lay(&d);
+    let para = l.pages[0]
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Placed::Lines { para, .. } => Some(para),
+            _ => None,
+        })
+        .unwrap();
+    assert!(para.clusters.iter().all(|c| c.kind == para::ClKind::Marker));
 }

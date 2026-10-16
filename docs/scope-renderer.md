@@ -1,7 +1,7 @@
 # Scope renderer snapshot
 
 Upstream base: `eae242176108d328c5dd81fbc10370c51ab90706`.
-Previous Scope snapshot: `6bd328ca2a078809d38b17ccb7aa8623c1e1e98e`.
+Previous Scope snapshot: `d287267a498be2d08b744e0635d54b977708a758`.
 
 This integrates upstream and the parity contributions below. It is an alpha
 snapshot, not an upstream release or a claim of complete Word parity. Rust 1.95
@@ -67,6 +67,11 @@ commits without changing the integrated rules. Fragment dependencies are
 | [#2578](https://github.com/storytold/wordcraft/pull/2578) | `9a75b3e299e91e204d7fa21ed88ddc64e5f9c246` |
 | [#2579](https://github.com/storytold/wordcraft/pull/2579) | `af97aa563e8649f1ff2509e327707068c16c0c69` |
 | [#2582](https://github.com/storytold/wordcraft/pull/2582) | `648e748bfc6c3a5dcd66e8384e448f2126a8bc03` |
+| [#2574](https://github.com/storytold/wordcraft/pull/2574) | `649bda389407db694b78a6f66f72fd2082454d27` |
+| [#2585](https://github.com/storytold/wordcraft/pull/2585) | `e33be9619f861963fce46d7d155e0a5a2a0215f7` |
+| [#2590](https://github.com/storytold/wordcraft/pull/2590) | `8ef20f8e8365a30073406582a47f1fb788100133` |
+
+Caption minimum-inset follow-up is prepared on the [fork branch](https://github.com/finwarman/wordcraft/tree/codex/row-minimum-insets) at `90abb49f`. Upstream submission waits for #2465 and #2494; it is not merge-ready. This snapshot includes the tested integration rule.
 
 ## Measured limits
 
@@ -83,13 +88,19 @@ field refresh globally.
 
 Page-colour header clearance aligns EEMUA cover and appendix placement; appendix
 headings now use the same single line as native Word. Photo/frame positions and
-caption centres match the measured native pages. Two caption row boundaries
-still differ. The nozzle title row is taller; a separate cell-page-break fix is
-held because it exposes SGS pagination drift. Automatic vertical-row wrapping
-also remains under investigation.
+caption centres match the measured native pages. Inset-aware row minimums move
+both remaining caption rows onto Word's pages 24 and 42. Ignoring page breaks in
+cells removes the extra nozzle title-row line. Reserving footer table strokes
+keeps body content clear and preserves all ten native page counts.
 
-Rosen black-circle fallback corrects accumulated body reflow. A separate page56
-wrapping difference remains. The final table continuation has a measured0.42pt
+Automatic turned rows now wrap at their line-height contribution and clip
+columns that overflow the cell, as the native controls do. Fractional row-height
+residuals reach 0.75 pt; a bare-table control retains a 5.4 pt alignment difference.
+The nozzle table retains small height/width differences; row-end and
+continuation border fitting remain under investigation.
+
+Rosen black-circle fallback corrects accumulated body reflow. A separate page 56
+wrapping difference and TUV notes wrapping remain under investigation. The final table continuation has a measured 0.42 pt
 border difference. Footer typography differs where native Word substitutes an
 installed Linux font. Pattern fills currently support ltVert, with freeform,
 soft-edge and rotated-phase limits documented in file-format-parity.md.

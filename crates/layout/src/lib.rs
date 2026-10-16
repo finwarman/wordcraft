@@ -270,8 +270,7 @@ pub enum Placed {
         row: usize,
         cell: usize,
         story: StoryRef,
-        /// Its row is exactly as tall as it says and the content is taller: what runs past the
-        /// cell is cut off when drawn, as in Word.
+        /// Overflow in an exact-height or turned cell is cut off at its edges when drawn.
         clip: bool,
     },
     /// The area of a picture, shape or text box, for hit testing, selection handles and dragging
@@ -1016,9 +1015,10 @@ fn layout_box(
     // Deletions in balloons leave the body's text only: a header, note or text box keeps its own
     // inline (restored for the story around this box when it's done).
     let outer_hide = std::mem::replace(&mut ctx.hide_deleted, ctx.opts.hides_deleted(story));
+    let empty_cell = para::CellText::default();
     let (table, in_cell) = match context {
         BoxContext::Other => (None, false),
-        BoxContext::Cell(table) => (table, true),
+        BoxContext::Cell(table) => (Some(table.unwrap_or(&empty_cell)), true),
     };
     let story_root = prefix.is_empty()
         && !in_cell
@@ -2758,15 +2758,47 @@ fn foot_top_for(ctx: &mut Ctx, sect: &SectionProps, footer: Option<u32>) -> f32 
     let boxes = std::mem::take(&mut ctx.boxes);
     let chains = std::mem::take(&mut ctx.chains);
     let fields = ctx.fields.clone();
-    let areas =
-        again(ctx, 0, |ctx| layout_box(ctx, StoryRef::Part(id), &blocks, &[], sect.text_width(), BoxContext::Other, 0, Some(frame))).exclusions;
+    let laid = again(ctx, 0, |ctx| layout_box(ctx, StoryRef::Part(id), &blocks, &[], sect.text_width(), BoxContext::Other, 0, Some(frame)));
     ctx.counters = counters;
     ctx.boxes = boxes;
     ctx.chains = chains;
     ctx.fields = fields;
     ctx.track_totals = track;
+    // Flow-table strokes extend above their cell boxes. Floating decorations keep their wrap rules.
+    let flow_cells: Vec<_> = laid
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Placed::Cell { rect, table, story: own, .. }
+                if *own == StoryRef::Part(id)
+                    && table.0.len() == 1
+                    && table
+                        .0
+                        .first()
+                        .and_then(|i| blocks.get(*i as usize))
+                        .is_some_and(|b| matches!(&**b, Block::Table(t) if t.props.float.is_none())) =>
+            {
+                Some(rect)
+            }
+            _ => None,
+        })
+        .collect();
+    let border_top = laid
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Placed::Rule { x0, x1, y0, y1, border }
+                if border.is_visible()
+                    && (y0 - y1).abs() < 0.01
+                    && flow_cells.iter().any(|r| (r.y - y0).abs() < 0.01 && *x0 <= r.x + 0.01 && *x1 >= r.right() - 0.01) =>
+            {
+                Some(top + y0 - border.width / 2.0)
+            }
+            _ => None,
+        })
+        .fold(top, f32::min);
     // A positioned footer band reserves space where it is drawn, above the footer paragraph.
-    areas.iter().filter(|(r, tb, ..)| *tb && r.bottom() + top > sect.margin_top).map(|(r, ..)| top + r.y).fold(top, f32::min)
+    laid.exclusions.iter().filter(|(r, tb, ..)| *tb && r.bottom() + top > sect.margin_top).map(|(r, ..)| top + r.y).fold(border_top, f32::min)
 }
 
 /// Where a box of laid-out items sits on its page, for floating objects positioned relative to
@@ -4039,7 +4071,7 @@ fn row_can_start(row: &wordcraft_doc::Row, laid: &table::RowLayout, room: f32, p
     if row.props.header || row.props.cant_split || (row.props.height_rule == HeightRule::Exact && row.props.height.is_some_and(|h| h > 0.0)) {
         return false;
     }
-    if row.props.height_rule == HeightRule::AtLeast && row.props.height.is_some_and(|h| h > room + 0.01 && h <= page_height + 0.01) {
+    if laid.min_height > room + 0.01 && laid.min_height <= page_height + 0.01 {
         return false;
     }
     table::split_row(laid, room).is_some()
@@ -4217,11 +4249,7 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
             // Measured in Word: a row with an at-least height doesn't split where less than that
             // height is left; it starts the next page whole.
             let room = pb.bottom - pb.y;
-            let short_of_min = rest.is_none()
-                && t.rows.get(ri).is_some_and(|r| {
-                    r.props.height_rule == wordcraft_doc::props::HeightRule::AtLeast
-                        && r.props.height.is_some_and(|h| h > room + 0.01 && h <= pb.bottom - body_top + 0.01)
-                });
+            let short_of_min = rest.is_none() && cur.min_height > room + 0.01 && cur.min_height <= pb.bottom - body_top + 0.01;
             let split = if splittable && !short_of_min && !defer_kept { table::split_row(cur, room) } else { None };
             match split {
                 Some((a, b)) => {

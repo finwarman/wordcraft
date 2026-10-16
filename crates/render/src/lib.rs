@@ -1222,6 +1222,9 @@ mod tests {
         let ink = |dir: TextDirection| {
             let mut d = Document::from_text("before\nafter");
             let mut t = wordcraft_doc::Table::new(1, 2, 400.0);
+            // Keep this orientation check independent of automatic row height.
+            t.rows[0].props.height = Some(160.0);
+            t.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::Exact;
             t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("WWWWWWWWWWWW", Default::default()))];
             t.rows[0].cells[0].props.text_direction = dir;
             d.insert_block(wordcraft_doc::StoryRef::Body, &wordcraft_doc::Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();

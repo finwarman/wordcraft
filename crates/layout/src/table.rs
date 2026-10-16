@@ -85,6 +85,8 @@ struct Turned {
     ci: usize,
     /// Top margin plus top border band.
     top: f32,
+    /// Top and bottom margins and border bands, independent of text direction.
+    insets: f32,
 }
 
 /// How long the lines laid out in `items` are without the room they didn't use: the length
@@ -567,15 +569,11 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             } else if turn.is_turned() {
                 collapsed = false;
                 // Turned text: its lines run along the cell's height. An exact row height sets
-                // their length. A minimum height wraps text when it fits across the column;
-                // otherwise the row grows to fit its unwrapped text.
+                // their length. A minimum height also wraps text; overflowing columns are
+                // clipped rather than making the row grow to the string's advance.
                 let snap = (ctx.counters.clone(), ctx.eq_count);
                 let preferred = row.props.height.filter(|h| h.is_finite() && *h > 0.0).map(|h| h.clamp(4.0, TURNED_LIMIT));
-                let wrapped = preferred.filter(|_| row.props.height_rule != HeightRule::Exact).filter(|h| {
-                    let probe = layout_box(ctx, story, &cell.blocks, &cpath, *h, super::BoxContext::Cell(text), depth, None);
-                    (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
-                    probe.height.max(probe.floats_bottom) <= cw + 0.01
-                });
+                let wrapped = preferred.filter(|_| row.props.height_rule != HeightRule::Exact);
                 let len = match (row.props.height, row.props.height_rule, wrapped) {
                     (Some(h), HeightRule::Exact, _) if h > 0.0 => (h + row_bottom - insets).clamp(4.0, TURNED_LIMIT),
                     (_, _, Some(h)) => h,
@@ -588,8 +586,11 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 let BoxLayout { items, foreground, height, floats_bottom, .. } =
                     layout_box(ctx, story, &cell.blocks, &cpath, len, BoxContext::Cell(text), depth, None);
                 let across = height.max(floats_bottom);
-                turned = Some(Turned { turn, len, across, snap, region, ci, top: margins[0] + band_t });
-                (items, foreground, len)
+                turned = Some(Turned { turn, len, across, snap, region, ci, top: margins[0] + band_t, insets });
+                // Automatic rows take the unturned line height, not the string's advance.
+                // The second pass wraps at the final row height, even if columns overflow.
+                let h = if preferred.is_none() { across } else { len };
+                (items, foreground, h)
             } else {
                 let BoxLayout { mut items, foreground, mut height, floats_bottom, last_top, .. } =
                     layout_box(ctx, story, &cell.blocks, &cpath, cw, BoxContext::Cell(text), depth, None);
@@ -727,11 +728,12 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             let end = (c.vmerge != VMerge::Continue && c.turned.is_none()).then_some(c.end + dy);
             let mut cell_items = c.items;
             let mut cell_foreground = c.foreground;
+            let turned_clip = c.turned.is_some();
             if let Some(tn) = c.turned {
                 dy = 0.0;
                 let m = c.margins;
                 // The lines run the cell's whole height (laid out again if the row grew).
-                let len = (span_h - (c.h - tn.len)).clamp(4.0, TURNED_LIMIT);
+                let len = (span_h - tn.insets).clamp(4.0, TURNED_LIMIT);
                 let mut across = tn.across;
                 if (len - tn.len).abs() > 0.01
                     && let Some(cell) = t.rows.get(ri).and_then(|r| r.cells.get(tn.ci))
@@ -830,7 +832,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 row: ri,
                 cell: ci,
                 story,
-                clip: exact && c.h > span_h + 0.01,
+                clip: turned_clip || exact && c.h > span_h + 0.01,
             });
             let top = c.margins[0] + c.borders.top.filter(Border::is_visible).map_or(0.0, |b| b.width.clamp(0.0, 12.0));
             parts.push(CellPart { top, items: first..items.len(), end, center, merge });
