@@ -1,5 +1,5 @@
 //! Connectors and the shape properties beyond fill and outline: a shape's drawing id, its text
-//! warp, and a connector's ends.
+//! warp, a rounded rectangle's corner, and a connector's ends.
 //!
 //! A connector (DrawingML `straightConnector1`, `bentConnector3`, `curvedConnector3`) is a line
 //! from its frame's top-left to its bottom-right corner (flips swap the corners). Each end may be
@@ -34,6 +34,13 @@ pub struct ShapeExtra {
     pub arrow_start: bool,
     #[serde(skip_serializing_if = "is_false")]
     pub arrow_end: bool,
+    /// A rounded rectangle's corner radius (`roundRect`'s `adj`, ECMA-376 §20.1.10.56): in
+    /// 100000ths of the shorter side, at most [`MAX_CORNER`]; `None` draws [`DEFAULT_CORNER`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corner: Option<u32>,
+    /// The fill's transparency, percent (DrawingML's `a:alpha` is its opacity); 0 = opaque.
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub fill_transparency: f32,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -42,11 +49,31 @@ fn is_zero(v: &u32) -> bool {
 fn is_false(v: &bool) -> bool {
     !*v
 }
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
+}
 
 impl ShapeExtra {
     pub fn is_empty(&self) -> bool {
         *self == ShapeExtra::default()
     }
+    /// The fill's opacity, 0–1.
+    pub fn fill_opacity(&self) -> f32 {
+        if self.fill_transparency.is_finite() { (1.0 - self.fill_transparency / 100.0).clamp(0.0, 1.0) } else { 1.0 }
+    }
+}
+
+/// The largest rounded-rectangle corner: half the shorter side, which makes its ends round.
+pub const MAX_CORNER: u32 = 50_000;
+
+/// A rounded rectangle's corner radius without its own: 16% of the shorter side.
+pub const DEFAULT_CORNER: f32 = 0.16;
+
+/// The corner radius, in points, of a `w` × `h` rounded rectangle with `corner` (see
+/// [`ShapeExtra::corner`]).
+pub fn corner_radius(corner: Option<u32>, w: f32, h: f32) -> f32 {
+    let side = wordcraft_geom::finite(w).min(wordcraft_geom::finite(h)).max(0.0);
+    side * corner.map_or(DEFAULT_CORNER, |c| c.min(MAX_CORNER) as f32 / 100_000.0)
 }
 
 /// One glued end of a connector: the drawing id of the shape and its connection site index.
@@ -83,6 +110,8 @@ pub fn sites(kind: ShapeKind, w: f32, h: f32) -> Vec<(f32, f32)> {
             vec![(cx, 0.0), (cx - dx, cy - dy), (0.0, cy), (cx - dx, cy + dy), (cx, h), (cx + dx, cy + dy), (w, cy), (cx + dx, cy - dy)]
         }
         ShapeKind::Triangle => vec![(cx, 0.0), (cx / 2.0, cy), (0.0, h), (cx, h), (w, h), (cx + cx / 2.0, cy)],
+        // The corners, the legs' midpoints and the hypotenuse's.
+        ShapeKind::RightTriangle => vec![(0.0, 0.0), (0.0, cy), (0.0, h), (cx, h), (w, h), (cx, cy)],
         ShapeKind::Line | ShapeKind::StraightConnector | ShapeKind::ElbowConnector | ShapeKind::CurvedConnector => vec![(0.0, 0.0), (w, h)],
         _ => vec![(cx, 0.0), (0.0, cy), (cx, h), (w, cy)],
     }
@@ -235,6 +264,18 @@ mod tests {
             let f = route(s, e);
             assert_eq!(ends(f.x, f.y, f.w, f.h, f.flip_h, f.flip_v), (s, e));
         }
+    }
+
+    #[test]
+    fn corner_radius_follows_the_shorter_side() {
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(near(corner_radius(None, 200.0, 100.0), 16.0));
+        assert!(near(corner_radius(Some(0), 200.0, 100.0), 0.0));
+        assert!(near(corner_radius(Some(3_565), 100.0, 200.0), 3.565));
+        assert!(near(corner_radius(Some(MAX_CORNER), 200.0, 100.0), 50.0));
+        assert!(near(corner_radius(Some(u32::MAX), 200.0, 100.0), 50.0), "capped at a half-circle end");
+        assert!(near(corner_radius(Some(10_000), f32::NAN, 100.0), 0.0));
+        assert!(near(corner_radius(Some(10_000), -5.0, 100.0), 0.0));
     }
 
     #[test]
