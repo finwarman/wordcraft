@@ -1,7 +1,7 @@
 # Scope renderer snapshot
 
 Upstream base: `eae242176108d328c5dd81fbc10370c51ab90706`.
-Previous Scope snapshot: `44934d06375ce4a43f5e1bdc5c20c04a0f1c100e`.
+Previous Scope snapshot: `310f7876bc32c1250da9e263d44a59771c53461a`.
 
 This integrates upstream and the parity contributions below. It is an alpha
 snapshot, not an upstream release or a claim of complete Word parity. Rust 1.95
@@ -59,6 +59,11 @@ commits without changing the integrated rules. Fragment dependencies are
 | [#2495](https://github.com/storytold/wordcraft/pull/2495) | `77c4906f15fb25fd755c451cad0030788f259806` |
 | [#2498](https://github.com/storytold/wordcraft/pull/2498) | `a9bbdfbe8e5139fcc1c964a15370d444e99b6366` |
 | [#2500](https://github.com/storytold/wordcraft/pull/2500) | `09f065c11f98f3c5c234beec84e17805842749fb` |
+| [#2516](https://github.com/storytold/wordcraft/pull/2516) | `1781d1a8c7d9ca0e0166f18cd349e28f6635bb3e` |
+| [#2519](https://github.com/storytold/wordcraft/pull/2519) | `d42b9627bec5f155e0bc333067a7e73aca6278c0` |
+| [#2521](https://github.com/storytold/wordcraft/pull/2521) | `cf62ad5520e21ecbc436c4b8cddc2dadd4896d38` |
+| [#2524](https://github.com/storytold/wordcraft/pull/2524) | `c67478c40c350a6b2d5e28d2bd8fea5f9da14464` |
+| [#2533](https://github.com/storytold/wordcraft/pull/2533) | `6e6305a1ed8572e4ecbac701be3b0eef8a39128d` |
 
 ## Measured limits
 
@@ -77,8 +82,8 @@ field refresh globally.
 
 Remaining observations: EEMUA appendix headings are about 18 pt lower and use
 one line in native Word, while this snapshot and Adobe use two lines. The rule
-is still under investigation. A Rosen final table continuation differs by about
-1.8 pt. Neither is hidden by the page-count checks.
+is still under investigation. A Rosen final table continuation retains a measured
+0.42 pt border difference after resolving its cell insets. Neither is hidden by the page-count checks.
 
 Local gates encounter the reproduced upstream justified-line and two
 colour-emoji environment failures. Those tests are unchanged. No customer

@@ -1082,6 +1082,17 @@ fn symbol_font_bullet_without_the_font_draws_a_bullet() {
 }
 
 #[test]
+fn pcl6_symbol_draws_greater_equal() {
+    let mut d = Document::from_text("\u{F0B3}");
+    d.format_range(&Pos::body(0, 0), &Pos::body(0, 3), &|c| c.font = Some("Symbol (PCL6)".into())).unwrap();
+    let l = lay(&d);
+    let items = display::page_display(&d, &l.pages[0], &display::DisplayOptions::default());
+    let text: String = items.iter().filter_map(|i| if let display::Draw::Glyphs { text, .. } = i { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(text, "≥");
+    assert_eq!(d.plain_text(StoryRef::Body), "\u{F0B3}");
+}
+
+#[test]
 fn wingdings_text_draws_and_reads_as_its_unicode_symbols() {
     // Word stores symbol-font text both ways: plain codes ("J" = smiley) and private-use codes
     // (U+F0FC = check mark, what `w:sym` writes).
@@ -2384,9 +2395,9 @@ fn split_row_cells_each_continue_at_the_top() {
     let cells: Vec<Rect> = l.pages[1].items.iter().filter_map(|it| if let Placed::Cell { rect, .. } = it { Some(*rect) } else { None }).collect();
     assert_eq!(cells.len(), 2);
     for c in &cells {
-        assert!((c.y - (tops[0].2 - 2.0)).abs() < 0.01, "{cells:?} {tops:?}");
-        // Two lines, the 2pt kept of the top margin and the 4pt bottom margin (and border band).
-        assert!(c.h >= 2.0 * line + 6.0 - 0.05 && c.h <= 2.0 * line + 7.0, "{} vs {}", c.h, 2.0 * line + 6.0);
+        assert!((c.y - (tops[0].2 - 0.5)).abs() < 0.01, "{cells:?} {tops:?}");
+        // Two lines, a 0.5pt top border and the 4pt bottom margin plus its border band.
+        assert!(c.h >= 2.0 * line + 5.0 - 0.05 && c.h <= 2.0 * line + 5.0 + 0.05, "{} vs {}", c.h, 2.0 * line + 5.0);
     }
 }
 
@@ -2511,11 +2522,12 @@ fn split_row_rejects_a_hostile_cut() {
     };
     let line = |y: f32| Placed::Lines { story, path: path.clone(), para: para.clone(), l0: 0, l1: 1, x: 0.0, y, turn: TextDirection::Horizontal };
     let row = |height: f32, bottom: f32| RowLayout {
+        foreground: Vec::new(),
         min_height: 0.0,
         height,
         items: vec![line(0.0), line(150.0)],
         bottom,
-        cells: vec![CellPart { merge: None, center: None, items: 0..2, end: Some(170.0) }],
+        cells: vec![CellPart { top: 2.0, merge: None, center: None, items: 0..2, end: Some(170.0) }],
     };
     for cut in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0, 200.0] {
         assert!(split_row(&row(200.0, 4.0), cut).is_none(), "{cut}");
@@ -2529,8 +2541,8 @@ fn split_row_rejects_a_hostile_cut() {
     }
     // Cell ranges past the items are ignored.
     let mut r = row(200.0, 4.0);
-    r.cells.push(CellPart { merge: None, center: None, items: 5..9, end: None });
-    r.cells.push(CellPart { merge: None, center: None, items: std::ops::Range { start: 2, end: 1 }, end: None });
+    r.cells.push(CellPart { top: 2.0, merge: None, center: None, items: 5..9, end: None });
+    r.cells.push(CellPart { top: 2.0, merge: None, center: None, items: std::ops::Range { start: 2, end: 1 }, end: None });
     assert!(split_row(&r, 100.0).is_some());
 }
 
@@ -4691,11 +4703,12 @@ fn a_split_row_moves_shading_below_the_cut_with_it() {
     let fill = |y: f32, h: f32| Placed::Fill { rect: wordcraft_geom::Rect::new(0.0, y, 100.0, h), color: wordcraft_doc::props::Rgb(200, 0, 0) };
     // The row's own shading (from its top) and a nested cell's shading starting below the cut.
     let row = RowLayout {
+        foreground: Vec::new(),
         min_height: 0.0,
         height: 200.0,
         items: vec![line_row(0.0), line_row(150.0), fill(0.0, 200.0), fill(150.0, 50.0)],
         bottom: 0.0,
-        cells: vec![CellPart { merge: None, center: None, items: 0..4, end: None }],
+        cells: vec![CellPart { top: 2.0, merge: None, center: None, items: 0..4, end: None }],
     };
     let (a, b) = split_row(&row, 100.0).expect("splits");
     let fills = |r: &RowLayout| {
@@ -8398,6 +8411,10 @@ fn split_merge_closes_pages() {
                 _ => None,
             })
             .unwrap();
+        if page == 3 {
+            // Twenty-seven exact10pt lines, with both existing0.5pt border bands.
+            assert!((right.h - 271.0).abs() < 0.05, "{right:?}");
+        }
         for edge in [right.y, right.bottom()] {
             assert!(
                 pg.items.iter().any(|it| matches!(it,
@@ -8729,5 +8746,404 @@ fn header_margin_tracks_body_top() {
                 page.body
             );
         }
+    }
+}
+
+#[test]
+fn foreground_survives_later_text() {
+    use wordcraft_doc::para::{Anchor, Float, ShapeKind};
+    for wrap in [Wrap::InFrontOfText, Wrap::Square, Wrap::BehindText] {
+        let mut d = Document::from_text("\nLater body text");
+        d.insert_object(&Pos::body(1, 0), fit_image(Default::default()), &Default::default()).unwrap();
+        let id = text_box(
+            &mut d,
+            0,
+            "Foreground label",
+            180.0,
+            80.0,
+            Float { wrap, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 90.0, ..Default::default() },
+        );
+        let l = lay(&d);
+        let items = &l.pages[0].items;
+        let later = items.iter().position(|it| matches!(it, Placed::Lines { story: StoryRef::Body, path, .. } if path.0 == [1])).unwrap();
+        let frame = items.iter().position(|it| matches!(it, Placed::Shape { kind: ShapeKind::TextBox, .. })).unwrap();
+        let label = items.iter().position(|it| matches!(it, Placed::Lines { story: StoryRef::Part(part), .. } if *part == id)).unwrap();
+        if wrap == Wrap::BehindText {
+            assert!(frame < label && label < later, "behind-text box stays below later content");
+        } else {
+            assert!(later < frame && frame < label, "foreground frame and label stay above later content: {wrap:?}");
+        }
+        assert_eq!(l.index[&(StoryRef::Body, Path::top(1))][0].1, later);
+        let rect = box_rect(&l, id);
+        assert!((rect.x - 72.0).abs() < 0.01 && (rect.y - 90.0).abs() < 0.01, "paint order must not change the anchor");
+    }
+}
+
+#[test]
+fn foreground_keeps_z_order() {
+    use wordcraft_doc::para::{Anchor, Float};
+    let mut d = Document::from_text("\nLater content");
+    let float = |z| Float { wrap: Wrap::InFrontOfText, z_order: z, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 90.0, ..Default::default() };
+    let low = text_box(&mut d, 0, "Lower", 180.0, 80.0, float(2));
+    // Inserted at the same offset: the higher layer precedes the lower one in text order.
+    let high = text_box(&mut d, 0, "Higher", 180.0, 80.0, float(7));
+    let behind = text_box(&mut d, 0, "Behind", 180.0, 80.0, Float { wrap: Wrap::BehindText, ..float(9) });
+    let l = lay(&d);
+    let layers: Vec<_> = l.pages[0]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Object { text_box: Some(id), .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(layers, [behind, low, high]);
+    for id in [low, high] {
+        let marker = l.pages[0].items.iter().position(|it| matches!(it, Placed::Object { text_box: Some(part), .. } if *part == id)).unwrap();
+        assert!(matches!(&l.pages[0].items[marker + 1], Placed::Lines { story: StoryRef::Part(part), .. } if *part == id));
+    }
+}
+
+#[test]
+fn foreground_in_header_story() {
+    use wordcraft_doc::para::{Anchor, Float};
+    let mut d = Document::from_text("\nLater header text");
+    let id = text_box(
+        &mut d,
+        0,
+        "Header overlay",
+        180.0,
+        80.0,
+        Float { wrap: Wrap::InFrontOfText, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 30.0, ..Default::default() },
+    );
+    let blocks = std::mem::take(&mut d.body);
+    let header = d.add_part(wordcraft_doc::PartKind::Header, blocks);
+    d.last_section.headers.default = Some(header);
+    d.body = Document::from_text("Body").body;
+    let l = lay(&d);
+    let items = &l.pages[0].header;
+    let later = items
+        .iter()
+        .position(|it| matches!(it, Placed::Lines { story: StoryRef::Part(part), path, .. } if *part == header && path.0 == [1]))
+        .unwrap();
+    let overlay = items.iter().position(|it| matches!(it, Placed::Object { text_box: Some(part), .. } if *part == id)).unwrap();
+    assert!(later < overlay);
+}
+
+#[test]
+fn foreground_respects_stories() {
+    use wordcraft_doc::para::{Anchor, Float, ShapeKind};
+    use wordcraft_doc::props::Rgb;
+    let mut d = Document::from_text("");
+    let header = d.add_part(wordcraft_doc::PartKind::Header, Document::from_text("").body);
+    d.last_section.headers.default = Some(header);
+    let logo = InlineObject::Shape {
+        kind: ShapeKind::Rectangle,
+        w: 120.0,
+        h: 80.0,
+        fill: Some(Rgb(200, 30, 30)),
+        stroke: None,
+        stroke_width: 0.0,
+        story: None,
+        freeform: None,
+        effects: Default::default(),
+        extra: Default::default(),
+        float: Float {
+            wrap: Wrap::InFrontOfText,
+            z_order: u32::MAX,
+            h_rel: Anchor::Page,
+            v_rel: Anchor::Page,
+            x: 72.0,
+            y: 72.0,
+            ..Default::default()
+        },
+    };
+    d.insert_object(&Pos { story: StoryRef::Part(header), path: Path::top(0), off: 0 }, logo, &Default::default()).unwrap();
+    let mask = InlineObject::Image {
+        media: "original-body-mask".into(),
+        w: 160.0,
+        h: 100.0,
+        alt: String::new(),
+        float: Default::default(),
+        crop: [0.0; 4],
+        ole: None,
+    };
+    d.insert_object(&Pos::body(0, 0), mask, &Default::default()).unwrap();
+    let l = lay(&d);
+    let draws = display::page_display(&d, &l.pages[0], &display::DisplayOptions::default());
+    let logo = draws.iter().position(|it| matches!(it, display::Draw::Shape { fill: Some(Rgb(200, 30, 30)), .. })).unwrap();
+    let mask = draws.iter().position(|it| matches!(it, display::Draw::Image { media, .. } if media == "original-body-mask")).unwrap();
+    assert!(logo < mask, "header foreground remains below body masks, even at maximum relativeHeight");
+}
+
+/// Continued text keeps the cell's border inset, as on its first fragment.
+#[test]
+fn split_cell_reuses_top_inset() {
+    use wordcraft_doc::props::{HeightRule, LineSpacing};
+    for (width, margin) in [(0.0, 0.0), (0.5, 0.0), (2.0, 0.0), (0.0, 6.0), (0.5, 6.0), (2.0, 6.0)] {
+        for spacing in [LineSpacing::Exactly(10.0), LineSpacing::AtLeast(10.0)] {
+            let mut d = Document::new();
+            d.last_section.page_h = 360.0;
+            d.last_section.margin_top = 36.0;
+            d.last_section.margin_bottom = 36.0;
+            let mut t = Table::new(1, 1, 300.0);
+            t.rows[0].cells[0].props.margins = Some([margin, 5.4, 0.0, 5.4]);
+            let edge = Some(Border { width, style: if width > 0.0 { BorderStyle::Single } else { BorderStyle::None }, ..Default::default() });
+            t.props.borders = Some(Borders { top: edge, bottom: edge, left: edge, right: edge, between: edge, inside_v: edge });
+            t.rows[0].props.height = Some(100.0);
+            t.rows[0].props.height_rule = HeightRule::AtLeast;
+            let mut p = Paragraph::with_text(
+                &["Line"; 35].join("\n"),
+                wordcraft_doc::CharProps { font: Some("Arial".into()), size: Some(9.0), ..Default::default() },
+            );
+            p.props.line_spacing = Some(spacing);
+            p.props.space_before = Some(0.0);
+            p.props.space_after = Some(0.0);
+            p.props.widow_control = Some(false);
+            t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+            d.body = vec![std::sync::Arc::new(Block::Table(t))];
+            let l = lay(&d);
+            assert_eq!(l.pages.len(), 2);
+            for pg in &l.pages {
+                let cell = pg
+                    .items
+                    .iter()
+                    .find_map(|it| match it {
+                        Placed::Cell { rect, .. } => Some(*rect),
+                        _ => None,
+                    })
+                    .unwrap();
+                let top = pg
+                    .items
+                    .iter()
+                    .find_map(|it| match it {
+                        Placed::Lines { y, .. } => Some(*y),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!((top - cell.y - width - margin).abs() < 0.01, "width={width}, margin={margin}, top={top}, cell={cell:?}");
+            }
+        }
+    }
+}
+
+/// Images and their floating hit areas move together without changing size or crop.
+#[test]
+fn split_cell_moves_image_frame() {
+    use crate::table::{CellPart, RowLayout, split_row};
+    use wordcraft_doc::para::Wrap;
+    for top in [0.0, 0.5, 6.5, 8.0] {
+        let rect = Rect::new(7.0, 150.0, 20.0, 20.0);
+        let image = Placed::Image {
+            rect,
+            media: "synthetic".into(),
+            crop: [0.1, 0.2, 0.3, 0.4],
+            story: StoryRef::Body,
+            path: Path::top(0),
+            off: 0,
+            spin: Default::default(),
+        };
+        let frame = Placed::Object {
+            rect,
+            spin: Default::default(),
+            story: StoryRef::Body,
+            path: Path::top(0),
+            off: 0,
+            text_box: None,
+            wrap: Wrap::Square,
+            origin: wordcraft_geom::Point::new(3.0, 145.0),
+        };
+        let mut kept = image.clone();
+        kept.translate(0.0, top - 150.0);
+        let row = RowLayout {
+            foreground: Vec::new(),
+            height: 200.0,
+            min_height: 0.0,
+            bottom: 4.0,
+            items: vec![kept, image, frame],
+            cells: vec![CellPart { top, items: 0..3, end: Some(170.0), center: None, merge: None }],
+        };
+        let (first, rest) = split_row(&row, 100.0).unwrap();
+        assert_eq!(first.items.len(), 1);
+        assert!(matches!(&first.items[0], Placed::Image { rect, .. } if *rect == Rect::new(7.0, top, 20.0, 20.0)));
+        assert_eq!(rest.items.len(), 2);
+        for item in &rest.items {
+            let moved = match item {
+                Placed::Image { rect, crop, media, .. } => {
+                    assert_eq!(*crop, [0.1, 0.2, 0.3, 0.4]);
+                    assert_eq!(media, "synthetic");
+                    *rect
+                }
+                Placed::Object { rect, origin, wrap, .. } => {
+                    assert_eq!(*wrap, Wrap::Square);
+                    assert!((origin.y - (top - 5.0)).abs() < 0.01);
+                    assert_eq!(origin.x, 3.0);
+                    *rect
+                }
+                _ => panic!("unexpected continuation item"),
+            };
+            assert_eq!(moved, Rect::new(7.0, top, 20.0, 20.0));
+        }
+        assert!((rest.height - (50.0 + top)).abs() < 0.01);
+    }
+}
+
+#[test]
+fn foreground_across_cells() {
+    use wordcraft_doc::para::{Anchor, Float};
+    let mut d = Document::from_text("Cell high anchor\nCell mid anchor\nBody anchor");
+    let at = |z, x| Float { wrap: Wrap::InFrontOfText, z_order: z, h_rel: Anchor::Page, v_rel: Anchor::Page, x, y: 0.0, ..Default::default() };
+    let high = text_box_at(&mut d, &Pos::body(0, 0), "Cell high", 100.0, 80.0, at(7, 0.0));
+    let mid = text_box_at(&mut d, &Pos::body(1, 0), "Cell mid", 100.0, 80.0, at(3, -200.0));
+    let low = text_box_at(&mut d, &Pos::body(2, 0), "Body low", 100.0, 80.0, Float { y: 72.0, ..at(1, 72.0) });
+    let cells: Vec<_> = d.body.drain(..2).collect();
+    let mut table = Table::new(1, 2, 400.0);
+    table.rows[0].cells[0].blocks = vec![cells[0].clone()];
+    table.rows[0].cells[1].blocks = vec![cells[1].clone()];
+    d.body.insert(0, Arc::new(Block::Table(table)));
+    let l = lay(&d);
+    let layers: Vec<_> = l.pages[0]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Object { text_box: Some(id), .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert!(box_rect(&l, high).intersects(&box_rect(&l, low)));
+    assert!(box_rect(&l, high).intersects(&box_rect(&l, mid)));
+    assert_eq!(layers, [low, mid, high], "table cells share their owning body's foreground stack");
+}
+
+#[test]
+fn split_row_keeps_foreground() {
+    use crate::table::{CellPart, RowLayout, split_row};
+    let l = lay(&Document::from_text("Line"));
+    let mut line = l.pages[0].items.iter().find(|it| matches!(it, Placed::Lines { .. })).unwrap().clone();
+    let Placed::Lines { y, .. } = &line else { panic!("line") };
+    line.translate(0.0, -*y);
+    let mut second = line.clone();
+    second.translate(0.0, 150.0);
+    let row = RowLayout {
+        height: 200.0,
+        min_height: 0.0,
+        items: vec![line, second, Placed::Fill { rect: Rect::new(0.0, 150.0, 100.0, 20.0), color: Rgb(200, 0, 0) }],
+        foreground: vec![Foreground { range: 1..3, z: 7 }],
+        bottom: 0.0,
+        cells: vec![CellPart { items: 0..3, end: Some(170.0), center: None, merge: None, top: 2.0 }],
+    };
+    let (a, b) = split_row(&row, 100.0).unwrap();
+    assert!(a.foreground.is_empty());
+    assert_eq!(b.foreground.len(), 1);
+    assert_eq!((b.foreground[0].range.clone(), b.foreground[0].z), (0..2, 7));
+}
+
+/// Cell float metadata survives two row splits and a later behind-text insertion.
+#[test]
+fn continued_cell_float_stack() {
+    use wordcraft_doc::para::{Anchor, Float};
+    use wordcraft_doc::props::{HeightRule, LineSpacing};
+    let para = |text: &str| {
+        let mut p = Paragraph::with_text(text, wordcraft_doc::CharProps { size: Some(9.0), ..Default::default() });
+        p.props.line_spacing = Some(LineSpacing::Exactly(10.0));
+        p.props.space_before = Some(0.0);
+        p.props.space_after = Some(0.0);
+        p.props.widow_control = Some(false);
+        wordcraft_doc::para_block(p)
+    };
+    let mut d = Document::new();
+    d.last_section.page_h = 360.0;
+    d.last_section.margin_top = 36.0;
+    d.last_section.margin_bottom = 36.0;
+    d.body = vec![para(&["Before"; 56].join("\n")), para("Cell anchor"), para(&["After"; 8].join("\n")), para("Body anchor"), para("Behind anchor")];
+    let high = text_box_at(
+        &mut d,
+        &Pos::body(1, 0),
+        "Cell high",
+        100.0,
+        40.0,
+        Float { wrap: Wrap::InFrontOfText, z_order: 7, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, ..Default::default() },
+    );
+    let at = Float { wrap: Wrap::InFrontOfText, z_order: 1, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 36.0, y: 36.0, ..Default::default() };
+    let low = text_box_at(&mut d, &Pos::body(3, 0), "Body low", 200.0, 200.0, at.clone());
+    let back = text_box_at(&mut d, &Pos::body(4, 0), "Body behind", 200.0, 200.0, Float { wrap: Wrap::BehindText, z_order: 99, ..at });
+    let cells: Vec<_> = d.body.drain(..3).collect();
+    let mut table = Table::new(1, 1, 300.0);
+    table.props.cell_margins = Some([6.0, 5.4, 0.0, 5.4]);
+    table.rows[0].props.height = Some(100.0);
+    table.rows[0].props.height_rule = HeightRule::AtLeast;
+    table.rows[0].cells[0].blocks = cells;
+    d.body.insert(0, Arc::new(Block::Table(table)));
+    let mut control = d.clone();
+    control.body.truncate(1);
+    let baseline = lay(&control);
+    let actual = lay(&d);
+    assert_eq!(actual.pages.len(), 3);
+    assert_eq!(baseline.pages.len(), 3);
+    let find = |layout: &DocLayout, id| {
+        let frames: Vec<_> = layout
+            .pages
+            .iter()
+            .enumerate()
+            .flat_map(|(page, pg)| {
+                pg.items.iter().filter_map(move |item| match item {
+                    Placed::Object { text_box: Some(part), rect, origin, .. } if *part == id => Some((page, *rect, *origin)),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(frames.len(), 1, "one frame for box {id}");
+        frames[0]
+    };
+    let (page, cell_rect, origin) = find(&actual, high);
+    assert_eq!(page, 2, "the cell float belongs to the second continuation");
+    assert_eq!(find(&actual, high), find(&baseline, high), "body floats cannot move cell content");
+    assert_eq!(origin.y, cell_rect.y, "paragraph-relative anchor moves with its fragment");
+    let (body_page, body_rect, _) = find(&actual, low);
+    assert_eq!(body_page, page);
+    assert!(cell_rect.intersects(&body_rect), "the float frames overlap");
+    let items = &actual.pages[page].items;
+    let layers: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            Placed::Object { text_box: Some(id), .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(layers, [back, low, high], "owning-story z-order survives both splits and prepended behind items");
+    for id in [back, low, high] {
+        let frame = items.iter().position(|item| matches!(item, Placed::Object { text_box: Some(part), .. } if *part == id)).unwrap();
+        assert!(matches!(&items[frame + 1], Placed::Lines { story: StoryRef::Part(part), .. } if *part == id), "box frame and text stay together");
+    }
+    let draws = display::page_display(&d, &actual.pages[page], &display::DisplayOptions::default());
+    let labels: Vec<_> = draws
+        .iter()
+        .filter_map(|draw| match draw {
+            display::Draw::Glyphs { text, .. } if ["Body behind", "Body low", "Cell high"].contains(&text.as_str()) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels, ["Body behind", "Body low", "Cell high"], "display paints the continued cell float last");
+    let lines = |layout: &DocLayout| {
+        layout
+            .pages
+            .iter()
+            .enumerate()
+            .flat_map(|(page, pg)| {
+                pg.items.iter().filter_map(move |item| match item {
+                    Placed::Lines { story: StoryRef::Body, path, l0, l1, x, y, .. } if path.0.len() == 4 => {
+                        Some((page, path.clone(), *l0, *l1, *x, *y))
+                    }
+                    _ => None,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let cell_lines = lines(&actual);
+    assert_eq!(cell_lines, lines(&baseline), "cell lines retain their fragment geometry");
+    for (paragraph, count) in [56, 1, 8].into_iter().enumerate() {
+        let seen: Vec<_> =
+            cell_lines.iter().filter(|(_, path, ..)| path.0[3] == paragraph as u32).flat_map(|(_, _, first, last, _, _)| *first..*last).collect();
+        assert_eq!(seen, (0..count).collect::<Vec<_>>(), "each line of cell paragraph {paragraph} appears once");
     }
 }

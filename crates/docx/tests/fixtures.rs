@@ -269,6 +269,19 @@ fn symbol_font_text_reads_as_unicode_and_round_trips_unchanged() {
 }
 
 #[test]
+fn pcl6_symbol_roundtrip() {
+    let body = r#"<w:p><w:r><w:sym w:font="Symbol (PCL6)" w:char="F0B3"/></w:r></w:p>"#;
+    let d = wordcraft_docx::read(&docx(body, &[], &[])).unwrap();
+    let again = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
+    for doc in [&d, &again] {
+        let p = paras(doc)[0];
+        assert_eq!(p.text, "\u{F0B3}");
+        assert_eq!(p.props_of_char(0).font.as_deref(), Some("Symbol (PCL6)"));
+        assert_eq!(p.shown_text(), "≥");
+    }
+}
+
+#[test]
 fn alternate_content_choice_and_fallback() {
     let body = r#"
 <w:p><w:r><mc:AlternateContent>
@@ -2933,6 +2946,22 @@ fn zero_effects_stay_zero_rotated() {
             let expected = if degrees % 180 == 0 { (w, h) } else { (h, w) };
             assert!((w + 2.0 * px - expected.0).abs() < 0.001);
             assert!((h + 2.0 * py - expected.1).abs() < 0.001);
+        }
+    }
+}
+
+#[test]
+fn floating_z_order_round_trips() {
+    for height in ["0", "7", "4294967295"] {
+        let body = format!(
+            r#"<w:p><w:r><w:drawing><wp:anchor relativeHeight="{height}" behindDoc="0"><wp:extent cx="914400" cy="457200"/><wp:wrapNone/><wp:docPr id="1" name="Original stacking probe"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:spPr><a:prstGeom prst="rect"/></wps:spPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#
+        );
+        let mut d = read_body(&body);
+        for _ in 0..2 {
+            let float = paras(&d)[0].objects[0].frame().unwrap().2;
+            assert_eq!(float.z_order, height.parse::<u32>().unwrap());
+            assert_eq!(float.wrap, Wrap::InFrontOfText);
+            d = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
         }
     }
 }
