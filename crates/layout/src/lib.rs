@@ -3680,7 +3680,7 @@ fn row_can_start(row: &wordcraft_doc::Row, laid: &table::RowLayout, room: f32, p
     if row.props.header || row.props.cant_split || (row.props.height_rule == HeightRule::Exact && row.props.height.is_some_and(|h| h > 0.0)) {
         return false;
     }
-    if row.props.height_rule == HeightRule::AtLeast && row.props.height.is_some_and(|h| h > room + 0.01 && h <= page_height + 0.01) {
+    if laid.min_height > room + 0.01 && laid.min_height <= page_height + 0.01 {
         return false;
     }
     table::split_row(laid, room).is_some()
@@ -3786,11 +3786,7 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
             // Measured in Word: a row with an at-least height doesn't split where less than that
             // height is left; it starts the next page whole.
             let room = pb.bottom - pb.y;
-            let short_of_min = rest.is_none()
-                && t.rows.get(ri).is_some_and(|r| {
-                    r.props.height_rule == wordcraft_doc::props::HeightRule::AtLeast
-                        && r.props.height.is_some_and(|h| h > room + 0.01 && h <= pb.bottom - body_top + 0.01)
-                });
+            let short_of_min = rest.is_none() && cur.min_height > room + 0.01 && cur.min_height <= pb.bottom - body_top + 0.01;
             let split = if splittable && !short_of_min && !defer_kept { table::split_row(cur, room) } else { None };
             match split {
                 Some((a, b)) => {

@@ -4466,6 +4466,67 @@ fn a_row_with_less_room_than_its_minimum_height_moves_on_whole() {
 }
 
 #[test]
+fn row_minimum_includes_insets() {
+    use wordcraft_doc::props::LineSpacing;
+    for (top, prefix) in [(0.0, false), (2.0, false), (0.0, true), (2.0, true)] {
+        let mut d = Document::new();
+        d.styles = wordcraft_doc::StyleSheet::empty();
+        d.styles.default_chr = CharProps { font: Some("Source Sans 3".into()), size: Some(10.0), ..Default::default() };
+        d.styles.default_para =
+            ParaProps { line_spacing: Some(LineSpacing::Exactly(14.0)), space_before: Some(0.0), space_after: Some(0.0), ..Default::default() };
+        d.last_section.page_w = 600.0;
+        d.last_section.page_h = 300.0;
+        d.last_section.margin_top = 20.0;
+        d.last_section.margin_bottom = 20.0;
+        let caption_row = if prefix { 2 } else { 1 };
+        let mut table = Table::new(caption_row + 1, 2, 500.0);
+        table.props.style = None;
+        table.props.cell_margins = Some([top, 5.4, 0.0, 5.4]);
+        table.rows[0].props.height = Some(if prefix { 224.0 } else { 240.0 });
+        table.rows[0].props.height_rule = HeightRule::Exact;
+        table.rows[caption_row].props.height = Some(18.45);
+        table.rows[caption_row].props.height_rule = HeightRule::AtLeast;
+        for cell in &mut table.rows[caption_row].cells {
+            cell.blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Caption", Default::default()))];
+        }
+        table.rows[caption_row].cells[1].blocks.push(wordcraft_doc::para_block(Paragraph::new()));
+        if prefix {
+            let mut p = Paragraph::with_text("Keep", Default::default());
+            p.props.keep_next = Some(true);
+            table.rows[1].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+        }
+        d.body = vec![Arc::new(Block::Table(table))];
+        let l = lay(&d);
+        let page = l
+            .pages
+            .iter()
+            .position(|p| {
+                p.items.iter().any(|item| {
+                    matches!(item,
+                        Placed::Lines { path, .. } if path.0 == vec![0, caption_row as u32, 0, 0]
+                    )
+                })
+            })
+            .unwrap();
+        assert_eq!(page, usize::from(top > 0.0), "top inset {top}, prefix {prefix}");
+        if prefix {
+            let prefix_page = l
+                .pages
+                .iter()
+                .position(|p| {
+                    p.items.iter().any(|item| {
+                        matches!(item,
+                            Placed::Lines { path, .. } if path.0 == vec![0, 1, 0, 0]
+                        )
+                    })
+                })
+                .unwrap();
+            assert_eq!(prefix_page, page, "the kept prefix uses the same inset-aware minimum");
+        }
+    }
+}
+
+#[test]
 fn text_overflowing_an_exact_row_is_clipped_to_it() {
     use wordcraft_doc::props::HeightRule;
     // An exactly 12 pt row holding three lines: Word shows what fits and cuts the rest at the row's
