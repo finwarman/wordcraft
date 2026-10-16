@@ -1,7 +1,7 @@
 # Scope renderer snapshot
 
 Upstream base: `eae242176108d328c5dd81fbc10370c51ab90706`.
-Previous Scope snapshot: `310f7876bc32c1250da9e263d44a59771c53461a`.
+Previous Scope snapshot: `6bd328ca2a078809d38b17ccb7aa8623c1e1e98e`.
 
 This integrates upstream and the parity contributions below. It is an alpha
 snapshot, not an upstream release or a claim of complete Word parity. Rust 1.95
@@ -64,14 +64,15 @@ commits without changing the integrated rules. Fragment dependencies are
 | [#2521](https://github.com/storytold/wordcraft/pull/2521) | `cf62ad5520e21ecbc436c4b8cddc2dadd4896d38` |
 | [#2524](https://github.com/storytold/wordcraft/pull/2524) | `c67478c40c350a6b2d5e28d2bd8fea5f9da14464` |
 | [#2533](https://github.com/storytold/wordcraft/pull/2533) | `6e6305a1ed8572e4ecbac701be3b0eef8a39128d` |
+| [#2578](https://github.com/storytold/wordcraft/pull/2578) | `9a75b3e299e91e204d7fa21ed88ddc64e5f9c246` |
+| [#2579](https://github.com/storytold/wordcraft/pull/2579) | `af97aa563e8649f1ff2509e327707068c16c0c69` |
+| [#2582](https://github.com/storytold/wordcraft/pull/2582) | `648e748bfc6c3a5dcd66e8384e448f2126a8bc03` |
 
 ## Measured limits
 
-The local ten-report corpus retains frozen Adobe page counts, landscape page
-indices and ordered figure/table labels, including repeated instances. Nine
-full native Word exports also match physical page counts. Word exits while
-opening the SGS long-report copy; that case is not certified against native
-Word. Equal counts do not establish visual or semantic parity.
+All ten native Word exports match physical page counts, landscape page indices
+and ordered figure/table labels, including repeated instances. Equal counts do
+not establish visual or semantic parity.
 
 Normal conversion retains cached TOC entries. Explicit `--update-fields` is a
 separate workflow. It preserves number tabs and table-cell headings. Native
@@ -80,10 +81,18 @@ appendix reference. EEMUA's 53 regenerated entries and six corrected PDF outline
 destinations reach their final headings. The Scope wrapper does not enable
 field refresh globally.
 
-Remaining observations: EEMUA appendix headings are about 18 pt lower and use
-one line in native Word, while this snapshot and Adobe use two lines. The rule
-is still under investigation. A Rosen final table continuation retains a measured
-0.42 pt border difference after resolving its cell insets. Neither is hidden by the page-count checks.
+Page-colour header clearance aligns EEMUA cover and appendix placement; appendix
+headings now use the same single line as native Word. Photo/frame positions and
+caption centres match the measured native pages. Two caption row boundaries
+still differ. The nozzle title row is taller; a separate cell-page-break fix is
+held because it exposes SGS pagination drift. Automatic vertical-row wrapping
+also remains under investigation.
+
+Rosen black-circle fallback corrects accumulated body reflow. A separate page56
+wrapping difference remains. The final table continuation has a measured0.42pt
+border difference. Footer typography differs where native Word substitutes an
+installed Linux font. Pattern fills currently support ltVert, with freeform,
+soft-edge and rotated-phase limits documented in file-format-parity.md.
 
 Local gates encounter the reproduced upstream justified-line and two
 colour-emoji environment failures. Those tests are unchanged. No customer

@@ -1360,6 +1360,7 @@ impl Reader<'_> {
         }
         extra.warp = wsp.child("wps:bodyPr").and_then(|b| b.child("a:prstTxWarp")).and_then(text_warp);
         extra.fill_transparency = fill_transparency(sppr);
+        extra.pattern = sppr.and_then(|s| super::drawing_color::pattern_fill(s, &self.pc.theme));
         // A freeform: its custom geometry (#743: in a group too).
         let freeform = sppr.and_then(|s| super::freeform::cust_geom(s, w, h)).map(|mut f| {
             f.alpha = super::freeform::line_alpha(ln);

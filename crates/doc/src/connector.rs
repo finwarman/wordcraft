@@ -41,6 +41,9 @@ pub struct ShapeExtra {
     /// The fill's transparency, percent (DrawingML's `a:alpha` is its opacity); 0 = opaque.
     #[serde(skip_serializing_if = "is_zero_f32")]
     pub fill_transparency: f32,
+    /// DrawingML preset pattern colors, including their independent opacity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<crate::pattern::PatternFill>,
 }
 
 fn is_zero(v: &u32) -> bool {
