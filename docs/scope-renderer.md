@@ -70,6 +70,7 @@ commits without changing the integrated rules. Fragment dependencies are
 | [#2574](https://github.com/storytold/wordcraft/pull/2574) | `649bda389407db694b78a6f66f72fd2082454d27` |
 | [#2585](https://github.com/storytold/wordcraft/pull/2585) | `e33be9619f861963fce46d7d155e0a5a2a0215f7` |
 | [#2589](https://github.com/storytold/wordcraft/pull/2589) | `a750a904331b256a2364f2f63e4b903caa807af8` |
+| [#2605](https://github.com/storytold/wordcraft/pull/2605) | `5ac6116d48313c4080db5c6858f498bb4491bbaf` |
 | [#2604](https://github.com/storytold/wordcraft/pull/2604) | `8779b8d7aa322f767489d958a2af8921443a4e66` |
 | [#2597](https://github.com/storytold/wordcraft/pull/2597) | `ff2395d65c8b5b96e93e0c7f2b18e44b91002fea` |
 | [#2590](https://github.com/storytold/wordcraft/pull/2590) | `8ef20f8e8365a30073406582a47f1fb788100133` |
@@ -110,13 +111,13 @@ continuation border fitting remain under investigation.
 Rosen black-circle fallback corrects accumulated body reflow. Justified spacing
 costs restore the measured Rosen page 56 and TUV notes line breaks. Other spacing
 differences remain under investigation. The final table continuation has a
-measured 0.42 pt border difference. Footer typography differs where native Word substitutes an
-installed Linux font. Pattern fills currently support ltVert, with freeform,
+measured 0.42 pt border difference. Footer typography differs where native Word
+substitutes an installed Linux font. Pattern fills currently support ltVert, with freeform,
 soft-edge and rotated-phase limits documented in file-format-parity.md.
 
-Separate counter audits found SGS footer digits smaller than native Word,
-body/attachment fields on different physical pages, and WSE’s first-page footer
-about 85 pt too high. Some conflicting totals are already present in the source.
+Cached field results now retain their own run formatting, restoring SGS footer
+digits from 4 pt to the requested 8 pt. Body/attachment fields remain on different
+physical pages, and WSE’s first-page footer remains about 85 pt too high. Some conflicting totals are already present in the source.
 Cached TOC page text can differ from Word’s print-time refresh, even when its
 hyperlink reaches the correct page. These remain acceptance limits.
 
