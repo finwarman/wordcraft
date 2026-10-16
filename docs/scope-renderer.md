@@ -70,6 +70,7 @@ commits without changing the integrated rules. Fragment dependencies are
 | [#2574](https://github.com/storytold/wordcraft/pull/2574) | `649bda389407db694b78a6f66f72fd2082454d27` |
 | [#2585](https://github.com/storytold/wordcraft/pull/2585) | `e33be9619f861963fce46d7d155e0a5a2a0215f7` |
 | [#2589](https://github.com/storytold/wordcraft/pull/2589) | `a750a904331b256a2364f2f63e4b903caa807af8` |
+| [#2597](https://github.com/storytold/wordcraft/pull/2597) | `ff2395d65c8b5b96e93e0c7f2b18e44b91002fea` |
 | [#2590](https://github.com/storytold/wordcraft/pull/2590) | `8ef20f8e8365a30073406582a47f1fb788100133` |
 
 Caption minimum-inset follow-up is prepared on the [fork branch](https://github.com/finwarman/wordcraft/tree/codex/row-minimum-insets) at `90abb49f`. Upstream submission waits for #2465 and #2494; it is not merge-ready. This snapshot includes the tested integration rule.
@@ -79,6 +80,10 @@ Caption minimum-inset follow-up is prepared on the [fork branch](https://github.
 All ten native Word exports match physical page counts, landscape page indices
 and ordered figure/table labels, including repeated instances. Equal counts do
 not establish visual or semantic parity.
+
+Explicit REF hyperlink switches now link cached text to their bookmarks without
+changing that text. EEMUA’s eight section references gain their native destinations;
+existing TOC links and outline destinations remain stable.
 
 Normal conversion retains cached TOC entries. Explicit `--update-fields` is a
 separate workflow. It preserves number tabs and table-cell headings. Native
