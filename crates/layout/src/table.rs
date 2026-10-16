@@ -9,13 +9,15 @@ use wordcraft_doc::{Block, Blocks, Paragraph, StoryRef, Table};
 use wordcraft_geom::Rect;
 
 use crate::para::{CellText, ClKind, ParaLayout};
-use crate::{BoxContext, BoxLayout, Ctx, Placed, layout_box};
+use crate::{BoxContext, BoxLayout, Ctx, Placed, fit_box, layout_box};
 
 /// Largest preferred table width, as a share of the text column, that a file can ask for.
 const MAX_WIDTH_SHARE: f32 = 10.0;
 
 pub struct RowLayout {
     pub height: f32,
+    /// Minimum retained on continuation fragments that can hold it.
+    pub(crate) min_height: f32,
     /// Items relative to the table's top-left (x) and the row's top (y).
     pub items: Vec<Placed>,
     /// The room the row keeps below its text: the bottom cell margin and border band. Part of a
@@ -26,7 +28,24 @@ pub struct RowLayout {
 }
 
 /// A cell of a [`RowLayout`].
+#[derive(Clone)]
+pub(crate) struct MergeEdge {
+    pub(crate) key: (usize, usize),
+    pub(crate) x0: f32,
+    pub(crate) x1: f32,
+    pub(crate) top: Option<Border>,
+    pub(crate) bottom: Option<Border>,
+}
+
+pub(crate) struct CellCenter {
+    offset: f32,
+    height: f32,
+    content: std::ops::Range<usize>,
+}
+
 pub struct CellPart {
+    pub(crate) merge: Option<MergeEdge>,
+    pub(crate) center: Option<CellCenter>,
     /// Its items in the row's `items` (its fill, text, borders and cell area).
     pub items: std::ops::Range<usize>,
     /// Where its content ends below the row's top, its last paragraph's space after included
@@ -109,7 +128,8 @@ fn default_margins(t: &Table, style: Option<&TableStyleProps>) -> [f32; 4] {
 /// bottom margins.
 pub fn cell_margins(doc: &wordcraft_doc::Document, t: &Table, row: usize, cell: usize) -> [f32; 4] {
     let style = t.props.style.as_deref().and_then(|id| doc.styles.table_style(id));
-    t.rows.get(row).and_then(|r| r.cells.get(cell)).and_then(|c| c.props.margins).unwrap_or_else(|| default_margins(t, style.as_ref()))
+    let defaults = default_margins(t, style.as_ref());
+    t.rows.get(row).and_then(|r| r.cells.get(cell)).map_or(defaults, |cell| cell.props.resolved_margins(defaults))
 }
 
 /// The most paragraphs [`measure_table_columns`] lays out: a huge table is measured by its first
@@ -181,7 +201,7 @@ pub fn measure_table_columns(doc: &wordcraft_doc::Document, t: &Table) -> Vec<(f
         let mut g = 0usize;
         for cell in &row.cells {
             let span = cell.span();
-            let margins = cell.props.margins.unwrap_or(margins_def);
+            let margins = cell.props.resolved_margins(margins_def);
             let side = margins[1].max(0.0) + margins[3].max(0.0);
             let text = style.as_ref().map(|st| region_text(st, region_of(t, style.as_ref(), ri, g, span, ncols)));
             let env = crate::para::ParaEnv {
@@ -200,7 +220,6 @@ pub fn measure_table_columns(doc: &wordcraft_doc::Document, t: &Table) -> Vec<(f
                 eq_number: 0,
                 read_line_spacing: None,
                 grid: crate::para::Grid::default(),
-                fit_objects: false,
             };
             let (mut min, mut max) = (EMPTY_TEXT, EMPTY_TEXT);
             if cell.props.vmerge != VMerge::Continue && !cell.props.text_direction.is_turned() {
@@ -284,7 +303,7 @@ pub(crate) fn first_cell_left_margin(ctx: &Ctx, t: &Table) -> f32 {
 }
 
 fn first_cell_left_margin_in(t: &Table, def: [f32; 4]) -> f32 {
-    t.rows.first().and_then(|r| r.cells.first()).and_then(|c| c.props.margins).unwrap_or(def)[1]
+    t.rows.first().and_then(|r| r.cells.first()).map_or(def, |cell| cell.props.resolved_margins(def))[1]
 }
 
 /// What a table style gives the cells in one set of parts: shading, vertical alignment and each
@@ -454,6 +473,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
     let mut rows: Vec<Vec<CellBox>> = Vec::with_capacity(nrows);
     let mut heights: Vec<f32> = Vec::with_capacity(nrows);
     let mut bottoms: Vec<f32> = Vec::with_capacity(nrows);
+    let mut minimums = Vec::with_capacity(nrows);
     for (ri, row) in t.rows.iter().enumerate() {
         let mut g = 0usize;
         let mut cells = Vec::with_capacity(row.cells.len());
@@ -468,7 +488,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         let (row_top, row_bottom) = row
             .cells
             .iter()
-            .map(|c| c.props.margins.unwrap_or(margins_def))
+            .map(|c| c.props.resolved_margins(margins_def))
             .fold((0.0f32, 0.0f32), |(top, bottom), m| (top.max(m[0]), bottom.max(m[2])));
         for (ci, cell) in row.cells.iter().enumerate() {
             let span = cell.span();
@@ -477,7 +497,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             // Right to left: grid columns run from the right edge, and the start (left) margin
             // is on the cell's right.
             let (x0, x1) = if rtl { ((acc - x1).max(0.0), (acc - x0).max(0.0)) } else { (x0, x1) };
-            let m = cell.props.margins.unwrap_or(margins_def);
+            let m = cell.props.resolved_margins(margins_def);
             let margins = if rtl { [row_top, m[3], row_bottom, m[1]] } else { [row_top, m[1], row_bottom, m[3]] };
             let cw = (x1 - x0 - margins[1] - margins[3]).max(4.0);
             let region = region_of(t, style.as_ref(), ri, g, span, ncols);
@@ -617,6 +637,10 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             (Some(h), _) if h > 0.0 => rh.max(h + row_insets),
             _ => rh,
         };
+        minimums.push(match (row.props.height, row.props.height_rule) {
+            (Some(h), HeightRule::AtLeast) if h > 0.0 => h + row_insets,
+            _ => 0.0,
+        });
         bottoms.push(row_below);
         heights.push(if collapsed && !cells.is_empty() { rh.max(0.0) } else { rh.max(4.0) });
         rows.push(cells);
@@ -656,6 +680,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         .collect();
     // Second pass: place cells with their row height, fills and borders.
     let mut out = Vec::with_capacity(rows.len());
+    let mut merge_starts: std::collections::HashMap<usize, (usize, usize)> = std::collections::HashMap::new();
     for (ri, cells) in rows.into_iter().enumerate() {
         let rh = heights.get(ri).copied().unwrap_or(0.0);
         let exact = t.rows.get(ri).is_some_and(|r| r.props.height_rule == HeightRule::Exact && r.props.height.is_some_and(|h| h > 0.0));
@@ -728,17 +753,44 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 for it in &mut cell_items {
                     it.turn(tn.turn, ox, oy);
                 }
+            } else if exact {
+                // Hide incomplete overflow lines before the cell clip can expose their glyph tops.
+                cell_items = fit_box(cell_items, span_h - c.margins[2]);
             }
+            let content_start = items.len();
             for mut it in cell_items {
                 it.translate(0.0, dy);
                 items.push(it);
             }
+            let center = (c.vmerge == VMerge::Restart && c.valign == VAlign::Center && !exact && dy > 0.0).then_some(CellCenter {
+                offset: dy,
+                height: align_h,
+                content: content_start..items.len(),
+            });
             let b = c.borders;
             let (x0, x1, y0, y1) = (c.x, c.x + c.w, 0.0, rh);
             // Horizontal edges run on over half of each visible vertical edge, so the corners
             // close the way Word draws them instead of leaving a notch at thick borders.
             let half = |o: Option<Border>| o.filter(Border::is_visible).map_or(0.0, |e| e.width / 2.0);
             let (hx0, hx1) = (x0 - half(b.left), x1 + half(b.right));
+            let merge = if c.vmerge == VMerge::None {
+                merge_starts.remove(&c.g);
+                None
+            } else {
+                let start = if c.vmerge == VMerge::Restart {
+                    ri
+                } else {
+                    merge_starts.get(&c.g).filter(|(_, last)| last.checked_add(1) == Some(ri)).map_or(ri, |(start, _)| *start)
+                };
+                merge_starts.insert(c.g, (start, ri));
+                Some(MergeEdge {
+                    key: (start, c.g),
+                    x0: hx0,
+                    x1: hx1,
+                    top: b.top.filter(Border::is_visible),
+                    bottom: b.bottom.filter(Border::is_visible),
+                })
+            };
             let top_vis = c.vmerge != VMerge::Continue;
             if top_vis && let Some(e) = b.top.filter(Border::is_visible) {
                 items.push(Placed::Rule { x0: hx0, y0, x1: hx1, y1: y0, border: e });
@@ -762,9 +814,15 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 story,
                 clip: exact && c.h > span_h + 0.01,
             });
-            parts.push(CellPart { items: first..items.len(), end });
+            parts.push(CellPart { items: first..items.len(), end, center, merge });
         }
-        out.push(RowLayout { height: rh, items, bottom: bottoms.get(ri).copied().unwrap_or(0.0), cells: parts });
+        out.push(RowLayout {
+            height: rh,
+            min_height: minimums.get(ri).copied().unwrap_or(0.0),
+            items,
+            bottom: bottoms.get(ri).copied().unwrap_or(0.0),
+            cells: parts,
+        });
     }
     TableLayout { x, width: total, rows: out }
 }
@@ -856,6 +914,49 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
     if !kept_any || first_moved == f32::MAX {
         return None;
     }
+    // Word closes the first fragment below its last fitted content.
+    // Nested boxes crossing the cut retain their geometry.
+    let mut kept_bottoms = Vec::with_capacity(cells.len());
+    for (((items, splits), c), &moved_top) in cells.iter().zip(&splits).zip(&row.cells).zip(&moved) {
+        let mut kept_bottom = 0.0f32;
+        for (it, &split) in items.iter().zip(splits) {
+            let bottom = if let Some(r) = it.turned_bounds() {
+                fits(r.bottom()).then_some(r.bottom())
+            } else {
+                match it {
+                    Placed::Lines { para, l0, y, .. } if split > *l0 => crate::item_bottom(*y, para, *l0, split),
+                    Placed::Image { rect, .. } | Placed::Shape { rect, .. } | Placed::Graphic { rect, .. } | Placed::Clip { rect, .. }
+                        if fits(rect.bottom()) =>
+                    {
+                        Some(rect.bottom())
+                    }
+                    Placed::Cell { rect, table, .. } if Some(table.0.len()) > own_depth && rect.y < cut => Some(rect.bottom().min(cut)),
+                    _ => None,
+                }
+            };
+            if let Some(bottom) = bottom {
+                kept_bottom = kept_bottom.max(bottom);
+            }
+        }
+        if moved_top == f32::MAX
+            && let Some(end) = c.end.filter(|e| fits(*e))
+        {
+            kept_bottom = kept_bottom.max(end);
+        }
+        kept_bottoms.push(kept_bottom);
+    }
+    let floor = if row.min_height <= cut + 0.01 { row.min_height } else { cut };
+    let plain_bottom = kept_bottoms.iter().zip(&row.cells).filter(|(_, c)| c.center.is_none()).map(|(b, _)| *b).fold(0.0f32, f32::max);
+    let plain_height = (plain_bottom + row.bottom).max(floor).min(cut);
+    // A fitting merged label uses the first physical fragment's vertical center.
+    let kept_bottom = kept_bottoms
+        .iter()
+        .zip(&row.cells)
+        .filter(|(_, c)| c.center.as_ref().is_none_or(|v| v.height > plain_height + 0.01))
+        .map(|(b, _)| *b)
+        .fold(0.0f32, f32::max);
+    let first_height = (kept_bottom + row.bottom).max(floor).min(cut);
+    let trim_first = |r: Rect| (r.y < first_height).then(|| Rect::new(r.x, r.y, r.w, r.h.min(first_height - r.y)));
     // How far up things move: each cell's first line that moves on goes to the top of the
     // continuation, keeping a little of the cell's top margin.
     let shift_to = |top: f32| (top - 2.0).max(0.0);
@@ -869,7 +970,10 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
             need = need.max(c.end.map_or(row.height, |e| e + row.bottom) - s);
         }
     }
-    let height = need.clamp(4.0, full);
+    // Word reapplies an at-least height on the continuation. Oversized minimums
+    // that cannot fit the first fragment keep their existing distributed height.
+    let min_height = if row.min_height <= cut + 0.01 { row.min_height } else { 0.0 };
+    let height = need.clamp(4.0, full).max(min_height);
     // What runs to the row's bottom (cell areas, shading, side borders) ends at the
     // continuation's.
     let rest = (row.height - height).max(0.0);
@@ -878,7 +982,16 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
     let mut parts = Vec::with_capacity(cells.len());
     for (((c, items), splits), &shift) in row.cells.iter().zip(&cells).zip(&splits).zip(&shifts) {
         let start = b.len();
-        for (it, &split) in items.iter().zip(splits) {
+        let center = c.center.as_ref().filter(|v| v.height <= plain_height + 0.01);
+        for (index, (it, &split)) in items.iter().zip(splits).enumerate() {
+            if let Some(center) = center
+                && center.content.contains(&(c.items.start + index))
+            {
+                let mut it = it.clone();
+                it.translate(0.0, ((first_height - center.height) / 2.0).max(0.0) - center.offset);
+                a.push(it);
+                continue;
+            }
             if let Some(r) = it.turned_bounds() {
                 let mut it = it.clone();
                 if fits(r.bottom()) {
@@ -935,14 +1048,14 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                 // continuation (a nested table's cell below the cut moves whole).
                 Placed::Fill { rect, color } => {
                     let (above, below) = split_rect(*rect, cut, geo_shift(rect.bottom(), shift));
-                    a.extend(above.map(|rect| Placed::Fill { rect, color: *color }));
+                    a.extend(above.and_then(trim_first).map(|rect| Placed::Fill { rect, color: *color }));
                     b.extend(below.map(|rect| Placed::Fill { rect, color: *color }));
                 }
                 Placed::Cell { rect, covered, table, row: r, cell, story, clip } => {
                     let (above, below) = split_rect(*rect, cut, geo_shift(rect.bottom(), shift));
                     let cell_at =
                         |rect| Placed::Cell { rect, covered: *covered, table: table.clone(), row: *r, cell: *cell, story: *story, clip: *clip };
-                    a.extend(above.map(cell_at));
+                    a.extend(above.and_then(trim_first).map(cell_at));
                     b.extend(below.map(cell_at));
                 }
                 Placed::Rule { x0, y0, x1, y1, border } => {
@@ -952,7 +1065,7 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                             a.push(it.clone());
                             b.push(Placed::Rule { x0: *x0, y0: 0.0, x1: *x1, y1: 0.0, border: *border });
                         } else if *y0 >= row.height - 0.01 {
-                            a.push(Placed::Rule { x0: *x0, y0: cut, x1: *x1, y1: cut, border: *border });
+                            a.push(Placed::Rule { x0: *x0, y0: first_height, x1: *x1, y1: first_height, border: *border });
                             b.push(Placed::Rule { x0: *x0, y0: y0 - rest, x1: *x1, y1: y1 - rest, border: *border });
                         } else if *y0 <= cut {
                             a.push(it.clone());
@@ -961,8 +1074,8 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                         }
                     } else {
                         let (t, bt) = (y0.min(*y1), y0.max(*y1));
-                        if t < cut {
-                            a.push(Placed::Rule { x0: *x0, y0: t, x1: *x1, y1: bt.min(cut), border: *border });
+                        if t < first_height {
+                            a.push(Placed::Rule { x0: *x0, y0: t, x1: *x1, y1: bt.min(first_height), border: *border });
                         }
                         if bt > cut {
                             let shift = geo_shift(bt, shift);
@@ -972,12 +1085,12 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                 }
             }
         }
-        parts.push(CellPart { items: start..b.len(), end: c.end.map(|e| e - shift) });
+        parts.push(CellPart { items: start..b.len(), end: c.end.filter(|_| center.is_none()).map(|e| e - shift), center: None, merge: None });
     }
     // The part left on the page is placed and never split again.
     Some((
-        RowLayout { height: cut, items: a, bottom: row.bottom, cells: Vec::new() },
-        RowLayout { height, items: b, bottom: row.bottom, cells: parts },
+        RowLayout { height: first_height, min_height: 0.0, items: a, bottom: row.bottom, cells: Vec::new() },
+        RowLayout { height, min_height, items: b, bottom: row.bottom, cells: parts },
     ))
 }
 
@@ -1069,7 +1182,7 @@ fn column_content(ctx: &mut Ctx, t: &Table, style: Option<&TableStyleProps>, dep
                 let text = style.map(|st| region_text(st, region_of(t, style, ri, g, cell.span(), cols.len())));
                 let (lo, hi) = blocks_content(ctx, &cell.blocks, text.as_ref(), depth);
                 any |= hi > 0.0;
-                let m = cell.props.margins.unwrap_or(margins_def);
+                let m = cell.props.resolved_margins(margins_def);
                 let need = (lo + m[1] + m[3], hi + m[1] + m[3]);
                 match cols.get_mut(g) {
                     Some(col) if span == 1 => *col = (col.0.max(need.0), col.1.max(need.1)),
@@ -1092,16 +1205,16 @@ fn column_content(ctx: &mut Ctx, t: &Table, style: Option<&TableStyleProps>, dep
     any.then_some(cols)
 }
 
-// Share a span's extra minimum in preferred-column proportions. Each column keeps
-// its own text minimum; automatic tables share the extra equally.
+// Share a span's extra minimum by unused preferred width, so a fitting span never
+// widens a column past its preference. Automatic tables share the extra equally.
 fn share_span_min(cols: &mut [(f32, f32)], grid: Option<&[f32]>, need: f32) {
     let extra = (need - cols.iter().map(|c| c.0).sum::<f32>()).max(0.0);
-    let weight = |w: &f32| if w.is_finite() { w.clamp(0.0, UNBOUNDED) } else { 0.0 };
-    let total = grid.map_or(0.0, |grid| grid.iter().take(cols.len()).map(weight).sum::<f32>());
+    let weight = |w: f32, min: f32| if w.is_finite() { (w.clamp(0.0, UNBOUNDED) - min).max(0.0) } else { 0.0 };
+    let total = grid.map_or(0.0, |grid| grid.iter().zip(cols.iter()).map(|(w, c)| weight(*w, c.0)).sum::<f32>());
     if total > 0.0 {
         if let Some(grid) = grid {
             for (c, w) in cols.iter_mut().zip(grid) {
-                c.0 += extra * weight(w) / total;
+                c.0 += extra * weight(*w, c.0) / total;
             }
         }
         return;
@@ -1192,26 +1305,46 @@ fn is_automatic(t: &Table) -> bool {
         && t.rows.iter().all(|r| r.cells.iter().all(|c| c.props.width.is_none() && c.props.width_pct.is_none()))
 }
 
-/// Consistent cell widths replace a stale grid without changing the table's total width.
-/// Conflicting widths, spans and percentages need the full shared-grid algorithm.
+/// Consistent cell boundaries replace a stale grid without changing its total width.
+/// Every boundary must be declared; missing or conflicting preferences keep the grid.
 fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
-    let Some(first) = t.rows.first() else { return };
-    if first.cells.len() != grid.len() {
+    const WIDTH_EPSILON: f32 = 0.01;
+    let total: f32 = grid.iter().sum();
+    if grid.is_empty() || !total.is_finite() {
         return;
     }
-    let widths: Option<Vec<f32>> = first.cells.iter().map(|c| c.props.width.filter(|w| w.is_finite() && *w > 0.0)).collect();
-    let Some(widths) = widths else { return };
-    let total: f32 = widths.iter().sum();
-    if !total.is_finite() || (total - grid.iter().sum::<f32>()).abs() > 0.01 {
-        return;
+    let mut edges = vec![None; grid.len() + 1];
+    edges[0] = Some(0.0);
+    edges[grid.len()] = Some(total);
+    for row in &t.rows {
+        let (mut g, mut x) = (0usize, 0.0f32);
+        for cell in &row.cells {
+            let width = match (cell.props.width_pct, cell.props.width) {
+                (Some(pct), _) => total * pct / 100.0,
+                (_, Some(width)) => width,
+                _ => return,
+            };
+            if !width.is_finite() || width <= 0.0 {
+                return;
+            }
+            g = g.saturating_add(cell.span());
+            x += width;
+            let Some(edge) = edges.get_mut(g) else { return };
+            if !x.is_finite() || edge.is_some_and(|previous: f32| (previous - x).abs() > WIDTH_EPSILON) {
+                return;
+            }
+            if edge.is_none() {
+                *edge = Some(x);
+            }
+        }
+        if g != grid.len() {
+            return;
+        }
     }
-    if t.rows.iter().any(|r| {
-        r.cells.len() != grid.len()
-            || r.cells.iter().zip(&widths).any(|(c, w)| c.span() != 1 || c.props.width_pct.is_some() || c.props.width != Some(*w))
-    }) {
-        return;
+    let widths: Option<Vec<f32>> = edges.windows(2).map(|pair| Some(pair[1]? - pair[0]?)).collect();
+    if let Some(widths) = widths.filter(|widths| widths.iter().all(|w| *w > 0.0)) {
+        grid.copy_from_slice(&widths);
     }
-    grid.copy_from_slice(&widths);
 }
 
 /// Word's autofit for a table whose widths may follow its content (`tblLayout` not fixed).
@@ -1242,9 +1375,116 @@ fn autofit(grid: &mut [f32], content: &[(f32, f32)], t: &Table, avail: f32) {
     if short < 0.01 {
         return;
     }
-    let spare: f32 = grid.iter().zip(content).map(|(w, c)| (*w - c.0).max(0.0)).sum();
-    let give = (short / spare.max(0.01)).min(1.0);
+    // Donors give equal widths until they reach their own content minimum.
+    let mut rooms: Vec<_> = grid.iter().zip(content).map(|(w, c)| *w - c.0).filter(|room| *room > 0.0).collect();
+    rooms.sort_by(f32::total_cmp);
+    let mut remaining = short;
+    let mut share = 0.0;
+    for (i, room) in rooms.iter().enumerate() {
+        share = remaining / (rooms.len() - i) as f32;
+        if share <= *room {
+            break;
+        }
+        remaining -= room;
+    }
     for (w, c) in grid.iter_mut().zip(content) {
-        *w = if *w < c.0 { c.0 } else { *w - (*w - c.0) * give };
+        *w = if *w < c.0 { c.0 } else { *w - (*w - c.0).min(share) };
+    }
+}
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    fn merged_width_table() -> Table {
+        let mut table = Table::new(3, 4, 400.0);
+        let rows = [vec![(4, 400.0)], vec![(2, 150.0), (1, 200.0), (1, 50.0)], vec![(1, 60.0), (1, 90.0), (2, 250.0)]];
+        for (row, widths) in table.rows.iter_mut().zip(rows) {
+            row.cells.truncate(widths.len());
+            for (cell, (span, width)) in row.cells.iter_mut().zip(widths) {
+                cell.props.span = span;
+                cell.props.width = Some(width);
+            }
+        }
+        table
+    }
+
+    #[test]
+    fn span_respects_column_capacity() {
+        let grid = [150.0, 100.0, 25.0, 25.0];
+        let mut content = [(10.0, 10.0); 4];
+        share_span_min(&mut content, Some(&grid), 300.0);
+        assert!((content.iter().map(|c| c.0).sum::<f32>() - 300.0).abs() < 0.01);
+        for (cell, width) in content.iter().zip(grid) {
+            assert!(cell.0 <= width + 0.01, "minimum {} exceeds fitting column {width}", cell.0);
+            assert!(cell.0 >= 10.0);
+        }
+    }
+
+    #[test]
+    fn autofit_shares_donor_loss() {
+        let table = Table::new(1, 4, 260.0);
+        let mut grid = [30.0, 120.0, 20.0, 90.0];
+        let content = [(28.0, 28.0), (40.0, 120.0), (40.0, 40.0), (30.0, 90.0)];
+        autofit(&mut grid, &content, &table, 260.0);
+        assert_eq!(grid, [28.0, 111.0, 40.0, 81.0]);
+    }
+
+    #[test]
+    fn autofit_exhausts_donors() {
+        let table = Table::new(1, 2, 50.0);
+        let mut grid = [30.0, 20.0];
+        autofit(&mut grid, &[(25.0, 25.0), (40.0, 40.0)], &table, 50.0);
+        assert_eq!(grid, [25.0, 40.0]);
+    }
+
+    #[test]
+    fn autofit_keeps_fitting_widths() {
+        let table = Table::new(1, 3, 120.0);
+        let mut grid = [30.0, 40.0, 50.0];
+        autofit(&mut grid, &[(10.0, 10.0), (20.0, 20.0), (30.0, 30.0)], &table, 120.0);
+        assert_eq!(grid, [30.0, 40.0, 50.0]);
+    }
+
+    #[test]
+    fn merged_rows_replace_stale_grid() {
+        let table = merged_width_table();
+        let mut grid = table.grid.clone();
+        apply_cell_widths(&table, &mut grid);
+        assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+    }
+
+    #[test]
+    fn percent_rows_replace_grid() {
+        let mut table = merged_width_table();
+        for cell in table.rows.iter_mut().flat_map(|row| &mut row.cells) {
+            cell.props.width_pct = cell.props.width.map(|width| width / 4.0);
+            cell.props.width = None;
+        }
+        let mut grid = table.grid.clone();
+        apply_cell_widths(&table, &mut grid);
+        assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+    }
+
+    #[test]
+    fn uncertain_widths_keep_grid() {
+        for case in 0..7 {
+            let mut table = merged_width_table();
+            match case {
+                0 => {
+                    table.rows[2].cells[1].props.width = Some(95.0);
+                    table.rows[2].cells[2].props.width = Some(245.0);
+                }
+                1 => table.rows[2].cells[1].props.width = None,
+                2 => table.rows[2].cells[1].props.width_pct = Some(20.0),
+                3 => table.rows.truncate(2),
+                4 => table.rows[2].cells[1].props.span = 2,
+                5 => table.rows[2].cells[1].props.width = Some(0.0),
+                _ => table.rows[2].cells[1].props.width = Some(f32::NAN),
+            }
+            let mut grid = table.grid.clone();
+            apply_cell_widths(&table, &mut grid);
+            assert_eq!(grid, table.grid, "case {case}");
+        }
     }
 }

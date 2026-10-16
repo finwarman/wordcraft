@@ -7232,3 +7232,135 @@ fn vertical_align_command_sets_justified() {
         assert_eq!(serde_json::to_value(crate::cmd::page::sect(&s)).unwrap()["valign"], json!(name));
     }
 }
+
+#[test]
+fn toc_keeps_direct_number_tabs() {
+    use wordcraft_doc::props::{CharProps, NumRef, TabAlign, TabLeader, TabStop};
+    let left = TabStop { pos: 24.0, align: TabAlign::Left, leader: TabLeader::None };
+    let right = TabStop { pos: 179.5, align: TabAlign::Right, leader: TabLeader::Dot };
+    let mut d = wordcraft_doc::Document::from_text("Contents\n\n1.\tAlpha\t9\nAlpha\nBeta");
+    d.last_section.page_w = 220.0;
+    d.last_section.margin_left = 20.0;
+    d.last_section.margin_right = 20.0;
+    d.styles.get_mut("TOC2").unwrap().para.tabs = Some(vec![right]);
+    let num = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+    {
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap();
+        p.props.style = Some("TOCHeading".into());
+        p.insert_object(
+            p.len(),
+            wordcraft_doc::InlineObject::Field {
+                instr: r#"TOC \o "1-2""#.into(),
+                result: String::new(),
+                locked: false,
+                dirty: true,
+                code: false,
+                form: String::new(),
+            },
+            &CharProps::default(),
+        )
+        .unwrap();
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(1)).unwrap();
+        p.props.style = Some("TOC2".into());
+        p.props.tabs = Some(vec![right]);
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(2)).unwrap();
+        p.props.style = Some("TOC2".into());
+        p.props.tabs = Some(vec![left, right]);
+    }
+    for i in [3, 4] {
+        let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(i)).unwrap();
+        p.props.style = Some("Heading2".into());
+        p.props.numbering = Some(NumRef { num, level: 0 });
+    }
+    let bytes = wordcraft_docx::write(&d).unwrap();
+    let mut s = Session::new(wordcraft_docx::read(&bytes).unwrap());
+    for command in ["references.updateFields", "references.updateToc", "references.toc"] {
+        run(&mut s, command, json!({}));
+        let layout = s.layout();
+        let mut entries = 0;
+        for (i, b) in s.doc.body.iter().enumerate() {
+            let Some(p) = b.as_para().filter(|p| p.props.style.as_deref() == Some("TOC2")) else { continue };
+            entries += 1;
+            assert!(p.props.tabs.as_ref().is_some_and(|tabs| tabs.contains(&left)), "{command}: {:?}", p.props.tabs);
+            let title = p.text.find('\t').unwrap() + 1;
+            let page = p.text.rfind('\t').unwrap() + 1;
+            let start = layout.caret(&Pos::body(i, title)).unwrap();
+            let end = layout.caret(&Pos::body(i, page)).unwrap();
+            assert_eq!((start.page, start.top), (end.page, end.top), "{command}: {:?}", p.plain_text());
+            assert!((start.x - 44.0).abs() < 1.0, "{command}: {}", start.x);
+            assert!(end.x > 180.0, "{command}: {}", end.x);
+        }
+        assert_eq!(entries, 2);
+    }
+}
+
+#[test]
+fn toc_collects_cell_headings() {
+    use std::sync::Arc;
+    use wordcraft_doc::{Block, CharProps, InlineObject, Paragraph, Path, Table, para_block};
+    let mut earlier = Table::new(1, 1, 180.0);
+    earlier.rows[0].cells[0].blocks = vec![para_block(Paragraph::with_text("Earlier", CharProps::default()).styled("Heading1"))];
+    let mut nested = Table::new(1, 1, 180.0);
+    nested.rows[0].cells[0].blocks = vec![para_block(Paragraph::with_text("Nested", CharProps::default()).styled("Heading3"))];
+    let mut later = Paragraph::with_text("Later", CharProps::default());
+    later.props.outline_level = Some(1);
+    let mut table = Table::new(1, 1, 180.0);
+    table.rows[0].cells[0].blocks =
+        vec![para_block(later), Arc::new(Block::Table(nested)), para_block(Paragraph::with_text("Unlisted", CharProps::default()))];
+    let mut toc = Paragraph::with_text("Contents", CharProps::default()).styled("TOCHeading");
+    toc.insert_object(
+        toc.len(),
+        InlineObject::Field {
+            instr: r#"TOC \o "1-3" \h \u"#.into(),
+            result: String::new(),
+            locked: false,
+            dirty: true,
+            code: false,
+            form: String::new(),
+        },
+        &CharProps::default(),
+    )
+    .unwrap();
+    let mut d = wordcraft_doc::Document::new();
+    d.body = vec![
+        Arc::new(Block::Table(earlier)),
+        para_block(toc),
+        para_block(Paragraph::with_text("\u{000C}", CharProps::default())),
+        Arc::new(Block::Table(table)),
+    ];
+    let mut s = Session::new(wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap());
+    for command in ["references.updateFields", "references.updateToc"] {
+        run(&mut s, command, json!({}));
+        let entries: Vec<_> = s
+            .doc
+            .body
+            .iter()
+            .filter_map(|b| b.as_para())
+            .filter(|p| p.props.style.as_deref().is_some_and(|st| st.starts_with("TOC") && st != "TOCHeading"))
+            .cloned()
+            .collect();
+        assert_eq!(entries.len(), 3, "{command}: {}", text(&s));
+        let layout = s.layout();
+        let bookmarks = s.doc.bookmarks();
+        let mut pages = Vec::new();
+        for (p, title) in entries.iter().zip(["Earlier", "Later", "Nested"]) {
+            let value = p.plain_text();
+            assert!(value.starts_with(title), "{value}");
+            let shown: u32 = value.rsplit_once('\t').unwrap().1.parse().unwrap();
+            let name = p.props_of_char(0).link.as_ref().unwrap().strip_prefix('#').unwrap();
+            let (_, target) = bookmarks.iter().find(|(n, _)| n == name).unwrap();
+            assert!(target.path.depth() > 0);
+            let paragraph = s.doc.para(StoryRef::Body, &target.path).unwrap();
+            assert_eq!(paragraph.plain_text(), title);
+            let caret = layout.caret(target).unwrap();
+            assert_eq!(shown, layout.pages[caret.page].number, "{title}");
+            pages.push(caret.page);
+        }
+        assert!(pages[1] > pages[0]);
+        assert_eq!(bookmarks.iter().filter(|(n, _)| n.starts_with("_Toc")).count(), 3);
+        // The block-index-only link API must not misidentify a cell paragraph as a body block.
+        let targets = s.run("link.targets", &json!({})).unwrap();
+        assert_eq!(targets["headings"].as_array().unwrap().len(), 0);
+        assert!(s.doc.para(StoryRef::Body, &Path::top(1)).is_some());
+    }
+}

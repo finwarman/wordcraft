@@ -48,6 +48,38 @@ fn read_body(body: &str) -> Document {
 }
 
 #[test]
+fn repeated_style_ids_use_last() {
+    let styles = format!(
+        r#"<w:styles {W_NS}>
+        <w:style w:type="paragraph" w:styleId="Repeated"><w:name w:val="First"/>
+          <w:pPr><w:spacing w:after="240"/></w:pPr><w:rPr><w:b/><w:smallCaps/><w:sz w:val="28"/></w:rPr>
+        </w:style>
+        <w:style w:type="paragraph" w:styleId="Repeated"><w:name w:val="Last"/>
+          <w:pPr><w:spacing w:before="120"/></w:pPr><w:rPr><w:i/><w:caps/><w:sz w:val="20"/></w:rPr>
+        </w:style></w:styles>"#
+    );
+    let bytes = docx(
+        r#"<w:p><w:pPr><w:pStyle w:val="Repeated"/></w:pPr><w:r><w:t>Original style probe</w:t></w:r></w:p>"#,
+        &[("styles", "styles", "styles.xml")],
+        &[("word/styles.xml", &styles)],
+    );
+    let mut document = wordcraft_docx::read(&bytes).unwrap();
+    for _ in 0..2 {
+        let style = document.styles.get("Repeated").unwrap();
+        assert_eq!(style.name, "Last");
+        assert_eq!(style.chr.size, Some(10.0));
+        assert_eq!(style.chr.italic, Some(true));
+        assert_eq!(style.chr.bold, None);
+        assert_eq!(style.chr.caps, Some(true));
+        assert_eq!(style.chr.small_caps, None);
+        assert_eq!(style.para.space_before, Some(6.0));
+        assert_eq!(style.para.space_after, None);
+        assert_eq!(document.styles.styles.iter().filter(|style| style.id == "Repeated").count(), 1);
+        document = wordcraft_docx::read(&wordcraft_docx::write(&document).unwrap()).unwrap();
+    }
+}
+
+#[test]
 fn paragraph_default_presence_survives_repeated_saves() {
     // Omission leaves paragraph defaults application-defined (ISO 29500 pPrDefault).
     // An explicitly empty container must therefore remain distinct from omission.
@@ -2879,5 +2911,28 @@ fn break_spacing_flag_roundtrips() {
         assert_eq!(d.settings.suppress_break_spacing, expected, "{flag}");
         let reopened = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
         assert_eq!(reopened.settings.suppress_break_spacing, expected, "{flag}");
+    }
+}
+
+#[test]
+fn zero_effects_stay_zero_rotated() {
+    const ANGLE_UNITS_PER_DEGREE: i32 = 60_000;
+
+    // ECMA-376 §20.4.2.6: zero effect extents add no space around a rotated picture.
+    for degrees in [0, 90, 180, 270] {
+        for effects in ["", r#"<wp:effectExtent l="0" t="0" r="0" b="0"/>"#] {
+            let body = format!(
+                r#"<w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/>{effects}<wp:docPr id="1" name="Synthetic picture"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:blipFill><a:blip r:embed="rId1"/></pic:blipFill><pic:spPr><a:xfrm rot="{}"><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+                degrees * ANGLE_UNITS_PER_DEGREE
+            );
+            let d = wordcraft_docx::read(&docx(&body, &[("rId1", "image", "media/marker.png")], &[("word/media/marker.png", "synthetic")])).unwrap();
+            let (w, h, float) = paras(&d)[0].objects[0].frame().unwrap();
+            assert_eq!(float.rot, degrees as f32);
+            assert_eq!(float.effect, [0.0; 4], "rotation {degrees} must not invent effects");
+            let (px, py) = float.spin_pad(w, h);
+            let expected = if degrees % 180 == 0 { (w, h) } else { (h, w) };
+            assert!((w + 2.0 * px - expected.0).abs() < 0.001);
+            assert!((h + 2.0 * py - expected.1).abs() < 0.001);
+        }
     }
 }

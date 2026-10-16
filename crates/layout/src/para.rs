@@ -139,6 +139,8 @@ pub enum LineEnd {
 pub struct Line {
     pub top: f32,
     pub height: f32,
+    /// Height needed at the page bottom, excluding extra automatic leading.
+    pub(crate) fit_height: f32,
     pub baseline: f32,
     /// Cluster index range.
     pub c0: usize,
@@ -405,9 +407,6 @@ pub struct ParaEnv<'a> {
     pub read_line_spacing: Option<f32>,
     /// The section's document grid (`Grid::default()`: none).
     pub grid: Grid,
-    /// Shrink inline drawings wider than the line to fit it: in text boxes, which don't clip what
-    /// runs past their sides. Elsewhere such a drawing keeps its size and the page edge clips it.
-    pub fit_objects: bool,
 }
 
 /// The section's document grid as layout applies it (`w:docGrid`, ECMA-376 §17.6.5).
@@ -991,6 +990,33 @@ impl<'a> Builder<'a> {
         self.clusters.push(Cluster { start, end, adv: x, kind: ClKind::Text, style, g0, g1, break_after: false, obj_h: 0.0, obj_d: 0.0, dot: false });
     }
 
+    /// Wrap cached REF text at ordinary spaces without changing its document range or format.
+    fn shape_ref(&mut self, text: &str, start: usize, end: usize, rc: &Arc<ResolvedChar>, breaks: &mut Vec<(usize, bool)>) {
+        let first = self.clusters.len();
+        for piece in text.split_inclusive(' ') {
+            if let Some(word) = piece.strip_suffix(' ') {
+                if !word.is_empty() {
+                    self.shape_atomic(word, start, end, rc);
+                }
+                self.shape_atomic(" ", start, end, rc);
+                if let Some(c) = self.clusters.last_mut() {
+                    c.kind = ClKind::Space;
+                }
+            } else {
+                self.shape_atomic(piece, start, end, rc);
+            }
+        }
+        if self.clusters.len() == first {
+            self.shape_atomic(text, start, end, rc);
+        }
+        let last = self.clusters.len().saturating_sub(1);
+        for (i, c) in self.clusters.iter().enumerate().skip(first) {
+            if i < last || c.kind == ClKind::Space {
+                breaks.push((i, c.kind == ClKind::Space));
+            }
+        }
+    }
+
     /// Shape `texts` on top of one another as one cluster for `start..end`: each aligned within
     /// the cluster (at least `width` wide) and raised `dy`. Returns the cluster's index.
     #[allow(clippy::too_many_arguments)]
@@ -1238,6 +1264,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
     let mark_rc = resolve(&p.mark);
     let mark_style = b.style(&mark_rc, None, false);
     let mut has_page_fields = false;
+    let mut ref_breaks = Vec::new();
     let mut notes = Vec::new();
     let mut obj_index = 0usize;
     // Drop cap: the first character, sized so its capital spans `lines` lines.
@@ -1357,15 +1384,13 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
                                 && !float.hidden
                             {
                                 // A picture wider than the line keeps its size, as in Word: it runs past
-                                // the margin and the page edge clips it (see `ParaEnv::fit_objects`).
-                                let maxw = (env.width - rp.indent_left.max(0.0) - rp.indent_right.max(0.0)).max(18.0);
+                                // the margin and the page edge clips it.
                                 let (w, h) = (w.clamp(1.0, 4000.0), h.clamp(1.0, 4000.0));
-                                let s = if env.fit_objects && w > maxw { maxw / w } else { 1.0 };
                                 // The line makes room for effects (shadows) around the picture too, and
                                 // for a rotated one's bounds, as Word does.
                                 let [el, et, er, eb] = float.effect_extent();
-                                let (px, py) = float.spin_pad(w * s, h * s);
-                                push(&mut b, ClKind::Object(k), w * s + el + er + 2.0 * px, h * s + et + eb + 2.0 * py);
+                                let (px, py) = float.spin_pad(w, h);
+                                push(&mut b, ClKind::Object(k), w + el + er + 2.0 * px, h + et + eb + 2.0 * py);
                             } else {
                                 push(&mut b, ClKind::Object(k), 0.0, 0.0);
                             }
@@ -1384,7 +1409,11 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
                                     None => {
                                         let (t, page_dep) = field_text_on(instr, result, env.fields, env.fields.page_at(start));
                                         has_page_fields |= page_dep;
-                                        b.shape_atomic(&t, start, end, &rc);
+                                        if crate::fields::field_name(instr) == "REF" {
+                                            b.shape_ref(&t, start, end, &rc, &mut ref_breaks);
+                                        } else {
+                                            b.shape_atomic(&t, start, end, &rc);
+                                        }
                                     }
                                 }
                             }
@@ -1503,6 +1532,12 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
     for c in &mut b.clusters {
         c.break_after = opps.contains(&c.end) || matches!(c.kind, ClKind::Object(_) | ClKind::Tab);
     }
+    // Expanded REF pieces share one object offset, so use their own space boundaries.
+    for (i, allowed) in ref_breaks {
+        if let Some(c) = b.clusters.get_mut(i) {
+            c.break_after = allowed;
+        }
+    }
 
     // Word hides a list label on a paragraph containing only a page break. The list counter
     // has already advanced, so the following item keeps its number.
@@ -1615,7 +1650,9 @@ fn next_tab(x: f32, tabs: &[TabStop], default_tab: f32, hanging_at: Option<f32>)
 fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Option<&Level>) {
     let suffix = level.map(|l| l.suffix);
     let rp = pl.rp.clone();
-    let width = env.width.max(12.0);
+    // Narrow cells and float spans must retain their usable width.
+    const MIN_LINE_WIDTH: f32 = 1.0;
+    let width = env.width.max(MIN_LINE_WIDTH);
     let base_right = (width - rp.indent_right).max(1.0);
     let default_tab = env.doc.settings.default_tab;
     let first_left = rp.indent_left + rp.indent_first;
@@ -1697,7 +1734,7 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                         narrowed = !rest.is_empty() || a > lo || b < base_right;
                         row_rest = rest;
                         row_first = lines.len();
-                        break (a, b.max(a + 12.0));
+                        break (a, b.max(a + MIN_LINE_WIDTH));
                     }
                     Err(below) if below > top && guard < 50 => {
                         top = below;
@@ -1705,7 +1742,7 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                     }
                     Ok((None, _)) | Err(_) => {
                         row_first = lines.len();
-                        break (lo, base_right.max(lo + 12.0));
+                        break (lo, base_right.max(lo + MIN_LINE_WIDTH));
                     }
                 }
             }
@@ -1977,7 +2014,9 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
             // Spaces and tabs never make a line taller, whatever their size: Word sizes a line by
             // its other characters (a line of only them takes the paragraph mark's), measured in
             // Word for Windows with 9 pt text and 11–20 pt tabs, spaces and ideographic spaces.
-            if matches!(c.kind, ClKind::Marker | ClKind::Space | ClKind::Tab) || c0 + k < dropped {
+            // Floating and hidden drawings have no inline extent; their anchor font takes no height.
+            let anchor = matches!(c.kind, ClKind::Object(_)) && c.adv == 0.0 && c.obj_h == 0.0;
+            if matches!(c.kind, ClKind::Marker | ClKind::Space | ClKind::Tab) || anchor || c0 + k < dropped {
                 continue;
             }
             if let Some(st) = pl.styles.get(c.style as usize) {
@@ -1985,8 +2024,9 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                 // and descent, and grows above the baseline to fit a taller picture.
                 let (a, d) = if matches!(c.kind, ClKind::Object(_)) && c.obj_h > 0.0 {
                     if pl.maths.iter().any(|(k, _)| c.kind == ClKind::Object(*k)) {
-                        // An equation is text: its ascent and descent count like the text's.
-                        (c.obj_h, c.obj_d)
+                        // Exact spacing keeps the run's baseline; tall math may overflow the
+                        // fixed line box without moving adjacent text up by its denominator.
+                        if matches!(rp.line_spacing, LineSpacing::Exactly(_)) { (st.ascent, st.descent) } else { (c.obj_h, c.obj_d) }
                     } else {
                         obj_asc = obj_asc.max(c.obj_h);
                         (st.ascent, st.descent)
@@ -2006,6 +2046,17 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
             asc = st.ascent;
             desc = st.descent;
         }
+        let picture_only = matches!(rp.line_spacing, LineSpacing::Multiple(m) if m >= 1.0)
+            && grid.is_none()
+            && obj_asc > asc
+            && pl.label.is_none()
+            && pl.clusters.get(c0..c1).is_some_and(|cs| {
+                cs.iter().all(|c| match c.kind {
+                    ClKind::Object(i) => !pl.maths.iter().any(|(k, _)| *k == i),
+                    ClKind::Space | ClKind::Tab | ClKind::Marker => true,
+                    _ => false,
+                })
+            });
         let text_natural = asc + desc;
         let text_pictures = if obj_asc > asc { obj_asc + desc } else { 0.0 };
         let mut label_extra = 0.0;
@@ -2022,17 +2073,18 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                 }
             }
         }
-        // Keep the picture floor independent of list-label metrics and line-spacing multipliers.
-        // shortcut: Word leaves less than a full descent below a line of only pictures (0.5pt to
-        // 1.9pt in docxide-pdf's header fixtures case121/case123, where the descent is 3.3pt), and
-        // no rule tried so far (none, only the text's descent) matched both; it needs Word probes.
+        // Picture-only auto-spaced lines add the font's extra leading below the picture
+        // (Word Mac probes at single, 1.15 and double spacing). Labels and grids keep their floor.
         let natural = asc + desc;
         let pictures = if obj_asc > asc { obj_asc + desc } else { 0.0 };
         // Document grid: the line takes whole line pitches, its text centred in them.
         let (height, centred) = match (rp.line_spacing, grid) {
             (LineSpacing::Multiple(m), Some(g)) => ((g.snap_height(natural) * m).max(g.snap_height(pictures)), true),
             (LineSpacing::AtLeast(v), Some(g)) => (g.snap_height(natural.max(pictures)).max(v), true),
-            (LineSpacing::Multiple(m), None) => ((text_natural * m + label_extra).max(text_pictures), false),
+            (LineSpacing::Multiple(m), None) => {
+                let floor = if picture_only { obj_asc + text_natural * (m - 1.0).max(0.0) } else { text_pictures };
+                ((text_natural * m + label_extra).max(floor), false)
+            }
             (LineSpacing::AtLeast(v), None) => (natural.max(text_pictures).max(v), false),
             (LineSpacing::Exactly(v), _) => (v, false),
         };
@@ -2040,7 +2092,14 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
             let up = asc.max(obj_asc);
             top + ((height - up - desc) / 2.0).max(0.0) + up
         } else {
-            top + baseline_offset(rp.line_spacing, asc, height, desc).max(obj_asc.min(height - desc))
+            let cap = if picture_only { height } else { height - desc };
+            top + baseline_offset(rp.line_spacing, asc, height, desc).max(obj_asc.min(cap))
+        };
+
+        let fit_height = if !centred && matches!(rp.line_spacing, LineSpacing::Multiple(m) if m > 1.0) {
+            (baseline - top + if picture_only { 0.0 } else { desc }).min(height)
+        } else {
+            height
         };
 
         // Alignment / justification (trailing spaces hang).
@@ -2126,6 +2185,7 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
         let mut line = Line {
             top,
             height,
+            fit_height,
             baseline,
             c0,
             c1,
@@ -2172,6 +2232,7 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                 lines.push(Line {
                     top,
                     height: h,
+                    fit_height: if grid.is_none() && matches!(rp.line_spacing, LineSpacing::Multiple(m) if m > 1.0) { natural } else { h },
                     baseline: top + if grid.is_some() { h - desc } else { baseline_offset(rp.line_spacing, asc, h, desc) },
                     c0: n,
                     c1: n,
@@ -2226,6 +2287,7 @@ fn even_row(row: &mut [Line]) -> f32 {
     let h = row.iter().map(|l| l.height).fold(0.0f32, f32::max);
     for l in row {
         l.baseline += h - l.height;
+        l.fit_height += h - l.height;
         l.height = h;
     }
     h
@@ -2366,7 +2428,7 @@ const HYPHENATION_ZONE: f32 = wordcraft_doc::DEFAULT_HYPHENATION_ZONE;
 
 /// How much of their width the spaces of a justified line may give up to fit more text (Word
 /// 2013+, compatibility mode 15).
-const MAX_SPACE_SHRINK: f32 = 0.2;
+const MAX_SPACE_SHRINK: f32 = 0.25;
 
 /// Take `-slack` (an overflow) out of the line's inner spaces, in proportion to their widths and
 /// never more than [`MAX_SPACE_SHRINK`] of them. Trailing spaces hang and are left alone.
@@ -2533,7 +2595,8 @@ impl ParaLayout {
         for (i, l) in self.lines.iter().enumerate() {
             let next_start = self.lines.get(i + 1).map(|n| n.start);
             match next_start {
-                Some(ns) if off < ns => return i,
+                // Wrapped object pieces share a range: its start stays on the first piece.
+                Some(ns) if off < ns || (off == ns && l.stop > ns) => return i,
                 Some(_) => {}
                 None => return i,
             }
@@ -2725,7 +2788,6 @@ mod label_spacing_tests {
             eq_number: 0,
             numeral: crate::NumeralMode::default(),
             read_line_spacing: None,
-            fit_objects: false,
         };
         let mut p = Paragraph::with_text(if wrap { "Alpha probe synthetic business text repeated" } else { "Alpha probe" }, Default::default());
         p.props.line_spacing = Some(spacing);

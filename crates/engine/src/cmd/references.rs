@@ -231,7 +231,7 @@ struct TocEntry {
 /// breaks): what Insert › Link › Place in This Document lists.
 pub(crate) fn headings(s: &Session) -> Vec<(usize, u8, String, usize)> {
     let f = FieldCode::parse("TOC \\o \"1-9\" \\u");
-    toc_entries(s, &f).into_iter().map(|e| (e.path.last(), e.level.saturating_add(1), e.text, e.lead)).collect()
+    toc_entries(s, &f).into_iter().filter(|e| e.path.depth() == 0).map(|e| (e.path.last(), e.level.saturating_add(1), e.text, e.lead)).collect()
 }
 
 /// The heading level (1–9) of a built-in heading style.
@@ -272,9 +272,6 @@ fn toc_entries(s: &Session, f: &FieldCode) -> Vec<TocEntry> {
                 LevelSuffix::Space => format!("{label} "),
                 LevelSuffix::Nothing => label,
             });
-        if path.depth() > 0 {
-            continue;
-        }
         let style = p.props.style.as_deref().unwrap_or("Normal");
         if style.starts_with("TOC") {
             continue;
@@ -410,7 +407,33 @@ fn toc_field(p: &Paragraph) -> Option<String> {
     })
 }
 
+/// The first cached number-separator tab formatting at each TOC level.
+fn cached_toc_tabs(s: &Session) -> Vec<(String, Vec<TabStop>)> {
+    let span = toc_range(s).map(|(start, end)| (start.saturating_add(1), end)).or_else(|| {
+        s.doc.field_ranges(StoryRef::Body).into_iter().find_map(|r| {
+            let f = FieldCode::parse(&r.instr);
+            (r.depth == 0 && !r.locked && r.start.path.depth() == 0 && r.end.path.depth() == 0 && f.name == "TOC" && !f.has('c'))
+                .then_some((r.start.path.last(), r.end.path.last()))
+        })
+    });
+    let Some(blocks) = span.and_then(|(start, end)| s.doc.body.get(start..=end)) else { return Vec::new() };
+    let mut tabs: Vec<(String, Vec<TabStop>)> = Vec::new();
+    for p in blocks.iter().filter_map(|b| b.as_para()) {
+        let Some(style) = &p.props.style else { continue };
+        let Some(direct) = &p.props.tabs else { continue };
+        if !direct.iter().any(|t| matches!(t.align, TabAlign::Left | TabAlign::Center | TabAlign::Decimal)) {
+            continue;
+        }
+        if !style.starts_with("TOC") || style == "TOCHeading" || tabs.iter().any(|(id, _)| id == style) {
+            continue;
+        }
+        tabs.push((style.clone(), direct.clone()));
+    }
+    tabs
+}
+
 fn insert_toc(s: &mut Session, v: &Value) -> CmdResult {
+    let tabs = cached_toc_tabs(s);
     range_toc_to_field(s)?;
     let replace = v.as_object().is_some_and(|m| !m.is_empty());
     // Replacing a table puts the new one where the old one was, in place of an empty paragraph.
@@ -418,7 +441,7 @@ fn insert_toc(s: &mut Session, v: &Value) -> CmdResult {
     let at = match toc_range(s) {
         // `{}` updates the table there; settings replace it where it is.
         Some(_) if !replace => {
-            update_toc(s)?;
+            regenerate_toc(s, None, &tabs)?;
             return sel_result(s);
         }
         Some((start, end)) => {
@@ -453,7 +476,7 @@ fn insert_toc(s: &mut Session, v: &Value) -> CmdResult {
     };
     s.doc.insert_block(StoryRef::Body, &Path::top(i), Block::Para(head))?;
     let leader = leader(p::str(v, "tabLeader").unwrap_or("dot"));
-    regenerate_toc(s, Some(leader))?;
+    regenerate_toc(s, Some(leader), &tabs)?;
     s.clamp_selection();
     sel_result(s)
 }
@@ -461,8 +484,12 @@ fn insert_toc(s: &mut Session, v: &Value) -> CmdResult {
 /// A hidden `_Toc` bookmark around the heading at body block `i` (after its leading page breaks),
 /// reusing one already there; its name.
 pub(crate) fn toc_bookmark(s: &mut Session, i: usize, lead: usize) -> Result<String, CmdError> {
+    bookmark_heading(s, &Path::top(i), lead)
+}
+
+fn bookmark_heading(s: &mut Session, path: &Path, lead: usize) -> Result<String, CmdError> {
     const MARK: usize = wordcraft_doc::para::OBJ.len_utf8();
-    let para = s.doc.para(StoryRef::Body, &Path::top(i)).ok_or_else(|| CmdError::Failed("heading is gone".into()))?;
+    let para = s.doc.para(StoryRef::Body, path).ok_or_else(|| CmdError::Failed("heading is gone".into()))?;
     if let Some(InlineObject::BookmarkStart { name }) = para.object_at(lead)
         && name.starts_with("_Toc")
     {
@@ -473,12 +500,12 @@ pub(crate) fn toc_bookmark(s: &mut Session, i: usize, lead: usize) -> Result<Str
     let name = format!("_Toc{next:09}");
     let end = para.len();
     let props = CharProps::default();
-    let pos = |off| Pos { story: StoryRef::Body, path: Path::top(i), off };
+    let pos = |off| Pos { story: StoryRef::Body, path: path.clone(), off };
     s.doc.insert_object(&pos(end), InlineObject::BookmarkEnd { name: name.clone() }, &props)?;
     s.doc.insert_object(&pos(lead), InlineObject::BookmarkStart { name: name.clone() }, &props)?;
     // The caret in that paragraph stays on the same text.
     let shift = |p: &mut Pos| {
-        if p.story == StoryRef::Body && p.path == Path::top(i) {
+        if p.story == StoryRef::Body && &p.path == path {
             if p.off > end {
                 p.off = p.off.saturating_add(2 * MARK);
             } else if p.off >= lead && p.off > 0 {
@@ -493,12 +520,13 @@ pub(crate) fn toc_bookmark(s: &mut Session, i: usize, lead: usize) -> Result<Str
 
 /// Regenerate the TOC entries with page numbers (two layout passes: entries change pagination).
 pub fn update_toc(s: &mut Session) -> Result<(), CmdError> {
-    regenerate_toc(s, None)
+    let tabs = cached_toc_tabs(s);
+    regenerate_toc(s, None, &tabs)
 }
 
 /// Rebuild the entries the TOC field's switches ask for. The tab leader is `leader`, or the one
 /// the entries had (Word keeps it in the entries' tab stops, not in the field).
-fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>) -> Result<(), CmdError> {
+fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>, tabs: &[(String, Vec<TabStop>)]) -> Result<(), CmdError> {
     range_toc_to_field(s)?;
     let Some((start, end)) = toc_range(s) else { return Ok(()) };
     let Some(instr) = s.doc.body.get(start).and_then(|b| b.as_para()).and_then(toc_field) else { return Ok(()) };
@@ -538,7 +566,7 @@ fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>) -> Result<(), CmdE
         for e in &entries {
             // TC fields link to their paragraph's start.
             let lead = s.doc.para(StoryRef::Body, &e.path).map_or(0, |p| p.text.bytes().take_while(|b| *b == 0x0C).count());
-            v.push(Some(format!("#{}", toc_bookmark(s, e.path.last(), lead)?)));
+            v.push(Some(format!("#{}", bookmark_heading(s, &e.path, lead)?)));
         }
         v
     } else {
@@ -559,7 +587,12 @@ fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>) -> Result<(), CmdE
         }
         let shift = if pass == 0 { 0 } else { entries.len() };
         for (k, e) in entries.iter().enumerate() {
-            let target = Path::top(e.path.last() + if e.path.last() > start { shift } else { 0 });
+            let mut target = e.path.clone();
+            if let Some(top) = target.0.first_mut()
+                && (*top as usize) > start
+            {
+                *top = top.saturating_add(u32::try_from(shift).unwrap_or(u32::MAX));
+            }
             let page =
                 l.caret(&Pos { story: StoryRef::Body, path: target, off: e.lead }).and_then(|c| l.pages.get(c.page)).map(|pg| pg.number).unwrap_or(1);
             let show_page = no_pages.is_none_or(|(a, b)| !(a..=b).contains(&(e.level + 1)));
@@ -567,6 +600,9 @@ fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>) -> Result<(), CmdE
             let props = CharProps { link: links.get(k).cloned().flatten(), ..Default::default() };
             let mut para = Paragraph::with_text(&text, props).styled(&format!("TOC{}", e.level + 1));
             para.mark = CharProps::default();
+            if e.text.contains('\t') {
+                para.props.tabs = tabs.iter().find(|(style, _)| Some(style) == para.props.style.as_ref()).map(|(_, tabs)| tabs.clone());
+            }
             if show_page && sep.contains('\t') {
                 let right = TabStop { pos: width - 0.5, align: TabAlign::Right, leader };
                 para.props.tabs = Some(entry_tabs(s, &para.props, &e.text, right));
@@ -584,7 +620,8 @@ fn regenerate_toc(s: &mut Session, leader: Option<TabLeader>) -> Result<(), CmdE
 /// number set off by a space, or no number, a short entry's page tab would stop at one of them
 /// (without the leader), and so would the tab on the last line of an entry that wraps.
 fn entry_tabs(s: &Session, props: &wordcraft_doc::ParaProps, text: &str, right: TabStop) -> Vec<TabStop> {
-    let mut tabs = Vec::new();
+    let mut tabs = props.tabs.clone().unwrap_or_default();
+    tabs.retain(|t| t.pos < right.pos - 0.5 && !matches!(t.align, TabAlign::Right | TabAlign::Bar));
     if !text.contains('\t') {
         let style = s.doc.styles.resolve_para(&wordcraft_doc::ParaProps { style: props.style.clone(), ..Default::default() });
         for t in style.tabs {
@@ -1146,5 +1183,25 @@ mod tests {
         s.run("caret.docEnd", &json!({})).unwrap();
         s.run("references.caption", &json!({"label": "Table", "excludeLabel": true, "format": "ROMAN"})).unwrap();
         assert_eq!(s.doc.body.last().unwrap().as_para().unwrap().plain_text(), "I");
+    }
+    #[test]
+    fn toc_tabs_ignore_nonentries() {
+        let mut s = Session::new(wordcraft_doc::Document::from_text("Before\nContents\nOld\t9\nAfter"));
+        let stop = |pos| TabStop { pos, align: TabAlign::Left, leader: TabLeader::None };
+        for (i, pos) in [(0, 96.0), (1, 84.0), (2, 24.0)] {
+            let p = s.doc.para_mut(StoryRef::Body, &Path::top(i)).unwrap();
+            p.props.style = Some("TOC2".into());
+            p.props.tabs = Some(vec![stop(pos)]);
+        }
+        s.doc
+            .para_mut(StoryRef::Body, &Path::top(1))
+            .unwrap()
+            .insert_object(
+                0,
+                InlineObject::Field { instr: "TOC".into(), result: String::new(), locked: false, dirty: false, code: false, form: String::new() },
+                &CharProps::default(),
+            )
+            .unwrap();
+        assert_eq!(cached_toc_tabs(&s), vec![("TOC2".into(), vec![stop(24.0)])]);
     }
 }
