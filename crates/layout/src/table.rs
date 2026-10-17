@@ -506,6 +506,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         valign: VAlign,
         fill: Option<Rgb>,
         borders: Borders,
+        top_band: f32,
         vmerge: VMerge,
         margins: [f32; 4],
         g: usize,
@@ -603,6 +604,23 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             // border): the border's width sits on top of the cell margin.
             let band = |b: Option<Border>| b.filter(Border::is_visible).map_or(0.0, |b| b.width.clamp(0.0, 12.0));
             let (band_t, band_b) = (band(borders.top), if ri + 1 == nrows { band(borders.bottom) } else { 0.0 });
+            // A shared edge painted by the row above still clears this cell's text and minimum.
+            let band_t = if band_t > 0.0 || cell.props.vmerge == VMerge::Continue {
+                band_t
+            } else {
+                rows.last()
+                    .into_iter()
+                    .flatten()
+                    .filter(|above| above.g < g + span && g < above.g + above.span)
+                    .filter(|above| {
+                        above.vmerge == VMerge::None
+                            || !t.cell_at_grid(ri, above.g).is_some_and(|ci| {
+                                t.grid_col(ri, ci) == above.g && row.cells.get(ci).is_some_and(|c| c.props.vmerge == VMerge::Continue)
+                            })
+                    })
+                    .map(|above| band(above.borders.bottom))
+                    .fold(0.0, f32::max)
+            };
             let insets = margins[0] + margins[2] + band_t + band_b;
             let turn = cell.props.text_direction;
             let mut turned = None;
@@ -673,6 +691,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 valign: cell.props.valign.or_else(|| look.and_then(|l| l.v_align)).unwrap_or_default(),
                 fill,
                 borders,
+                top_band: band_t,
                 vmerge: cell.props.vmerge,
                 margins,
                 g,
@@ -910,7 +929,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 story,
                 clip: turned_clip || exact && c.h > span_h + 0.01,
             });
-            let top = c.margins[0] + c.borders.top.filter(Border::is_visible).map_or(0.0, |b| b.width.clamp(0.0, 12.0));
+            let top = c.margins[0] + c.top_band;
             parts.push(CellPart { anchored_rules, bottom_rule, top, bottom_band, items: first..items.len(), end, center, merge });
         }
         out.push(RowLayout {
