@@ -708,6 +708,13 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             while rows.get(end + 1).is_some_and(|r| r.iter().any(|c| c.g == g && c.vmerge == VMerge::Continue)) {
                 end += 1;
             }
+            // Exact rows clip a merged cell's overflow instead of moving the following content.
+            if t.rows
+                .get(ri..=end)
+                .is_some_and(|rows| rows.iter().all(|row| row.props.height_rule == HeightRule::Exact && row.props.height.is_some_and(|h| h > 0.0)))
+            {
+                continue;
+            }
             let have: f32 = heights.get(ri..=end).map(|s| s.iter().sum()).unwrap_or(0.0);
             if h > have
                 && let Some(last) = heights.get_mut(end)
@@ -1470,10 +1477,11 @@ fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
     edges[0] = Some(0.0);
     edges[grid.len()] = Some(total);
     for row in &t.rows {
+        let pct_total = rounded_pct_total(row, grid.len());
         let (mut g, mut x) = (0usize, 0.0f32);
         for cell in &row.cells {
             let width = match (cell.props.width_pct, cell.props.width) {
-                (Some(pct), _) => total * pct / 100.0,
+                (Some(pct), _) => total * pct / pct_total,
                 (_, Some(width)) => width,
                 _ => return,
             };
@@ -1497,6 +1505,22 @@ fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
     let widths: Option<Vec<f32>> = edges.windows(2).map(|pair| Some(pair[1]? - pair[0]?)).collect();
     if let Some(widths) = widths.filter(|widths| widths.iter().all(|w| *w > 0.0)) {
         grid.copy_from_slice(&widths);
+    }
+}
+
+// Word retains a complete percentage row rounded down by one OOXML fiftieth-percent unit.
+// Normalize that remainder before solving shared boundaries; real conflicts still reject the row.
+fn rounded_pct_total(row: &Row, columns: usize) -> f32 {
+    const PERCENT_TOTAL: f64 = 100.0;
+    const OOXML_PCT_UNIT: f64 = 1.0 / 50.0;
+    const FLOAT_SLOP: f64 = f32::EPSILON as f64 * PERCENT_TOTAL;
+    if row.first_grid() != 0 || row.props.grid_after != 0 || row.cells.iter().fold(0usize, |n, c| n.saturating_add(c.span())) != columns {
+        return PERCENT_TOTAL as f32;
+    }
+    let total: Option<f64> = row.cells.iter().map(|c| c.props.width_pct.filter(|p| p.is_finite() && *p > 0.0).map(f64::from)).sum();
+    match total {
+        Some(sum) if PERCENT_TOTAL - sum > FLOAT_SLOP && PERCENT_TOTAL - sum <= OOXML_PCT_UNIT + FLOAT_SLOP => sum as f32,
+        _ => PERCENT_TOTAL as f32,
     }
 }
 
@@ -1617,6 +1641,88 @@ mod width_tests {
         let mut grid = table.grid.clone();
         apply_cell_widths(&table, &mut grid);
         assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+
+        table.rows[1].cells[0].props.width_pct = None;
+        table.rows[1].cells[0].props.width = Some(150.0);
+        grid.copy_from_slice(&table.grid);
+        apply_cell_widths(&table, &mut grid);
+        assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+    }
+
+    fn rounded_width_table() -> Table {
+        let mut table = Table::new(3, 6, 468.0);
+        table.grid = vec![25.0, 25.0, 30.0, 300.0, 44.0, 44.0];
+        for row in &mut table.rows {
+            for (cell, pct) in row.cells.iter_mut().zip([18.58, 7.28, 16.04, 18.36, 17.38, 22.34]) {
+                cell.props.width = None;
+                cell.props.width_pct = Some(pct);
+            }
+        }
+        table
+    }
+
+    #[test]
+    fn rounded_percent_rows_fit() {
+        for total in [468.0, 422.05, 1584.0] {
+            let table = rounded_width_table();
+            let mut grid: Vec<_> = table.grid.iter().map(|width| width * total / 468.0).collect();
+            apply_cell_widths(&table, &mut grid);
+            for (width, pct) in grid.iter().zip([18.58, 7.28, 16.04, 18.36, 17.38, 22.34]) {
+                assert!((width - total * pct / 99.98).abs() < 0.01, "{grid:?}");
+            }
+            assert!((grid.iter().sum::<f32>() - total).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn rounded_spans_share_edges() {
+        let mut table = rounded_width_table();
+        table.rows[0].cells.remove(1);
+        table.rows[0].cells[0].props.span = 2;
+        table.rows[0].cells[0].props.width_pct = Some(25.86);
+        let mut grid = table.grid.clone();
+        apply_cell_widths(&table, &mut grid);
+        assert!((grid[0] - 468.0 * 18.58 / 99.98).abs() < 0.01);
+        assert!((grid[1] - 468.0 * 7.28 / 99.98).abs() < 0.01);
+    }
+
+    #[test]
+    fn rounding_has_one_unit_limit() {
+        for (first, normalized) in [(18.58, true), (18.5801, true), (18.599998, false), (18.5799, false), (18.56, false), (18.62, false)] {
+            let mut table = rounded_width_table();
+            table.rows[0].cells[0].props.width_pct = Some(first);
+            let total = rounded_pct_total(&table.rows[0], 6);
+            assert_eq!(total < 100.0, normalized, "first {first}: {total}");
+        }
+        let mut table = rounded_width_table();
+        table.rows[0].props.grid_before = 1;
+        assert_eq!(rounded_pct_total(&table.rows[0], 6), 100.0);
+        table.rows[0].props.grid_before = 0;
+        table.rows[0].props.grid_after = 1;
+        assert_eq!(rounded_pct_total(&table.rows[0], 6), 100.0);
+    }
+
+    #[test]
+    fn rounding_keeps_conflict_guard() {
+        for case in 0..8 {
+            let mut table = rounded_width_table();
+            match case {
+                0 => table.rows[1].cells[0].props.width_pct = Some(18.56),
+                1 => table.rows[1].cells[0].props.width_pct = Some(18.60),
+                2 => table.rows[1].cells[0].props.width_pct = Some(f32::NAN),
+                3 => table.rows[1].cells[0].props.width_pct = None,
+                4 => table.rows[1].cells[0].props.width_pct = Some(0.0),
+                5 => table.rows[1].cells[0].props.span = 2,
+                6 => {
+                    table.rows[1].cells[0].props.width_pct = Some(19.58);
+                    table.rows[1].cells[3].props.width_pct = Some(17.36);
+                }
+                _ => table.rows.iter_mut().for_each(|row| row.cells[0].props.width_pct = Some(18.5799)),
+            }
+            let mut grid = table.grid.clone();
+            apply_cell_widths(&table, &mut grid);
+            assert_eq!(grid, table.grid, "case {case}");
+        }
     }
 
     #[test]
