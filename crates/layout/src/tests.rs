@@ -10366,3 +10366,94 @@ fn nested_rule_stays_anchored() {
         assert!(edges.iter().skip(1).all(Vec::is_empty), "{edges:?}");
     }
 }
+
+#[test]
+fn header_table_collision() {
+    use wordcraft_doc::para::Anchor;
+    use wordcraft_doc::props::{HeightRule, TableFloat};
+
+    for (overlap, expected) in [(false, 140.0), (true, 100.0)] {
+        let mut doc = Document::new();
+        doc.settings.compat_mode = 15;
+        let table = |y, height| {
+            let mut t = Table::new(1, 2, 300.0);
+            t.props.cell_margins = Some([0.0; 4]);
+            t.props.float = Some(TableFloat { h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y, overlap, ..Default::default() });
+            t.rows[0].props.height = Some(height);
+            t.rows[0].props.height_rule = HeightRule::Exact;
+            t
+        };
+        let id = doc.add_part(wordcraft_doc::PartKind::Header, vec![Arc::new(Block::Table(table(60.0, 80.0)))]);
+        doc.last_section.headers.default = Some(id);
+        doc.body = vec![Arc::new(Block::Table(table(100.0, 48.0)))];
+        let laid = lay(&doc);
+        assert_eq!(laid.pages.len(), 1);
+        for page in &laid.pages {
+            let top = |items: &[Placed]| {
+                items
+                    .iter()
+                    .filter_map(|it| match it {
+                        Placed::Cell { rect, .. } => Some(rect.y),
+                        _ => None,
+                    })
+                    .fold(f32::MAX, f32::min)
+            };
+            assert!((top(&page.header) - 60.0).abs() < 0.01);
+            assert!((top(&page.items) - expected).abs() < 0.01, "overlap={overlap}: body top {} expected {expected}", top(&page.items));
+        }
+    }
+}
+
+#[test]
+fn header_margin_collision() {
+    use wordcraft_doc::para::Anchor;
+    use wordcraft_doc::props::{HeightRule, LineSpacing, TableFloat};
+
+    for height in [0.0, 160.0] {
+        for requested in [100.0, 220.0] {
+            let mut doc = Document::new();
+            doc.settings.compat_mode = 15;
+            let table = |y, h, relative| {
+                let mut t = Table::new(1, 1, 300.0);
+                t.props.cell_margins = Some([0.0; 4]);
+                t.props.float = Some(TableFloat { h_rel: Anchor::Page, v_rel: relative, x: 72.0, y, overlap: false, ..Default::default() });
+                t.rows[0].props.height = Some(h);
+                t.rows[0].props.height_rule = HeightRule::Exact;
+                Arc::new(Block::Table(t))
+            };
+            let mut blocks = Vec::new();
+            if height > 0.0 {
+                let mut text = Paragraph::with_text("Original tall header", Default::default());
+                text.props = ParaProps {
+                    space_before: Some(0.0),
+                    space_after: Some(0.0),
+                    line_spacing: Some(LineSpacing::Exactly(height)),
+                    ..Default::default()
+                };
+                blocks.push(wordcraft_doc::para_block(text));
+            }
+            blocks.push(table(0.0, 80.0, Anchor::Margin));
+            let id = doc.add_part(wordcraft_doc::PartKind::Header, blocks);
+            doc.last_section.headers.default = Some(id);
+            doc.body = vec![table(requested, 48.0, Anchor::Page)];
+            let laid = lay(&doc);
+            assert_eq!(laid.pages.len(), 1);
+            let page = &laid.pages[0];
+            let cell = |items: &[Placed]| {
+                items
+                    .iter()
+                    .find_map(|item| match item {
+                        Placed::Cell { rect, .. } => Some(*rect),
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            let header = cell(&page.header);
+            let body = cell(&page.items);
+            let original = Rect::new(body.x, requested, body.w, body.h);
+            let expected = if header.intersects(&original) { header.bottom() } else { requested };
+            assert!(!header.intersects(&body), "height={height}, requested={requested}: header={header:?}, body={body:?}");
+            assert!((body.y - expected).abs() < 0.01, "height={height}, requested={requested}: body={body:?}, expected={expected}");
+        }
+    }
+}

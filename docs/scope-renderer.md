@@ -1,7 +1,7 @@
 # Scope renderer snapshot
 
 Upstream base: `eae242176108d328c5dd81fbc10370c51ab90706`.
-Previous Scope snapshot: `c3e64f55aaa78672cc2853e7687be5aa346b4331`.
+Previous Scope snapshot: `87fcf4d4e5fee1d54325ed8da804ab2936e33364`.
 
 This integrates upstream and the parity contributions below. It is an alpha
 snapshot, not an upstream release or a claim of complete Word parity. Rust 1.95
@@ -81,15 +81,19 @@ commits without changing the integrated rules. Fragment dependencies are
 | [#2654](https://github.com/storytold/wordcraft/pull/2654) | `25acc36408728bf610f95bc578d0f0a953148c90` |
 | [#2657](https://github.com/storytold/wordcraft/pull/2657) | `e3a260d097dbb552c368f053098e5c95df3ef479` |
 | [#2607](https://github.com/storytold/wordcraft/pull/2607) | `6fb9ce5b67e6970c04a048331965284e9cde174c` |
+| [#2659](https://github.com/storytold/wordcraft/pull/2659) | `7e5de9b6892621dbf6002e3535b656854c199f90` |
+| [#2660](https://github.com/storytold/wordcraft/pull/2660) | `4e14d8b65a0d2b77c3d896523d47c2b848d221f4` |
+| [#2661](https://github.com/storytold/wordcraft/pull/2661) | `de0915335180c6d246a3d95e573473659add0cc3` |
+| [#2662](https://github.com/storytold/wordcraft/pull/2662) | `bbbcf307f132cd0a060862c76cef0986e9392b6a` |
 
 Caption minimum-inset follow-up is prepared on the [fork branch](https://github.com/finwarman/wordcraft/tree/codex/row-minimum-insets) at `90abb49f`. Upstream submission waits for #2465 and #2494; it is not merge-ready. This snapshot includes the tested integration rule.
 
 Page-relative footer height and wrapping also include the reviewed local follow-up.
-Its upstream submission is pending. The body textbox boundary is separate.
+It is submitted as #2659. The body textbox boundary is separate.
 
 ## Measured limits
 
-The preceding snapshot matched all ten native physical page counts. The current
+Nine current physical page counts match Word. The
 SGS candidate has 58 pages against Word's 59; late floating-table flow remains
 unresolved. Equal counts do not establish visual or semantic parity. Fresh
 container renders must recheck landscape indices and ordered caption instances.
@@ -141,7 +145,13 @@ hyperlink reaches the correct page. These remain acceptance limits.
 Missing Arial Unicode MS now prefers proportional Arial substitutes instead of
 the generic code-font fallback. This fixes Courier substitution in Rosen; exact
 font metrics and mixed-font formula spacing remain limits. Rosen approval-table
-column widths and dashed annotation outlines still differ.
+column widths still differ. Explicit annotation dashes now reach both painters;
+theme inheritance and nonflat caps remain incomplete. Header-table collision
+measurement uses the same expanded margin frame as header painting.
+
+Display operators now use their font-defined minimum height. The measured Sigma
+stack improves by about 5.5 pt; roughly 14.8 pt of fraction/root packing remains.
+The print-time cross-reference follow-up #2612 is not integrated here.
 
 Local gates encounter the reproduced upstream justified-line and two
 colour-emoji environment failures. Those tests are unchanged. No customer

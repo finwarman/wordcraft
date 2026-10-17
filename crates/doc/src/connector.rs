@@ -44,6 +44,9 @@ pub struct ShapeExtra {
     /// DrawingML preset pattern colors, including their independent opacity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<crate::pattern::PatternFill>,
+    /// The outline dash pattern; absent in older saved documents means solid.
+    #[serde(skip_serializing_if = "crate::line_dash::LineDash::is_solid")]
+    pub dash: crate::line_dash::LineDash,
 }
 
 fn is_zero(v: &u32) -> bool {

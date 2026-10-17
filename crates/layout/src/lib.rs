@@ -686,6 +686,7 @@ struct Ctx<'a> {
     /// Cache-key hashes of the table-style text formatting cells were laid out with
     /// ([`Ctx::table_key`]).
     table_keys: Vec<(para::CellText, u64)>,
+    header_tables: HashMap<(usize, u32, bool, u32), Vec<Rect>>,
     story_floats: Option<StoryFloats>,
     story_wraps: HashMap<(usize, u32, bool, wordcraft_doc::PartKind), Vec<WrapArea>>,
     header_sections: Arc<Vec<(usize, &'a SectionProps)>>,
@@ -1053,6 +1054,7 @@ fn layout_box(
     let mut excl: Vec<WrapArea> = Vec::new();
     // Areas of the box's floating tables, which other floating tables may have to avoid.
     let mut float_tables: Vec<Rect> = Vec::new();
+    let mut table_areas = Vec::new();
     let mut page_table_wraps = Vec::new();
     let mut y = 0.0f32;
     let mut prev_after = 0.0f32;
@@ -1201,6 +1203,7 @@ fn layout_box(
                             let avoid = if nested { &[][..] } else { &float_tables };
                             let (r, area) = box_float_table_rect(frame, width, y, &tl, &f, legacy, avoid);
                             excl.push((area, false, None, WrapText::BothSides));
+                            table_areas.push(area);
                             if !nested {
                                 float_tables.push(area);
                                 if f.v_rel == Anchor::Page {
@@ -1267,6 +1270,7 @@ fn layout_box(
         floats_bottom,
         last_top: last_top.max(0.0),
         exclusions: excl,
+        table_areas,
         page_table_wraps,
     }
 }
@@ -1323,6 +1327,7 @@ fn frame_float(fr: &wordcraft_doc::props::TextFrame) -> Float {
 /// height without it).
 struct BoxLayout {
     items: Vec<Placed>,
+    table_areas: Vec<Rect>,
     anchored_rules: Vec<table::AnchoredRule>,
     foreground: Vec<Foreground>,
     exclusions: Vec<WrapArea>,
@@ -2154,6 +2159,7 @@ fn layout_pass(
         quiet_marks: Vec::new(),
         mirror: false,
         table_keys: Vec::new(),
+        header_tables: HashMap::new(),
         story_floats: None,
         story_wraps: HashMap::new(),
         header_sections: Arc::new(doc.sections()),
@@ -4206,7 +4212,7 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
         let legacy = if ctx.doc.settings.compat_mode < 15 { table::first_cell_left_margin(ctx, t) } else { 0.0 };
         let h: f32 = tl.rows.iter().map(|r| r.height).sum();
         if h <= pb.uncapped_bottom() - pb.top + 0.01 {
-            place_floating_table(pb, &tl, &f, legacy, ctx.mirror, block, body_top);
+            place_floating_table(ctx, pb, &tl, &f, legacy, block, body_top);
             return;
         }
         // Too tall for a page: Word lets it run across pages like a table in the text, from its
@@ -4402,23 +4408,84 @@ fn table_notes(ctx: &mut Ctx, pb: &mut PageBuilder, items: &[Placed]) {
     pb.bottom -= pb.notes_h() - before;
 }
 
+/// Header tables can displace a non-overlapping body table. Page-positioned drawings keep
+/// their own wrapping rules, so only table areas are retained from the header layout.
+fn header_table_areas(ctx: &mut Ctx, pb: &PageBuilder) -> Vec<Rect> {
+    if pb.web || ctx.opts.view == ViewMode::Read {
+        return Vec::new();
+    }
+    let Some(page) = pb.pages.last() else { return Vec::new() };
+    let first = pb.pages.iter().rev().nth(1).is_none_or(|prev| prev.section != page.section);
+    let key = (page.section, page.number, first, page.body.y.to_bits());
+    if let Some(areas) = ctx.header_tables.get(&key) {
+        return areas.clone();
+    }
+    let sections = ctx.doc.sections();
+    let Some((_, sect)) = sections.get(page.section) else { return Vec::new() };
+    if sect.text_direction.is_turned() {
+        return Vec::new();
+    }
+    let set = linked(&sections, page.section, |s| s.headers);
+    let id = if sect.title_page && first {
+        set.first
+    } else if ctx.doc.settings.even_odd_headers && page.number.is_multiple_of(2) {
+        set.even.or(set.default)
+    } else {
+        set.default
+    };
+    let Some(id) = id else { return Vec::new() };
+    let Some(part) = ctx.doc.parts.get(&id) else { return Vec::new() };
+    let blocks = part.blocks.clone();
+    let x = sect.margin_left + sect.gutter;
+    // Use the expanded margin frame that headers_footers paints.
+    let mut anchor_sect = (*sect).clone();
+    anchor_sect.margin_top = page.body.y;
+    let frame = PageFrame { sect: &anchor_sect, origin: (x, sect.header), number: page.number, mirror: ctx.mirror };
+    let base = defining_width(&sections, page.section, |s| s.headers, Some(id));
+    let counters = std::mem::take(&mut ctx.counters);
+    let boxes = std::mem::take(&mut ctx.boxes);
+    let chains = std::mem::take(&mut ctx.chains);
+    let fields = ctx.fields.clone();
+    let grid = std::mem::take(&mut ctx.grid);
+    let track = std::mem::replace(&mut ctx.track_totals, false);
+    ctx.fields.page = page.number;
+    let mut areas = again(ctx, 0, |ctx| {
+        with_pct_base(ctx, base, |ctx| layout_box(ctx, StoryRef::Part(id), &blocks, &[], sect.text_width(), BoxContext::Other, 0, Some(frame)))
+            .table_areas
+    });
+    ctx.counters = counters;
+    ctx.boxes = boxes;
+    ctx.chains = chains;
+    ctx.fields = fields;
+    ctx.grid = grid;
+    ctx.track_totals = track;
+    for r in &mut areas {
+        r.x += x;
+        r.y += sect.header;
+    }
+    ctx.header_tables.insert(key, areas.clone());
+    areas
+}
+
 /// Place floating table `tl` (`w:tblpPr`): at its own position, which takes no room in the text
 /// flow; the text after it wraps around it.
-fn place_floating_table(pb: &mut PageBuilder, tl: &table::TableLayout, f: &TableFloat, legacy: f32, mirror: bool, block: usize, body_top: f32) {
+fn place_floating_table(ctx: &mut Ctx, pb: &mut PageBuilder, tl: &table::TableLayout, f: &TableFloat, legacy: f32, block: usize, body_top: f32) {
     let h: f32 = tl.rows.iter().map(|r| r.height).sum::<f32>().clamp(0.0, 100_000.0);
     let w = tl.width.clamp(1.0, 100_000.0);
     let [dl, dt, dr, db] = f.dist_from_text();
     for attempt in 0..2 {
         let s = pb.sect;
-        let h_area = float_table_h_area(pb, f, mirror);
+        let h_area = float_table_h_area(pb, f, ctx.mirror);
         // The text a table anchored to it stands in: where the next paragraph starts.
         let v_area = match f.v_rel {
             Anchor::Page => (0.0, s.page_h),
             Anchor::Margin => (s.margin_top, s.text_height()),
             _ => (pb.y, 0.0),
         };
-        let x = float_table_x(pb, w, f, legacy, mirror);
-        let r = clear_of_float_tables(Rect::new(x, align_in(v_area, f.y, h, f.v_align), w, h), f, legacy, h_area.0, &pb.float_tables);
+        let x = float_table_x(pb, w, f, legacy, ctx.mirror);
+        let mut obstacles = if f.overlap { Vec::new() } else { header_table_areas(ctx, pb) };
+        obstacles.extend_from_slice(&pb.float_tables);
+        let r = clear_of_float_tables(Rect::new(x, align_in(v_area, f.y, h, f.v_align), w, h), f, legacy, h_area.0, &obstacles);
         // Like Word, a table that doesn't fit below the text before it moves to the next page with
         // its anchor: one placed relative to the paragraph when it would run off the page, one
         // placed on the page or margin when it would also cover the text already on the page.

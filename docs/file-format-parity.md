@@ -1,6 +1,6 @@
 # File-format parity with Microsoft Word
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-16 · **Change:** trivial (cached field results retain their run formatting; previously trivial: DrawingML ltVert pattern colours and alpha; previously trivial: PDF heading outlines follow visible text after leading page breaks; previously trivial: repeated style IDs use the last definition, as observed in Word; previously trivial: every table style part round-trips, #714); previously trivial: VML freeforms read and kept on save; previously trivial: multi-paragraph field instructions no longer add blank lines; previously trivial: `flowChartOr` draws its circle and cross spokes, as in Word; previously trivial: RTF: Mac OS Roman and DOS text, #1653; previously trivial: VML text boxes keep their internal margins, fit to their text and vertical alignment; hidden drawings not shown; previously trivial: PDF export draws horizontal and vertical lines inside groups, #1474; previously trivial: symbol-font text exported as Unicode, #776; previously trivial: text-box margins, Resize shape to fit text and freeforms in groups, #743; previously trivial: formatted paste from the system clipboard's HTML and RTF, #687; previously trivial: independent complex-script formatting inheritance and round-trip regression tests; previously trivial: import/export fixes for TXT, RTF, ODT, HTML and LaTeX, #433–#440; previously major: first version; every format Word reads or writes, measured from the readers and writers on origin/main) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4, plus Word for Windows' extra formats
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-17 · **Change:** trivial (DrawingML preset and custom outline dashes; previously trivial: cached field results retain their run formatting; previously trivial: DrawingML ltVert pattern colours and alpha; previously trivial: PDF heading outlines follow visible text after leading page breaks; previously trivial: repeated style IDs use the last definition, as observed in Word; previously trivial: every table style part round-trips, #714); previously trivial: VML freeforms read and kept on save; previously trivial: multi-paragraph field instructions no longer add blank lines; previously trivial: `flowChartOr` draws its circle and cross spokes, as in Word; previously trivial: RTF: Mac OS Roman and DOS text, #1653; previously trivial: VML text boxes keep their internal margins, fit to their text and vertical alignment; hidden drawings not shown; previously trivial: PDF export draws horizontal and vertical lines inside groups, #1474; previously trivial: symbol-font text exported as Unicode, #776; previously trivial: text-box margins, Resize shape to fit text and freeforms in groups, #743; previously trivial: formatted paste from the system clipboard's HTML and RTF, #687; previously trivial: independent complex-script formatting inheritance and round-trip regression tests; previously trivial: import/export fixes for TXT, RTF, ODT, HTML and LaTeX, #433–#440; previously major: first version; every format Word reads or writes, measured from the readers and writers on origin/main) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4, plus Word for Windows' extra formats
 
 Every format Word opens or saves, what WordCraft does with it, and how it's tested. Fidelity is the
 share of a typical real-world file's content and formatting that survives (read: shows correctly;
@@ -215,10 +215,15 @@ attributes inside stories and style or list definitions; a regenerated theme. Te
 
 Repeated style IDs use the last complete definition, as observed in Word. Earlier properties do not leak into the replacement. Original fixtures cover style replacement and repeated save/reopen.
 
+## Current integration
+
+DrawingML preset and custom outline dashes round-trip through shape properties. Custom dash lists and lengths are bounded. PDF and raster output retain explicit dash patterns; theme inheritance and nonflat caps remain incomplete.
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-17 | trivial | DrawingML preset and custom outline dashes. |
 | 2026-10-16 | trivial | Nonempty cached field results use their own run properties; empty results retain begin properties |
 | 2026-10-16 | trivial | Preserve and clip DrawingML ltVert pattern colours and alpha; other patterns retain foreground fallback |
 | 2026-10-16 | trivial | PDF heading outlines target the first content fragment after leading page breaks, including markers and selected-page exports. |
