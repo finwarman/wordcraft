@@ -211,7 +211,13 @@ pub fn layout_equation(
         path: Vec::new(),
         node_stack: Vec::new(),
     };
-    let st = St { level: 0, display, cramped: false, upright: false };
+    let st = St {
+        level: 0,
+        display,
+        fraction_size: if display { if props.small_frac { FracSize::Display } else { FracSize::Text } } else { FracSize::Script },
+        cramped: false,
+        upright: false,
+    };
     let avail = if avail.is_finite() { avail.clamp(0.0, 1e5) } else { 0.0 };
     let b = match nodes.as_slice() {
         [] => cx.hint(st),
@@ -222,12 +228,20 @@ pub fn layout_equation(
     cx.finish(b, st)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FracSize {
+    Display,
+    Text,
+    Script,
+}
+
 /// Layout style: script level (0 = text size, 1 = script, 2 = script-script), display or inline,
 /// cramped (superscripts lowered: inside radicals, denominators, subscripts).
 #[derive(Clone, Copy, Debug)]
 struct St {
     level: u8,
     display: bool,
+    fraction_size: FracSize,
     cramped: bool,
     /// Letters default to upright (function names).
     upright: bool,
@@ -235,14 +249,24 @@ struct St {
 
 impl St {
     fn script(self) -> St {
-        St { level: (self.level + 1).min(2), display: false, ..self }
+        St {
+            level: (self.level + 1).min(2),
+            display: false,
+            fraction_size: if self.fraction_size == FracSize::Text { FracSize::Text } else { FracSize::Script },
+            ..self
+        }
     }
     fn cramp(self) -> St {
         St { cramped: true, ..self }
     }
     /// Numerator / denominator style.
     fn frac(self) -> St {
-        if self.display { St { display: false, ..self } } else { self.script() }
+        // Display fractions retain text-sized arguments after entering text layout style.
+        match self.fraction_size {
+            FracSize::Display => St { display: false, fraction_size: FracSize::Script, ..self },
+            FracSize::Text => St { display: false, ..self },
+            FracSize::Script => self.script(),
+        }
     }
 }
 
@@ -1345,7 +1369,12 @@ impl Ctx {
         let mut x0 = 0.0f32;
         let mut out = Bx::default();
         if !deg_hide {
-            let db = self.sub(0, deg, St { level: (st.level + 2).min(2), display: false, cramped: true, upright: st.upright }, d);
+            let db = self.sub(
+                0,
+                deg,
+                St { level: (st.level + 2).min(2), display: false, fraction_size: FracSize::Script, cramped: true, upright: st.upright },
+                d,
+            );
             let kb = self.k(C::RadicalKernBeforeDegree, st);
             let ka = self.k(C::RadicalKernAfterDegree, st);
             let raise = self.t.as_ref().map_or(60.0, |t| t.radical_degree_bottom_raise_percent) / 100.0 * (ga + gd);
@@ -2114,7 +2143,13 @@ mod tests {
                         path: Vec::new(),
                         node_stack: Vec::new(),
                     };
-                    let st = St { level: 0, display, cramped: false, upright: false };
+                    let st = St {
+                        level: 0,
+                        display,
+                        fraction_size: if display { FracSize::Text } else { FracSize::Script },
+                        cramped: false,
+                        upright: false,
+                    };
                     let mut ink = cx.glyph_id(face.glyph_for('a'), size, Rgb::BLACK);
                     ink.items.push(MItem::Rect { x: 0.0, y: 0.0, w: ink.w, h: 0.5, color: Rgb::BLACK });
                     let before = ink.clone();
@@ -2133,6 +2168,64 @@ mod tests {
                         }
                     }
                     assert_eq!(result.items.len(), before.items.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn display_script_fraction_size() {
+        let st = St { level: 0, display: true, fraction_size: FracSize::Text, cramped: false, upright: false };
+        assert_eq!(st.script().frac().level, 1, "display script fractions retain their argument size");
+        let small = St { fraction_size: FracSize::Display, ..st };
+        assert_eq!(small.frac().level, 0, "the outer display fraction stays full size");
+        assert_eq!(small.frac().frac().level, 1, "smallFrac shrinks nested arguments");
+        assert_eq!(small.script().frac().level, 2, "smallFrac also shrinks display script fractions");
+        let inline = St { display: false, fraction_size: FracSize::Script, ..st };
+        assert_eq!(inline.script().frac().level, 2, "inline script fractions shrink their arguments");
+    }
+
+    #[test]
+    fn nested_fraction_size() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let font = db.face(wordcraft_fonts::DEFAULT_FAMILY, "Regular");
+        let face = FaceRef::of(&font);
+        let mut table = MathTable::default();
+        table.script_percent = 73.0;
+        table.script_script_percent = 60.0;
+        let text = |s: &str| vec![MNode::Run(MRun::new(s))];
+        let node =
+            MNode::Frac { kind: FracKind::Bar, num: vec![MNode::Frac { kind: FracKind::Bar, num: text("a"), den: text("b") }], den: text("c") };
+        for (display, fraction_size, inner_scale, outer_scale) in
+            [(true, FracSize::Text, 1.0, 1.0), (true, FracSize::Display, 0.73, 1.0), (false, FracSize::Script, 0.6, 0.73)]
+        {
+            for size in [9.0, 14.0, 20.0] {
+                let mut cx = Ctx {
+                    face,
+                    t: Some(Arc::new(table.clone())),
+                    upem: face.upem as f32,
+                    base: size,
+                    color: Rgb::BLACK,
+                    text_font: wordcraft_fonts::DEFAULT_FAMILY.into(),
+                    nodes: 0,
+                    path: Vec::new(),
+                    node_stack: Vec::new(),
+                };
+                let st = St { level: 0, display, fraction_size, cramped: false, upright: false };
+                let b = cx.arg(std::slice::from_ref(&node), st, 0);
+                let sizes: Vec<f32> = b
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        MItem::Glyphs { size, .. } => Some(*size),
+                        _ => None,
+                    })
+                    .collect();
+                let expected = vec![size * inner_scale, size * inner_scale, size * outer_scale];
+                assert_eq!(sizes.len(), expected.len());
+                for (actual, expected) in sizes.iter().zip(expected) {
+                    assert!((actual - expected).abs() < 0.001, "display={display}: {sizes:?}");
                 }
             }
         }
@@ -2176,7 +2269,8 @@ mod tests {
                     path: Vec::new(),
                     node_stack: Vec::new(),
                 };
-                let st = St { level: 0, display, cramped: false, upright: false };
+                let st =
+                    St { level: 0, display, fraction_size: if display { FracSize::Text } else { FracSize::Script }, cramped: false, upright: false };
                 let boxes = cx.op_atoms(&node, st, 0);
                 let MItem::Glyphs { size: actual_size, glyphs, .. } = &boxes[0].items[0] else { panic!("operator glyph missing") };
                 let expected = if display { variants[2] } else { base_gid };
@@ -2324,7 +2418,13 @@ mod tests {
         let runs: Vec<MNode> = (0..2000).map(|i| MNode::Run(MRun { brk: (i % 3 == 0).then_some((i % 256) as u8), ..MRun::new("−+=") })).collect();
         for avail in [0.0, f32::NAN, 1e9] {
             for brk_bin in [BrkBin::Before, BrkBin::After, BrkBin::Repeat] {
-                let mp = MathProps { brk_bin, brk_bin_sub: BrkBinSub::PlusMinus, wrap_indent: f32::INFINITY, wrap_right: avail == 0.0 };
+                let mp = MathProps {
+                    brk_bin,
+                    brk_bin_sub: BrkBinSub::PlusMinus,
+                    wrap_indent: f32::INFINITY,
+                    wrap_right: avail == 0.0,
+                    ..Default::default()
+                };
                 let m = layout_equation(&Math { nodes: runs.clone(), ..Default::default() }, "", &rc(), true, avail, &mp, &mut 0);
                 assert!(m.width.is_finite() && m.descent.is_finite());
             }
