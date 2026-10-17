@@ -1065,7 +1065,8 @@ impl Ctx {
         if !grow {
             return glyph;
         }
-        let target = if exact { a + d } else { 2.0 * (a - axis).max(d + axis) };
+        // Size follows the content height; shape controls only its alignment.
+        let target = a + d;
         // Small content keeps the plain glyph where it sits.
         if glyph.a + glyph.d >= target - size * 0.02 {
             return glyph;
@@ -2340,6 +2341,43 @@ mod tests {
         let t = lay("∑_(i=1)^n▒i", false);
         assert!(d.ascent + d.descent > t.ascent + t.descent, "display sum taller");
         assert!(d.width < t.width + 4.0, "limits stacked in display");
+    }
+
+    #[test]
+    fn delimiter_size_and_alignment() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let font = db.face(wordcraft_fonts::DEFAULT_FAMILY, "Regular");
+        let face = FaceRef::of(&font);
+        let upem = face.upem as f32;
+        let fitting = face.glyph_for('A');
+        let oversized = face.glyph_for('B');
+        let mut table = MathTable::default();
+        table.vert.insert(face.glyph_for('('), Construction { variants: vec![(fitting, upem * 2.0), (oversized, upem * 3.0)], ..Default::default() });
+        for size in [9.0, 14.0, 20.0] {
+            let cx = Ctx {
+                face,
+                t: Some(Arc::new(table.clone())),
+                upem,
+                base: size,
+                color: Rgb::BLACK,
+                text_font: wordcraft_fonts::DEFAULT_FAMILY.into(),
+                nodes: 0,
+                path: Vec::new(),
+                node_stack: Vec::new(),
+            };
+            let st = St { level: 0, display: false, fraction_size: FracSize::Script, cramped: false, upright: false };
+            for (a, d) in [(1.1 * size, 0.7 * size), (0.7 * size, 1.1 * size)] {
+                for exact in [false, true] {
+                    let result = cx.delimiter('(', a, d, st, true, exact);
+                    let MItem::Glyphs { glyphs, .. } = &result.items[0] else { panic!("delimiter missing") };
+                    assert_eq!(glyphs[0].0, fitting, "shape alignment must not enlarge the content height");
+                    let middle = (result.a - result.d) / 2.0;
+                    let expected = if exact { (a - d) / 2.0 } else { cx.axis(st) };
+                    assert!((middle - expected).abs() < 0.001, "delimiter alignment");
+                }
+            }
+        }
     }
 
     #[test]
