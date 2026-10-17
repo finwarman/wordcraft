@@ -134,7 +134,7 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 ## Progress log
 
-Scope integration adds explicit outline dashes, font-defined display operator sizing and header-table collision clearance. Remaining layout findings stay tracked separately.
+Scope integration adds explicit outline dashes, font-defined display operator sizing, equation line leading and header-table collision clearance. Remaining layout findings stay tracked separately.
 
 | Date | What landed |
 | 2026-10-14 | DOCX row table border exceptions render and survive saving. Explicit cell borders win; a row exception does not change other rows. |

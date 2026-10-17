@@ -1,7 +1,7 @@
 # Scope renderer snapshot
 
 Upstream base: `eae242176108d328c5dd81fbc10370c51ab90706`.
-Previous Scope snapshot: `87fcf4d4e5fee1d54325ed8da804ab2936e33364`.
+Previous Scope snapshot: `9d99aec2299efda76a7fa453328a66b097892586`.
 
 This integrates upstream and the parity contributions below. It is an alpha
 snapshot, not an upstream release or a claim of complete Word parity. Rust 1.95
@@ -85,6 +85,7 @@ commits without changing the integrated rules. Fragment dependencies are
 | [#2660](https://github.com/storytold/wordcraft/pull/2660) | `4e14d8b65a0d2b77c3d896523d47c2b848d221f4` |
 | [#2661](https://github.com/storytold/wordcraft/pull/2661) | `de0915335180c6d246a3d95e573473659add0cc3` |
 | [#2662](https://github.com/storytold/wordcraft/pull/2662) | `bbbcf307f132cd0a060862c76cef0986e9392b6a` |
+| [#2674](https://github.com/storytold/wordcraft/pull/2674) | `1654d4ca2621e6d395f106a2b7db8ca9bbafeaa7` |
 
 Caption minimum-inset follow-up is prepared on the [fork branch](https://github.com/finwarman/wordcraft/tree/codex/row-minimum-insets) at `90abb49f`. Upstream submission waits for #2465 and #2494; it is not merge-ready. This snapshot includes the tested integration rule.
 
@@ -150,7 +151,9 @@ theme inheritance and nonflat caps remain incomplete. Header-table collision
 measurement uses the same expanded margin frame as header painting.
 
 Display operators now use their font-defined minimum height. The measured Sigma
-stack improves by about 5.5 pt; roughly 14.8 pt of fraction/root packing remains.
+stack improves by about 5.5 pt. Font MATH leading reserves equation line space
+without moving ink relative to its baseline, recovering a further 8.8 pt. About
+6 pt remains, including script and mixed-size fraction/root differences.
 The print-time cross-reference follow-up #2612 is not integrated here.
 
 Local gates encounter the reproduced upstream justified-line and two
