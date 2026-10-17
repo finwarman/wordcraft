@@ -2153,7 +2153,6 @@ pub fn layout(doc: &Document, cache: &mut LayoutCache, opts: &LayoutOptions) -> 
             continue;
         }
         match pass {
-
             Pass::Again(t) => {
                 totals = t;
                 passes += 1;
@@ -2190,7 +2189,6 @@ fn layout_pass(
     floats: &mut FloatReplay,
     prior_wraps: &PriorBodyWraps,
     back_wraps: &mut BackBodyWraps,
-
 ) -> Pass {
     let env = env_hash(doc, opts);
     if env != cache.env {

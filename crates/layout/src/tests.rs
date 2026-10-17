@@ -6740,7 +6740,6 @@ fn footer_page_total_needs_one_body_pass() {
             &PriorBodyWraps::new(),
             &mut BackBodyWraps::new(),
         )
-
     };
     assert!(matches!(first(&d), Pass::Done(l) if l.pages.len() == 3), "the footer's total asked for another pass");
     // The same field in the body is only known once every page is laid out.
