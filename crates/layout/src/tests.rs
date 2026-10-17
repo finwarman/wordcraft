@@ -11527,3 +11527,29 @@ fn shared_band_grid_spans() {
         .unwrap();
     assert_eq!(height, 27.0);
 }
+
+#[test]
+fn table_margin_sides_inherit() {
+    let mut doc = Document::new();
+    let mut table = Table::new(1, 1, 100.0);
+    table.props.style = None;
+    table.props.cell_margins = None;
+    table.props.partial_cell_margins = Some([None, None, None, Some(0.0)]);
+    assert_eq!(cell_margins(&doc, &table, 0, 0), [0.0, 5.4, 0.0, 0.0]);
+    table.props.style = Some("OriginalMargins".into());
+    doc.styles.upsert(wordcraft_doc::Style {
+        id: "OriginalMargins".into(),
+        name: "Original margins".into(),
+        kind: wordcraft_doc::StyleKind::Table,
+        table: Some(wordcraft_doc::styles::TableStyleParts { cell_margins: Some([2.0, 7.0, 3.0, 8.0]), ..Default::default() }),
+        ..Default::default()
+    });
+    assert_eq!(cell_margins(&doc, &table, 0, 0), [2.0, 7.0, 3.0, 0.0]);
+    table.rows[0].props.exceptions =
+        Some(Box::new(wordcraft_doc::props::TableProps { partial_cell_margins: Some([None, Some(1.0), None, None]), ..Default::default() }));
+    assert_eq!(cell_margins(&doc, &table, 0, 0), [2.0, 1.0, 3.0, 0.0]);
+    table.rows[0].cells[0].props.partial_margins = Some([Some(0.0), None, None, Some(4.0)]);
+    assert_eq!(cell_margins(&doc, &table, 0, 0), [0.0, 1.0, 3.0, 4.0]);
+    table.props.cell_margins = Some([9.0; 4]);
+    assert_eq!(cell_margins(&doc, &table, 0, 0), [0.0, 1.0, 9.0, 4.0]);
+}
