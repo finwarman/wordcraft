@@ -1,7 +1,7 @@
 # Scope renderer snapshot
 
 Upstream base: `eae242176108d328c5dd81fbc10370c51ab90706`.
-Previous Scope snapshot: `d287267a498be2d08b744e0635d54b977708a758`.
+Previous Scope snapshot: `c3e64f55aaa78672cc2853e7687be5aa346b4331`.
 
 This integrates upstream and the parity contributions below. It is an alpha
 snapshot, not an upstream release or a claim of complete Word parity. Rust 1.95
@@ -75,13 +75,24 @@ commits without changing the integrated rules. Fragment dependencies are
 | [#2597](https://github.com/storytold/wordcraft/pull/2597) | `ff2395d65c8b5b96e93e0c7f2b18e44b91002fea` |
 | [#2590](https://github.com/storytold/wordcraft/pull/2590) | `8ef20f8e8365a30073406582a47f1fb788100133` |
 
+| [#1760](https://github.com/storytold/wordcraft/pull/1760) | `e4d9eb61b99c4185d8048f635487c3d58d307b91` |
+| [#2608](https://github.com/storytold/wordcraft/pull/2608) | `89c356b1ad9899f82feecd06797f3b84fcb36431` |
+| [#2609](https://github.com/storytold/wordcraft/pull/2609) | `bc45e190ad63cd755cd2b12f022238a9cbf020bd` |
+| [#2654](https://github.com/storytold/wordcraft/pull/2654) | `25acc36408728bf610f95bc578d0f0a953148c90` |
+| [#2657](https://github.com/storytold/wordcraft/pull/2657) | `e3a260d097dbb552c368f053098e5c95df3ef479` |
+| [#2607](https://github.com/storytold/wordcraft/pull/2607) | `6fb9ce5b67e6970c04a048331965284e9cde174c` |
+
 Caption minimum-inset follow-up is prepared on the [fork branch](https://github.com/finwarman/wordcraft/tree/codex/row-minimum-insets) at `90abb49f`. Upstream submission waits for #2465 and #2494; it is not merge-ready. This snapshot includes the tested integration rule.
+
+Page-relative footer height and wrapping also include the reviewed local follow-up.
+Its upstream submission is pending. The body textbox boundary is separate.
 
 ## Measured limits
 
-All ten native Word exports match physical page counts, landscape page indices
-and ordered figure/table labels, including repeated instances. Equal counts do
-not establish visual or semantic parity.
+The preceding snapshot matched all ten native physical page counts. The current
+SGS candidate has 58 pages against Word's 59; late floating-table flow remains
+unresolved. Equal counts do not establish visual or semantic parity. Fresh
+container renders must recheck landscape indices and ordered caption instances.
 
 Explicit REF hyperlink switches now link cached text to their bookmarks without
 changing that text. EEMUA’s eight section references gain their native destinations;
@@ -99,14 +110,15 @@ headings now use the same single line as native Word. Photo/frame positions and
 caption centres match the measured native pages. Inset-aware row minimums move
 both remaining caption rows onto Word's pages 24 and 42. Ignoring page breaks in
 cells removes the extra nozzle title-row line. Reserving footer table strokes
-keeps body content clear and preserves all ten native page counts.
+keeps body content clear. SGS's remaining page-count difference is recorded above.
 
 Automatic turned rows now wrap at their line-height contribution and clip
 columns that overflow the cell, as the native controls do. Fractional row-height
 residuals reach 0.75 pt; a bare-table control retains a 5.4 pt alignment difference.
 Subpoint grid weights now retain the declared nozzle table width, including tiny
 positive totals. Small height/inset differences remain; row-end and
-continuation border fitting remain under investigation.
+continuation fitting remain under investigation. Final-row closing strokes keep
+their native band and fragment ownership, including nested exact-height rows.
 
 Rosen black-circle fallback corrects accumulated body reflow. Justified spacing
 costs restore the measured Rosen page 56 and TUV notes line breaks. Other spacing
@@ -116,10 +128,20 @@ substitutes an installed Linux font. Pattern fills currently support ltVert, wit
 soft-edge and rotated-phase limits documented in file-format-parity.md.
 
 Cached field results now retain their own run formatting, restoring SGS footer
-digits from 4 pt to the requested 8 pt. Body/attachment fields remain on different
-physical pages, and WSE’s first-page footer remains about 85 pt too high. Some conflicting totals are already present in the source.
+digits from 4 pt to the requested 8 pt. Omitted grid columns, row margin exceptions
+and empty-section lines put SGS's attachment counters on native pages 52, 53 and
+54. Shared continuous sections now count their common page: SGS physical page 42
+reads Page 41 of 2. Page-relative footer tables no longer inflate intrinsic story
+height, and body text wraps through their physical band. The independent Rosen
+body-textbox boundary remains unresolved. Some conflicting totals are already
+present in the source.
 Cached TOC page text can differ from Word’s print-time refresh, even when its
 hyperlink reaches the correct page. These remain acceptance limits.
+
+Missing Arial Unicode MS now prefers proportional Arial substitutes instead of
+the generic code-font fallback. This fixes Courier substitution in Rosen; exact
+font metrics and mixed-font formula spacing remain limits. Rosen approval-table
+column widths and dashed annotation outlines still differ.
 
 Local gates encounter the reproduced upstream justified-line and two
 colour-emoji environment failures. Those tests are unchanged. No customer
