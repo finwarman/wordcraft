@@ -8059,6 +8059,30 @@ fn cell_widths_override_grid() {
 }
 
 #[test]
+fn pct_table_uses_point_rows() {
+    let mut table = Table::new(2, 3, 600.0);
+    table.props.width_pct = Some(75.0);
+    table.grid = vec![80.0, 220.0, 300.0];
+    for row in &mut table.rows {
+        for (cell, width) in row.cells.iter_mut().zip([60.0, 90.0, 250.0]) {
+            cell.props.width = Some(width);
+            cell.blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("A", Default::default()))];
+        }
+    }
+    let mut doc = Document::from_text("After");
+    let target = doc.last_section.text_width() * 0.75;
+    doc.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(table)).unwrap();
+    let layout = lay(&doc);
+    for row in 0..2 {
+        let [(x0, _, _)] = para_at(&layout, &[0, row, 0, 0])[..] else { panic!("cell missing") };
+        let [(x1, _, _)] = para_at(&layout, &[0, row, 1, 0])[..] else { panic!("cell missing") };
+        let [(x2, _, _)] = para_at(&layout, &[0, row, 2, 0])[..] else { panic!("cell missing") };
+        assert!((x1 - x0 - target * 0.15).abs() < 0.01);
+        assert!((x2 - x0 - target * 0.375).abs() < 0.01);
+    }
+}
+
+#[test]
 fn ambiguous_widths_keep_grid() {
     let mut t = Table::new(2, 3, 450.0);
     t.grid = vec![40.0, 175.0, 235.0];

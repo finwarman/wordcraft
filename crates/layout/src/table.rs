@@ -1484,7 +1484,25 @@ fn is_automatic(t: &Table) -> bool {
         && t.rows.iter().all(|r| r.cells.iter().all(|c| c.props.width.is_none() && c.props.width_pct.is_none()))
 }
 
-/// Consistent cell boundaries replace a stale grid without changing its total width.
+// Complete point-width rows can retain their proportions after a percentage table is resized.
+fn point_row_total(t: &Table, columns: usize) -> Option<f32> {
+    if t.props.fixed || !t.props.width_pct.is_some_and(|p| p.is_finite() && p > 0.0) {
+        return None;
+    }
+    for row in &t.rows {
+        if row.first_grid() != 0
+            || row.props.grid_after != 0
+            || row.cells.iter().fold(0usize, |n, cell| n.saturating_add(cell.span())) != columns
+            || row.cells.iter().any(|cell| cell.props.width_pct.is_some() || !cell.props.width.is_some_and(|w| w.is_finite() && w > 0.0))
+        {
+            return None;
+        }
+    }
+    let total: f32 = t.rows.first()?.cells.iter().filter_map(|cell| cell.props.width).sum();
+    (total.is_finite() && total > 0.0).then_some(total)
+}
+
+/// Consistent cell boundaries replace a stale grid before the table width is applied.
 /// Every boundary must be declared; missing or conflicting preferences keep the grid.
 fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
     const WIDTH_EPSILON: f32 = 0.01;
@@ -1492,6 +1510,7 @@ fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
     if grid.is_empty() || !total.is_finite() {
         return;
     }
+    let total = point_row_total(t, grid.len()).unwrap_or(total);
     let mut edges = vec![None; grid.len() + 1];
     edges[0] = Some(0.0);
     edges[grid.len()] = Some(total);
@@ -1759,6 +1778,42 @@ mod width_tests {
                 4 => table.rows[2].cells[1].props.span = 2,
                 5 => table.rows[2].cells[1].props.width = Some(0.0),
                 _ => table.rows[2].cells[1].props.width = Some(f32::NAN),
+            }
+            let mut grid = table.grid.clone();
+            apply_cell_widths(&table, &mut grid);
+            assert_eq!(grid, table.grid, "case {case}");
+        }
+    }
+    fn point_width_table() -> Table {
+        let mut table = merged_width_table();
+        table.props.width_pct = Some(75.0);
+        table.grid = vec![90.0, 100.0, 160.0, 150.0];
+        table
+    }
+
+    #[test]
+    fn point_rows_replace_grid() {
+        let table = point_width_table();
+        let mut grid = table.grid.clone();
+        apply_cell_widths(&table, &mut grid);
+        assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+    }
+
+    #[test]
+    fn point_rows_reject_conflicts() {
+        for case in 0..10 {
+            let mut table = point_width_table();
+            match case {
+                0 => table.props.fixed = true,
+                1 => table.props.width_pct = None,
+                2 => table.props.width_pct = Some(f32::NAN),
+                3 => table.rows[1].cells[0].props.width_pct = Some(30.0),
+                4 => table.rows[1].cells[0].props.width = None,
+                5 => table.rows[1].cells[0].props.width = Some(f32::INFINITY),
+                6 => table.rows[1].props.grid_before = 1,
+                7 => table.rows[1].props.grid_after = 1,
+                8 => table.rows[1].cells[0].props.width = Some(151.0),
+                _ => table.rows[2].cells[0].props.width = Some(0.0),
             }
             let mut grid = table.grid.clone();
             apply_cell_widths(&table, &mut grid);
