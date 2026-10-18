@@ -1421,6 +1421,25 @@ enum ExactMergeCase {
     NestedContent,
 }
 
+fn glyph_ink_touches(draw: &display::Draw, clip: Rect) -> bool {
+    use kurbo::Shape;
+    let display::Draw::Glyphs { face, size, glyphs, .. } = draw else { return false };
+    if clip.w <= 0.0 || clip.h <= 0.0 {
+        return false;
+    }
+    let scale = f64::from(*size) / face.get().units_per_em();
+    glyphs.iter().any(|(id, x, y)| {
+        let bounds = face.get().glyph_outline(*id).bounding_box();
+        let ink = Rect::new(
+            *x + (bounds.x0 * scale) as f32,
+            *y + (bounds.y0 * scale) as f32,
+            (bounds.width() * scale) as f32,
+            (bounds.height() * scale) as f32,
+        );
+        ink.w > 0.0 && ink.h > 0.0 && ink.intersects(&clip)
+    })
+}
+
 #[test]
 fn exact_merge_keeps_decoration() {
     use wordcraft_doc::props::{HeightRule, LineSpacing, Rgb, VMerge};
@@ -1504,17 +1523,25 @@ fn exact_merge_keeps_decoration() {
                 assert!(rect.bottom() <= background.bottom() + 0.5, "{case:?}: nested fill escaped: {rect:?}");
             }
         }
-        fn visible_text(draws: &[display::Draw]) -> String {
+        fn visible_text(draws: &[display::Draw], clip: Option<Rect>) -> String {
             draws
                 .iter()
                 .map(|draw| match draw {
-                    display::Draw::Glyphs { text, .. } => text.clone(),
-                    display::Draw::Clip { items, .. } | display::Draw::Figure { draws: items, .. } => visible_text(items),
+                    display::Draw::Glyphs { text, .. } if clip.is_none_or(|rect| glyph_ink_touches(draw, rect)) => text.clone(),
+                    display::Draw::Clip { rect, items } => {
+                        let rect = clip.map_or(*rect, |outer| {
+                            let x = rect.x.max(outer.x);
+                            let y = rect.y.max(outer.y);
+                            Rect::new(x, y, (rect.right().min(outer.right()) - x).max(0.0), (rect.bottom().min(outer.bottom()) - y).max(0.0))
+                        });
+                        visible_text(items, Some(rect))
+                    }
+                    display::Draw::Figure { draws: items, .. } => visible_text(items, clip),
                     _ => String::new(),
                 })
                 .collect()
         }
-        let visible = visible_text(&draws);
+        let visible = visible_text(&draws, None);
         assert!(visible.contains("First"), "{case:?}: clipped all content");
         assert!(!visible.contains("Sixth"), "{case:?}: overflow escaped");
         let after = l.caret(&Pos::body(1, 0)).unwrap();
@@ -3234,16 +3261,13 @@ fn cell_fragment_clip_instances() {
             for draw in &draws {
                 if let display::Draw::Clip { rect, items } = draw {
                     for item in items {
-                        if let display::Draw::Glyphs { text, glyphs, .. } = item
+                        if let display::Draw::Glyphs { text, .. } = item
                             && text.contains("Fragment")
+                            && glyph_ink_touches(item, *rect)
                         {
                             visible += 1;
                             assert!(rect.w > 0.0 && rect.h > 0.0, "columns {columns}, page {number}: physical fragments intersected: {rect:?}");
                             assert!(fragments.contains(rect), "clip attached to another fragment");
-                            assert!(
-                                glyphs.iter().any(|(_, x, y)| rect.contains(wordcraft_geom::Point::new(*x, *y))),
-                                "ink clipped by another fragment"
-                            );
                         }
                     }
                 }
@@ -3253,7 +3277,7 @@ fn cell_fragment_clip_instances() {
                 assert!(
                     draws.iter().any(|draw| matches!(draw,
                         display::Draw::Clip { rect, items } if rect == fragment && items.iter().any(|item|
-                            matches!(item, display::Draw::Glyphs { text, .. } if text.contains("Fragment")))
+                            matches!(item, display::Draw::Glyphs { text, .. } if text.contains("Fragment") && glyph_ink_touches(item, *rect)))
                     )),
                     "page {number}: physical fragment lost its own clipped text: {fragment:?}"
                 );
@@ -5503,10 +5527,9 @@ fn row_minimum_includes_insets() {
 }
 
 #[test]
-fn exact_row_hides_partial_lines() {
+fn exact_row_clips_partial_lines() {
     use wordcraft_doc::props::HeightRule;
-    // An exactly 12 pt row holding three lines: Word shows what fits and cuts the rest at the row's
-    // edge, rather than drawing it over the rows below.
+    // Word paints all lines through the exact cell's physical clip, including partial ink.
     let mut t = Table::new(2, 1, 200.0);
     t.rows[0].props.height = Some(12.0);
     t.rows[0].props.height_rule = HeightRule::Exact;
@@ -5525,8 +5548,9 @@ fn exact_row_hides_partial_lines() {
         })
     };
     assert!(clipped("one"), "the first line stays clipped even in a short row");
-    assert!(!clipped("two"), "an overflowing line must not leak glyph fragments");
-    assert!(!clipped("three"));
+    assert!(clipped("two"), "overflow stays inside the cell clip");
+    assert!(clipped("three"));
+    assert!(draws.iter().any(|draw| matches!(draw, display::Draw::Clip { rect, .. } if (rect.h - 12.0).abs() < 0.01)));
     assert!(!clipped("below"), "a row that fits isn't clipped");
 }
 
@@ -11551,4 +11575,258 @@ fn table_margin_sides_inherit() {
     assert_eq!(cell_margins(&doc, &table, 0, 0), [0.0, 1.0, 3.0, 4.0]);
     table.props.cell_margins = Some([9.0; 4]);
     assert_eq!(cell_margins(&doc, &table, 0, 0), [0.0, 1.0, 9.0, 4.0]);
+}
+
+#[test]
+fn exact_row_keeps_clipped_text() {
+    use wordcraft_doc::props::{HeightRule, LineSpacing};
+    let mut table = Table::new(1, 1, 200.0);
+    table.props.cell_margins = Some([0.0; 4]);
+    table.rows[0].props.height = Some(19.0);
+    table.rows[0].props.height_rule = HeightRule::Exact;
+    let mut paragraph = wordcraft_doc::Paragraph::with_text(
+        "First line\nSecond line\nThird line",
+        wordcraft_doc::CharProps { font: Some("Source Sans 3".into()), size: Some(9.0), ..Default::default() },
+    );
+    paragraph.props.line_spacing = Some(LineSpacing::Exactly(10.0));
+    table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(paragraph)];
+    let mut doc = Document::new();
+    doc.body = vec![std::sync::Arc::new(wordcraft_doc::Block::Table(table))];
+    let layout = lay(&doc);
+    let lines = layout.pages[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Placed::Lines { para, l0, l1, .. } => Some((para, *l0, *l1)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(lines.0.lines[1].baseline < 19.0);
+    assert!(lines.0.lines[1].top + lines.0.lines[1].height > 19.5);
+    assert_eq!(lines.1..lines.2, 0..3, "the cell clip bounds all text, including partial lines");
+    let local: Vec<_> = layout.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Placed::Lines { y, .. } => {
+                let mut item = item.clone();
+                item.translate(0.0, -*y);
+                Some(item)
+            }
+            _ => None,
+        })
+        .collect();
+    let boxed = fit_box(local, 19.0);
+    assert!(boxed.iter().any(|item| matches!(item, Placed::Lines { l1: 1, .. })), "text boxes still require complete lines");
+}
+
+#[test]
+fn exact_cell_keeps_box_fitting() {
+    use wordcraft_doc::para::{Float, Wrap};
+    use wordcraft_doc::props::HeightRule;
+    for wrap in [Wrap::Inline, Wrap::InFrontOfText] {
+        let mut d = Document::from_text("AFTER ROW");
+        let mut table = Table::new(1, 1, 200.0);
+        table.props.cell_margins = Some([0.0; 4]);
+        table.rows[0].props.height = Some(19.0);
+        table.rows[0].props.height_rule = HeightRule::Exact;
+        table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("HOST", Default::default()))];
+        d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(table)).unwrap();
+        let pos = Pos { story: StoryRef::Body, path: Path(vec![0, 0, 0, 0]), off: 4 };
+        let id = text_box_at(&mut d, &pos, "BOXFIRST\nBOXSECOND\nBOXTHIRD\nBOXFOURTH", 140.0, 60.0, Float { wrap, ..Default::default() });
+        let part = d.parts.get_mut(&id).unwrap();
+        part.body.inset = Some([0; 4]);
+        let mut text = wordcraft_doc::Paragraph::with_text(
+            "BOXFIRST\nBOXSECOND\nBOXTHIRD\nBOXFOURTH",
+            wordcraft_doc::CharProps { font: Some("Times New Roman".into()), size: Some(9.0), ..Default::default() },
+        );
+        text.props.space_after = Some(0.0);
+        part.blocks = vec![wordcraft_doc::para_block(text)];
+        let layout = lay(&d);
+        let kept: Vec<_> = layout.pages[0]
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Lines { story: StoryRef::Part(part), l0, l1, .. } if *part == id => Some(*l0..*l1),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kept, vec![0..1], "embedded {wrap:?} text retains complete-line fitting");
+    }
+}
+
+fn sparse_border_rows() -> Document {
+    use wordcraft_doc::props::LineSpacing;
+    let mut d = Document::new();
+    let mut table = Table::new(2, 2, 200.0);
+    table.props.style = None;
+    table.props.borders = Some(Borders::default());
+    table.props.cell_margins = Some([4.0; 4]);
+    for row in &mut table.rows {
+        for (ci, cell) in row.cells.iter_mut().enumerate() {
+            let mut p = wordcraft_doc::Paragraph::with_text(if ci == 0 { "" } else { "Probe" }, Default::default());
+            p.props = ParaProps {
+                space_before: Some(0.0),
+                space_after: Some(0.0),
+                line_spacing: Some(LineSpacing::Exactly(if ci == 0 { 14.0 } else { 10.0 })),
+                ..Default::default()
+            };
+            cell.blocks = vec![wordcraft_doc::para_block(p)];
+            cell.props.borders = Some(Borders {
+                top: (ci == 1).then_some(Border { style: BorderStyle::Single, width: 0.5, color: None, space: 0.0 }),
+                ..Default::default()
+            });
+        }
+    }
+    d.body = vec![std::sync::Arc::new(wordcraft_doc::Block::Table(table))];
+    d
+}
+
+#[test]
+fn shared_top_band_sets_height() {
+    let d = sparse_border_rows();
+    let l = lay(&d);
+    let heights: Vec<_> = l.pages[0]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Cell { rect, cell: 0, .. } => Some(rect.h),
+            _ => None,
+        })
+        .collect();
+    // A shorter neighbouring cell supplies the row's top border band, even when the
+    // tallest cell is empty and has no top border of its own.
+    assert_eq!(heights.len(), 2);
+    for height in heights {
+        assert!((height - 22.5).abs() < 0.01, "row height {height}");
+    }
+}
+
+#[test]
+fn shared_band_moves_row() {
+    let mut d = sparse_border_rows();
+    d.last_section.page_h = 188.5;
+    d.last_section.margin_top = 72.0;
+    d.last_section.margin_bottom = 72.0;
+    let l = lay(&d);
+    let pages: Vec<_> = l
+        .pages
+        .iter()
+        .enumerate()
+        .filter_map(|(page, p)| p.items.iter().any(|it| matches!(it, Placed::Cell { row: 1, .. })).then_some(page))
+        .collect();
+    assert_eq!(pages, vec![1], "44.5 pt cannot hold two 22.5 pt rows");
+}
+
+#[test]
+fn sparse_band_exact_minimum() {
+    use wordcraft_doc::props::HeightRule;
+    for (rule, expected) in [(HeightRule::Exact, 34.0), (HeightRule::AtLeast, 38.5)] {
+        let mut d = sparse_border_rows();
+        let Block::Table(table) = std::sync::Arc::make_mut(&mut d.body[0]) else { panic!("table") };
+        for row in &mut table.rows {
+            row.props.height = Some(30.0);
+            row.props.height_rule = rule;
+        }
+        let l = lay(&d);
+        for item in &l.pages[0].items {
+            if let Placed::Cell { rect, .. } = item {
+                assert!((rect.h - expected).abs() < 0.01, "{rule:?}: {}", rect.h);
+            }
+        }
+    }
+}
+
+#[test]
+fn sparse_band_borderless() {
+    let mut d = sparse_border_rows();
+    let Block::Table(table) = std::sync::Arc::make_mut(&mut d.body[0]) else { panic!("table") };
+    for row in &mut table.rows {
+        row.cells[1].props.borders = Some(Borders::default());
+    }
+    let l = lay(&d);
+    for item in &l.pages[0].items {
+        if let Placed::Cell { rect, .. } = item {
+            assert!((rect.h - 22.0).abs() < 0.01, "borderless row height {}", rect.h);
+        }
+    }
+}
+
+#[test]
+fn empty_marks_dont_split_row() {
+    let mut d = sparse_border_rows();
+    d.last_section.page_h = 187.5;
+    d.last_section.margin_top = 72.0;
+    d.last_section.margin_bottom = 72.0;
+    let l = lay(&d);
+    let pages: Vec<_> = l
+        .pages
+        .iter()
+        .enumerate()
+        .filter_map(|(page, p)| p.items.iter().any(|it| matches!(it, Placed::Cell { row: 1, .. })).then_some(page))
+        .collect();
+    // The short label fits, but only empty paragraph marks would continue. Move the
+    // row whole rather than separating its label from its empty cells.
+    assert_eq!(pages, vec![1]);
+}
+
+#[test]
+fn real_text_can_continue() {
+    let mut d = sparse_border_rows();
+    let Block::Table(table) = std::sync::Arc::make_mut(&mut d.body[0]) else { panic!("table") };
+    table.rows.truncate(1);
+    let mut p = Paragraph::with_text("First\nSecond", Default::default());
+    p.props = table.rows[0].cells[0].blocks[0].as_para().unwrap().props.clone();
+    p.props.widow_control = Some(false);
+    table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+    d.last_section.page_h = 168.0;
+    d.last_section.margin_top = 72.0;
+    d.last_section.margin_bottom = 72.0;
+    let l = lay(&d);
+    assert_eq!(l.pages.len(), 2);
+    for page in &l.pages {
+        assert!(page.items.iter().any(|it| matches!(it, Placed::Lines { path, .. } if path.0 == [0, 0, 0, 0])));
+    }
+}
+
+#[test]
+fn text_uses_own_top_band() {
+    let mut d = sparse_border_rows();
+    let Block::Table(table) = std::sync::Arc::make_mut(&mut d.body[0]) else { panic!("table") };
+    for row in &mut table.rows {
+        let mut p = Paragraph::with_text("Tall content", Default::default());
+        p.props = row.cells[0].blocks[0].as_para().unwrap().props.clone();
+        row.cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+    }
+    let l = lay(&d);
+    let heights: Vec<_> = l.pages[0]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Cell { rect, cell: 0, .. } => Some(rect.h),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(heights, vec![22.0; 2], "nonempty content keeps its own top border inset");
+}
+
+#[test]
+fn empty_spacing_covers_band() {
+    let mut d = sparse_border_rows();
+    let Block::Table(table) = std::sync::Arc::make_mut(&mut d.body[0]) else { panic!("table") };
+    for row in &mut table.rows {
+        let mut p = row.cells[0].blocks[0].as_para().unwrap().clone();
+        p.props.space_after = Some(8.0);
+        row.cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+    }
+    let l = lay(&d);
+    let heights: Vec<_> = l.pages[0]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Cell { rect, cell: 0, .. } => Some(rect.h),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(heights, vec![30.0; 2], "paragraph spacing already exceeds the shared band minimum");
 }

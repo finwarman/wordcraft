@@ -9,7 +9,9 @@ use wordcraft_doc::{Block, Blocks, Paragraph, Row, StoryRef, Table};
 use wordcraft_geom::Rect;
 
 use crate::para::{CellText, ClKind, ParaLayout};
-use crate::{BoxContext, BoxLayout, Ctx, Foreground, Placed, extend_foreground, fit_box, fit_box_tracked, layout_box, remap_foreground};
+use crate::{
+    BoxContext, BoxLayout, Ctx, Foreground, LineFit, Placed, extend_foreground, fit_box_tracked, fit_cell_box, layout_box, remap_foreground,
+};
 
 /// Largest preferred table width, as a share of the text column, that a file can ask for.
 const MAX_WIDTH_SHARE: f32 = 10.0;
@@ -528,6 +530,8 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         let mut g = row.first_grid();
         let mut cells = Vec::with_capacity(row.cells.len());
         let mut rh = 0.0f32;
+        let mut row_top_band = 0.0f32;
+        let mut mark_height: Option<f32> = None;
         // The tallest cell margins plus border bands in the row.
         let mut row_insets = 0.0f32;
         let mut row_below = 0.0f32;
@@ -680,6 +684,18 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             if cell.props.vmerge != VMerge::Restart {
                 rh = rh.max(h);
             }
+            if cell.props.vmerge == VMerge::None
+                && !cell.props.hide_mark
+                && !turn.is_turned()
+                && cell.blocks.len() == 1
+                && let Some(Placed::Lines { para, .. }) = items.first()
+                && items.iter().all(|it| matches!(it, Placed::Lines { para, .. } if para.text_len == 0 && para.label.is_none()))
+            {
+                // Paragraph spacing already contributes to the cell's own height.
+                let strut = para.height + margins[0] + margins[2] + band_b;
+                mark_height = Some(mark_height.unwrap_or(0.0).max(strut));
+            }
+            row_top_band = row_top_band.max(band_t);
             row_insets = row_insets.max(insets);
             row_below = row_below.max(margins[2] + band_b);
             cells.push(CellBox {
@@ -708,6 +724,9 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         // a 30pt row with 5pt margins and 0.5pt borders is 40.5pt tall even when its text needs less.
         // An exact height gains only the bottom margin: it runs from the top border to the bottom
         // of the text area (a 35pt row with 4pt margins steps 39pt).
+        // An empty cell strut clears the row's largest top border band. Nonempty
+        // content keeps its own border inset, even beside a thicker border.
+        let rh = mark_height.map_or(rh, |h| rh.max(h + row_top_band));
         let rh = match (row.props.height, row.props.height_rule) {
             (Some(h), HeightRule::Exact) if h > 0.0 => h + row_bottom,
             (Some(h), _) if h > 0.0 => rh.max(h + row_insets),
@@ -842,12 +861,12 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                     it.turn(tn.turn, ox, oy);
                 }
             } else if exact {
-                // Hide incomplete overflow lines before the cell clip can expose their glyph tops.
+                // Exact cells clip ink at the row edge, including partial overflow lines.
                 if cell_foreground.is_empty() && anchored_rules.is_empty() {
-                    cell_items = fit_box(cell_items, span_h - c.margins[2]);
+                    cell_items = fit_cell_box(cell_items, span_h - c.margins[2], story);
                 } else {
                     let mut map = vec![0..0; cell_items.len()];
-                    cell_items = fit_box_tracked(cell_items, span_h - c.margins[2], |i, range| {
+                    cell_items = fit_box_tracked(cell_items, span_h - c.margins[2], LineFit::Clipped(story), |i, range| {
                         if let Some(slot) = map.get_mut(i) {
                             *slot = range;
                         }
@@ -990,8 +1009,10 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
         .collect();
     // The top of the first thing that moves on in each cell.
     let mut kept_any = false;
+    let mut moved_content = false;
     let mut moved = vec![f32::MAX; cells.len()];
     for ((items, splits), m) in cells.iter().zip(&splits).zip(&mut moved) {
+        let multiple_paras = items.iter().filter(|it| text_lines(it).is_some()).take(2).count() > 1;
         for (it, &split) in items.iter().zip(splits) {
             let top = if let Some(r) = it.turned_bounds() {
                 // Turned text moves as a whole, like a picture.
@@ -1026,12 +1047,19 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                 }
             };
             if let Some(top) = top {
+                let empty_mark = matches!(it, Placed::Lines { para, .. }
+                if !multiple_paras && para.text_len == 0 && para.label.is_none()
+                && para.rp.borders.is_none_or(|b| {
+                    ![b.top, b.bottom, b.left, b.right, b.between].into_iter().flatten().any(|b| b.is_visible())
+                }));
+                moved_content |= !empty_mark;
                 *m = m.min(top);
             }
         }
     }
     let first_moved = moved.iter().copied().fold(f32::MAX, f32::min);
-    if !kept_any || first_moved == f32::MAX {
+    // Single empty cell marks alone do not create a continuation fragment.
+    if !kept_any || !moved_content || first_moved == f32::MAX {
         return None;
     }
     // Word closes the first fragment below its last fitted content.

@@ -432,6 +432,43 @@ pub enum HfSlot {
     Even,
 }
 
+#[derive(Clone)]
+struct CellClip {
+    story: StoryRef,
+    prefix: Vec<u32>,
+    items: std::ops::Range<usize>,
+    rect: Rect,
+}
+
+/// Cell markers follow their content. Repeated markers bound distinct physical placements.
+fn clipped_cells(items: &[Placed]) -> Vec<CellClip> {
+    if !items.iter().any(|item| matches!(item, Placed::Cell { clip: true, .. })) {
+        return Vec::new();
+    }
+    let mut previous = std::collections::HashMap::new();
+    let mut clips = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let Placed::Cell { rect, table, row, cell, story, clip, .. } = item else { continue };
+        let start = previous.insert((*story, table, *row, *cell), index + 1).unwrap_or(0);
+        if !clip {
+            continue;
+        }
+        let (Ok(row), Ok(cell)) = (u32::try_from(*row), u32::try_from(*cell)) else { continue };
+        let mut prefix = table.0.clone();
+        prefix.extend([row, cell]);
+        clips.push(CellClip { story: *story, prefix, items: start..index, rect: *rect });
+    }
+    clips
+}
+
+/// Intersect ancestors of this placement, never other copies of the same source cell.
+fn cell_clip(clips: &[CellClip], story: StoryRef, path: &[u32], index: usize) -> Option<Rect> {
+    clips.iter().filter(|c| c.story == story && c.items.contains(&index) && path.starts_with(&c.prefix)).map(|c| c.rect).reduce(|a, b| {
+        let (x, y) = (a.x.max(b.x), a.y.max(b.y));
+        Rect::new(x, y, a.right().min(b.right()) - x, a.bottom().min(b.bottom()) - y)
+    })
+}
+
 /// One laid-out page.
 #[derive(Clone, Debug, Default)]
 pub struct Page {
@@ -1445,10 +1482,20 @@ const BOX_INSET_Y: f32 = 3.6;
 /// dropped (whole lines; a line that only partly fits too) and so is anything starting below.
 /// The first line always stays, so even a tiny box shows the start of its text.
 fn fit_box(items: Vec<Placed>, height: f32) -> Vec<Placed> {
-    fit_box_tracked(items, height, |_, _| {})
+    fit_box_tracked(items, height, LineFit::Complete, |_, _| {})
 }
 
-fn fit_box_tracked(items: Vec<Placed>, height: f32, mut record: impl FnMut(usize, std::ops::Range<usize>)) -> Vec<Placed> {
+#[derive(Clone, Copy)]
+enum LineFit {
+    Complete,
+    Clipped(StoryRef),
+}
+
+fn fit_cell_box(items: Vec<Placed>, height: f32, story: StoryRef) -> Vec<Placed> {
+    fit_box_tracked(items, height, LineFit::Clipped(story), |_, _| {})
+}
+
+fn fit_box_tracked(items: Vec<Placed>, height: f32, fit: LineFit, mut record: impl FnMut(usize, std::ops::Range<usize>)) -> Vec<Placed> {
     let limit = height + 0.5;
     let mut out = Vec::with_capacity(items.len());
     let mut kept_line = false;
@@ -1468,7 +1515,8 @@ fn fit_box_tracked(items: Vec<Placed>, height: f32, mut record: impl FnMut(usize
                 let mut end = l0;
                 for k in l0..l1 {
                     let Some(l) = para.lines.get(k) else { break };
-                    if y + (l.top - first.top) + l.height > limit && kept_line {
+                    let clipped = matches!(fit, LineFit::Clipped(owner) if owner == story);
+                    if !clipped && y + l.top + l.height - first.top > limit && kept_line {
                         break;
                     }
                     end = k + 1;
@@ -5048,6 +5096,9 @@ pub fn now_ms() -> f64 {
         if ms.is_finite() { ms } else { 0.0 }
     }
 }
+
+#[cfg(test)]
+mod cell_hit_tests;
 
 #[cfg(test)]
 mod tests;

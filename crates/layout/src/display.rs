@@ -8,9 +8,11 @@ use wordcraft_doc::{Block, Document, Path, StoryRef};
 use wordcraft_fonts::{BezPath, FaceRef};
 use wordcraft_geom::{Rect, Spin};
 
+#[cfg(test)]
+use crate::CellClip;
 use crate::math::MItem;
 use crate::para::{ClKind, LineEnd, ParaLayout};
-use crate::{Page, Placed};
+use crate::{Page, Placed, cell_clip, clipped_cells};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stroke {
@@ -458,43 +460,6 @@ pub fn object_display(doc: &Document, page: &Page, o: &InlineObject, rect: Rect,
         }
     }
     out
-}
-
-#[derive(Clone)]
-struct CellClip {
-    story: StoryRef,
-    prefix: Vec<u32>,
-    items: std::ops::Range<usize>,
-    rect: Rect,
-}
-
-/// Cell markers follow their content. Repeated markers bound distinct physical placements.
-fn clipped_cells(items: &[Placed]) -> Vec<CellClip> {
-    if !items.iter().any(|item| matches!(item, Placed::Cell { clip: true, .. })) {
-        return Vec::new();
-    }
-    let mut previous = std::collections::HashMap::new();
-    let mut clips = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        let Placed::Cell { rect, table, row, cell, story, clip, .. } = item else { continue };
-        let start = previous.insert((*story, table, *row, *cell), index + 1).unwrap_or(0);
-        if !clip {
-            continue;
-        }
-        let (Ok(row), Ok(cell)) = (u32::try_from(*row), u32::try_from(*cell)) else { continue };
-        let mut prefix = table.0.clone();
-        prefix.extend([row, cell]);
-        clips.push(CellClip { story: *story, prefix, items: start..index, rect: *rect });
-    }
-    clips
-}
-
-/// Intersect ancestors of this placement, never other copies of the same source cell.
-fn cell_clip(clips: &[CellClip], story: StoryRef, path: &[u32], index: usize) -> Option<Rect> {
-    clips.iter().filter(|c| c.story == story && c.items.contains(&index) && path.starts_with(&c.prefix)).map(|c| c.rect).reduce(|a, b| {
-        let (x, y) = (a.x.max(b.x), a.y.max(b.y));
-        Rect::new(x, y, a.right().min(b.right()) - x, a.bottom().min(b.bottom()) - y)
-    })
 }
 
 /// The text boxes among `items` whose text is warped (Text Effects › Transform, drawn bent): their
