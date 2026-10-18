@@ -1321,6 +1321,7 @@ fn layout_box(
                         None => (tl.x, below(&excl, y, tl.x, tl.x + tl.width, tl.rows.first().map_or(0.0, |r| r.height))),
                     };
                     let mut row_y = ty;
+                    let paint_start = items.len().saturating_sub(behind);
                     for (ri, row) in tl.rows.iter().enumerate() {
                         let start = items.len();
                         for cell in &row.cells {
@@ -1334,7 +1335,7 @@ fn layout_box(
                                 anchored_rules.push(table::AnchoredRule { item: start + item, top: row_y });
                             }
                         }
-                        extend_foreground(&mut foreground, &row.foreground, items.len().saturating_sub(behind));
+                        extend_table_paint(&mut foreground, &row.foreground, items.len().saturating_sub(behind), paint_start);
                         for it in &row.items {
                             let mut it = it.clone();
                             it.translate(tx, row_y);
@@ -1362,6 +1363,7 @@ fn layout_box(
     if in_cell {
         for group in &mut foreground {
             group.range = group.range.start.saturating_add(behind)..group.range.end.saturating_add(behind);
+            group.layer = group.layer.offset(behind);
         }
     } else {
         order_foreground(&mut items, &foreground, behind);
@@ -3631,25 +3633,57 @@ fn place_objects(
     ObjectPlacement { behind, inline, front }
 }
 
-/// A foreground group's indices exclude the prepended behind-text items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaintLayer {
+    Foreground(u32),
+    CellFill,
+    Before(usize),
+}
+
+impl PaintLayer {
+    fn offset(self, offset: usize) -> Self {
+        match self {
+            Self::Before(anchor) => Self::Before(anchor.saturating_add(offset)),
+            other => other,
+        }
+    }
+}
+
+/// Paint groups keep placement indices until pagination and vertical alignment finish.
+/// Their indices exclude prepended behind-text items.
 #[derive(Clone)]
 struct Foreground {
     range: std::ops::Range<usize>,
-    z: u32,
+    layer: PaintLayer,
 }
 
 /// Keep each object's frame and text together until its story is complete.
 fn append_foreground(items: &mut Vec<Placed>, ranges: &mut Vec<Foreground>, behind: usize, front: Vec<(u32, Vec<Placed>)>) {
     for (z, group) in front {
         let start = items.len().saturating_sub(behind);
-        ranges.push(Foreground { range: start..start.saturating_add(group.len()), z });
+        ranges.push(Foreground { range: start..start.saturating_add(group.len()), layer: PaintLayer::Foreground(z) });
         items.extend(group);
     }
 }
 
 /// Carry table-cell groups into their owning story without changing item order.
 fn extend_foreground(out: &mut Vec<Foreground>, groups: &[Foreground], offset: usize) {
-    out.extend(groups.iter().map(|g| Foreground { range: g.range.start.saturating_add(offset)..g.range.end.saturating_add(offset), z: g.z }));
+    out.extend(
+        groups
+            .iter()
+            .map(|g| Foreground { range: g.range.start.saturating_add(offset)..g.range.end.saturating_add(offset), layer: g.layer.offset(offset) }),
+    );
+}
+
+/// Table shading precedes that table fragment, not earlier body content or other tables.
+fn extend_table_paint(out: &mut Vec<Foreground>, groups: &[Foreground], offset: usize, anchor: usize) {
+    let start = out.len();
+    extend_foreground(out, groups, offset);
+    for group in out.iter_mut().skip(start) {
+        if matches!(group.layer, PaintLayer::CellFill) {
+            group.layer = PaintLayer::Before(anchor);
+        }
+    }
 }
 
 fn remap_foreground(groups: &[Foreground], map: &[std::ops::Range<usize>]) -> Vec<Foreground> {
@@ -3658,13 +3692,17 @@ fn remap_foreground(groups: &[Foreground], map: &[std::ops::Range<usize>]) -> Ve
         .filter_map(|g| {
             let mut kept = map.get(g.range.clone())?.iter().filter(|r| !r.is_empty());
             let first = kept.next()?;
-            Some(Foreground { range: first.start..kept.next_back().unwrap_or(first).end, z: g.z })
+            let layer = match g.layer {
+                PaintLayer::Before(anchor) => PaintLayer::Before(map.get(anchor..)?.iter().find(|r| !r.is_empty())?.start),
+                other => other,
+            };
+            Some(Foreground { range: first.start..kept.next_back().unwrap_or(first).end, layer })
         })
         .collect()
 }
 
-/// Foreground floats cover later inline content. Defer sorting until placement and vertical
-/// alignment finish, keeping their indices valid for pagination and column balancing.
+/// Defer paint ordering until indices used by pagination and column balancing are finished.
+/// Cell shading stays below shared borders; foreground objects retain their z order.
 fn order_foreground(items: &mut Vec<Placed>, ranges: &[Foreground], behind: usize) {
     if ranges.is_empty() {
         return;
@@ -3677,14 +3715,43 @@ fn order_foreground(items: &mut Vec<Placed>, ranges: &[Foreground], behind: usiz
             slice.fill(Some(i));
         }
     }
-    let mut front: Vec<_> = ranges.iter().map(|g| (g.z, Vec::new())).collect();
-    for (item, group) in std::mem::take(items).into_iter().zip(marked) {
-        if let Some((_, group)) = group.and_then(|i| front.get_mut(i)) {
-            group.push(item);
-        } else {
-            items.push(item);
+    let mut before: HashMap<usize, Vec<Placed>> = HashMap::new();
+    for (item, group) in items.iter().zip(&marked) {
+        let Some(group) = group.and_then(|i| ranges.get(i)) else { continue };
+        let anchor = match group.layer {
+            PaintLayer::Before(anchor) => anchor,
+            PaintLayer::CellFill => group.range.start,
+            PaintLayer::Foreground(_) => continue,
+        };
+        before.entry(anchor.saturating_add(behind).min(items.len())).or_default().push(item.clone());
+    }
+    let mut front: Vec<_> = ranges.iter().map(|_| Vec::new()).collect();
+    let len = items.len();
+    for (i, (item, group)) in std::mem::take(items).into_iter().zip(marked).enumerate() {
+        if let Some(group) = before.remove(&i) {
+            items.extend(group);
+        }
+        match group.and_then(|index| ranges.get(index).map(|g| (index, g.layer))) {
+            Some((index, PaintLayer::Foreground(_))) => {
+                if let Some(group) = front.get_mut(index) {
+                    group.push(item);
+                }
+            }
+            Some(_) => {}
+            None => items.push(item),
         }
     }
+    if let Some(group) = before.remove(&len) {
+        items.extend(group);
+    }
+    let mut front: Vec<_> = ranges
+        .iter()
+        .zip(front)
+        .filter_map(|(g, items)| match g.layer {
+            PaintLayer::Foreground(z) => Some((z, items)),
+            _ => None,
+        })
+        .collect();
     front.sort_by_key(|(z, _)| *z);
     for (_, group) in front {
         items.extend(group);
@@ -4535,15 +4602,18 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
     let repeated_height: f32 = header_rows.iter().filter_map(|i| tl.rows.get(*i)).map(|r| r.height).sum();
     let mut bands = HashMap::new();
     let mut seen = HashSet::new();
-    let place = |pb: &mut PageBuilder,
-                 row: &table::RowLayout,
-                 index: usize,
-                 bands: &mut HashMap<(usize, usize), MergeBand>,
-                 seen: &mut HashSet<(usize, usize)>| {
+    let mut paint_starts = HashMap::new();
+    let mut place = |pb: &mut PageBuilder,
+                     row: &table::RowLayout,
+                     index: usize,
+                     bands: &mut HashMap<(usize, usize), MergeBand>,
+                     seen: &mut HashSet<(usize, usize)>| {
         let (x, y) = (pb.col_x() + tl.x, pb.y);
         let behind = pb.behind.last().copied().unwrap_or(0);
+        let page = pb.pages.len();
         if let (Some(pg), Some(ranges)) = (pb.pages.last_mut(), pb.foreground.last_mut()) {
-            extend_foreground(ranges, &row.foreground, pg.items.len().saturating_sub(behind));
+            let anchor = *paint_starts.entry(page).or_insert_with(|| pg.items.len().saturating_sub(behind));
+            extend_table_paint(ranges, &row.foreground, pg.items.len().saturating_sub(behind), anchor);
             for it in &row.items {
                 let mut it = it.clone();
                 it.translate(x, y);
@@ -4824,8 +4894,9 @@ fn place_floating_table(ctx: &mut Ctx, pb: &mut PageBuilder, tl: &table::TableLa
         let behind = pb.behind.last().copied().unwrap_or(0);
         if let (Some(pg), Some(ranges)) = (pb.pages.last_mut(), pb.foreground.last_mut()) {
             let mut y = r.y;
+            let anchor = pg.items.len().saturating_sub(behind);
             for row in &tl.rows {
-                extend_foreground(ranges, &row.foreground, pg.items.len().saturating_sub(behind));
+                extend_table_paint(ranges, &row.foreground, pg.items.len().saturating_sub(behind), anchor);
                 for it in &row.items {
                     let mut it = it.clone();
                     it.translate(r.x, y);

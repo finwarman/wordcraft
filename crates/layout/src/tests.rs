@@ -1885,6 +1885,185 @@ fn table_own_border_overrides_only_that_side() {
     assert!(w.iter().filter(|x| (**x - 0.5).abs() < 1e-6).count() >= 6, "style sides missing: {w:?}");
 }
 
+// Original shaded-grid control: opposite nil edges must not erase a neighbour's border.
+fn shaded_border_doc() -> Document {
+    use wordcraft_doc::props::{HeightRule, VMerge};
+    let mut doc = Document::new();
+    let mut table = Table::new(2, 4, 240.0);
+    table.props.style = None;
+    table.props.fixed = true;
+    table.props.cell_margins = Some([0.0; 4]);
+    let line = Border::single(0.5);
+    let nil = Border { style: BorderStyle::None, width: 0.0, color: None, space: 0.0 };
+    for (ri, row) in table.rows.iter_mut().enumerate() {
+        row.props.height = Some(24.0);
+        row.props.height_rule = HeightRule::Exact;
+        for (ci, cell) in row.cells.iter_mut().enumerate() {
+            cell.props.shading = Some(Rgb(217, 217, 217));
+            cell.props.borders = Some(Borders {
+                top: Some(if ri == 0 { line } else { nil }),
+                left: Some(if ci == 0 { line } else { nil }),
+                bottom: Some(if ci == 0 || ri == 1 && ci < 3 { line } else { nil }),
+                right: Some(line),
+                ..Default::default()
+            });
+        }
+    }
+    table.rows[0].cells[0].props.vmerge = VMerge::Restart;
+    table.rows[1].cells[0].props.vmerge = VMerge::Continue;
+    doc.body = vec![Arc::new(Block::Table(table))];
+    doc
+}
+
+#[test]
+fn table_shading_before_borders() {
+    let doc = shaded_border_doc();
+    let layout = lay(&doc);
+    assert_eq!(layout.pages.len(), 1);
+    let items = &layout.pages[0].items;
+    let fills: Vec<_> =
+        items.iter().enumerate().filter(|(_, it)| matches!(it, Placed::Fill { color: Rgb(217, 217, 217), .. })).map(|(i, _)| i).collect();
+    let rules: Vec<_> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, it)| match it {
+            Placed::Rule { border, .. } => Some((i, border.width)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills.len(), 7, "the vertical-merge continuation has no second fill");
+    assert!(fills.iter().max().unwrap() < &rules.iter().map(|r| r.0).min().unwrap(), "all table shading must precede shared borders");
+    assert!(rules.iter().all(|r| r.1 == 0.5), "paint order must not thicken borders");
+    let last = items
+        .iter()
+        .find_map(|it| match it {
+            Placed::Cell { row: 1, cell: 3, rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        !items.iter().any(|it| match it {
+            Placed::Rule { x0, y0, x1, y1, .. } =>
+                (y0 - y1).abs() < 0.01 && (y0 - last.bottom()).abs() < 0.01 && x0.min(*x1) < last.right() - 1.0 && x0.max(*x1) > last.x + 1.0,
+            _ => false,
+        }),
+        "explicit nil bottom on the final column remains open"
+    );
+}
+
+#[test]
+fn row_shading_keeps_shared_rule() {
+    let mut doc = shaded_border_doc();
+    let table = doc.table_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    table.rows[0].cells[1].props.borders.as_mut().unwrap().bottom = Some(Border::single(0.5));
+    let layout = lay(&doc);
+    let items = &layout.pages[0].items;
+    let cell = items
+        .iter()
+        .find_map(|it| match it {
+            Placed::Cell { row: 0, cell: 1, rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .unwrap();
+    let shared = items
+        .iter()
+        .position(|it| match it {
+            Placed::Rule { x0, y0, x1, y1, border } => {
+                (y0 - y1).abs() < 0.01 && (y0 - cell.bottom()).abs() < 0.01 && *x0 <= cell.x && *x1 >= cell.right() && border.width == 0.5
+            }
+            _ => false,
+        })
+        .unwrap();
+    let fill = items.iter().rposition(|it| matches!(it, Placed::Fill { color: Rgb(217, 217, 217), .. })).unwrap();
+    assert!(fill < shared, "the next shaded row must not cover the preceding row's bottom border");
+}
+
+#[test]
+fn table_fill_keeps_earlier_text() {
+    use wordcraft_doc::para::Anchor;
+    use wordcraft_doc::props::TableFloat;
+    let mut doc = shaded_border_doc();
+    doc.table_mut(StoryRef::Body, &Path::top(0)).unwrap().props.float =
+        Some(TableFloat { h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 300.0, overlap: true, ..Default::default() });
+    doc.body.insert(0, wordcraft_doc::para_block(Paragraph::with_text("Earlier body text", Default::default())));
+    let layout = lay(&doc);
+    let items = &layout.pages[0].items;
+    let text = items.iter().position(|it| matches!(it, Placed::Lines { story: StoryRef::Body, path, .. } if path.0 == [0])).unwrap();
+    let fill = items.iter().position(|it| matches!(it, Placed::Fill { color: Rgb(217, 217, 217), .. })).unwrap();
+    assert!(text < fill, "a floating table's shading must not be hoisted behind earlier body content");
+}
+
+#[test]
+fn table_shading_keeps_geometry() {
+    let shaded = shaded_border_doc();
+    let mut plain = shaded.clone();
+    for row in &mut plain.table_mut(StoryRef::Body, &Path::top(0)).unwrap().rows {
+        for cell in &mut row.cells {
+            cell.props.shading = None;
+        }
+    }
+    let geometry = |doc: &Document| {
+        let layout = lay(doc);
+        layout
+            .pages
+            .into_iter()
+            .map(|page| {
+                page.items
+                    .into_iter()
+                    .filter(|it| matches!(it, Placed::Cell { .. } | Placed::Rule { .. }))
+                    .map(|it| format!("{it:?}"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(geometry(&shaded), geometry(&plain), "shading order must preserve border geometry and pagination");
+}
+
+#[test]
+fn split_shading_before_borders() {
+    use wordcraft_doc::props::{HeightRule, LineSpacing, VMerge};
+    let mut doc = shaded_border_doc();
+    doc.last_section.page_h = 140.0;
+    doc.last_section.margin_top = 20.0;
+    doc.last_section.margin_bottom = 20.0;
+    let table = doc.table_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    for row in &mut table.rows {
+        row.props.height_rule = HeightRule::AtLeast;
+        for cell in &mut row.cells {
+            cell.props.vmerge = VMerge::None;
+        }
+    }
+    let mut para = Paragraph::with_text(&"Original split control ".repeat(60), Default::default());
+    para.props.line_spacing = Some(LineSpacing::Exactly(12.0));
+    table.rows[0].cells[1].blocks = vec![wordcraft_doc::para_block(para)];
+    let layout = lay(&doc);
+    assert!(layout.pages.len() > 1, "control must split a shaded row");
+    for page in &layout.pages {
+        let fill = page.items.iter().rposition(|it| matches!(it, Placed::Fill { color: Rgb(217, 217, 217), .. }));
+        let border = page.items.iter().position(|it| matches!(it, Placed::Rule { .. }));
+        if let (Some(fill), Some(border)) = (fill, border) {
+            assert!(fill < border, "continuation shading must remain below shared borders");
+        }
+    }
+}
+
+#[test]
+fn nested_shading_before_borders() {
+    let mut doc = shaded_border_doc();
+    let mut outer = Table::new(1, 1, 300.0);
+    outer.props.style = None;
+    outer.rows[0].cells[0].props.shading = Some(Rgb(30, 40, 50));
+    outer.rows[0].cells[0].blocks = doc.body.clone();
+    doc.body = vec![Arc::new(Block::Table(outer))];
+    let layout = lay(&doc);
+    let items = &layout.pages[0].items;
+    let outer_fill = items.iter().position(|it| matches!(it, Placed::Fill { color: Rgb(30, 40, 50), .. })).unwrap();
+    let inner_first = items.iter().position(|it| matches!(it, Placed::Fill { color: Rgb(217, 217, 217), .. })).unwrap();
+    let inner_last = items.iter().rposition(|it| matches!(it, Placed::Fill { color: Rgb(217, 217, 217), .. })).unwrap();
+    let border = items.iter().position(|it| matches!(it, Placed::Rule { .. })).unwrap();
+    assert!(outer_fill < inner_first && inner_last < border, "nested shading stays below its own borders and above its parent shading");
+}
+
 #[test]
 fn table_nil_border_hides_style_side() {
     let mut d = Document::from_text("before\nafter");
@@ -10631,7 +10810,7 @@ fn split_row_keeps_foreground() {
         height: 200.0,
         min_height: 0.0,
         items: vec![line, second, Placed::Fill { rect: Rect::new(0.0, 150.0, 100.0, 20.0), color: Rgb(200, 0, 0) }],
-        foreground: vec![Foreground { range: 1..3, z: 7 }],
+        foreground: vec![Foreground { range: 1..3, layer: PaintLayer::Foreground(7) }],
         bottom: 0.0,
         cells: vec![CellPart {
             anchored_rules: Vec::new(),
@@ -10648,7 +10827,7 @@ fn split_row_keeps_foreground() {
     let (a, b) = split_row(&row, 100.0).unwrap();
     assert!(a.foreground.is_empty());
     assert_eq!(b.foreground.len(), 1);
-    assert_eq!((b.foreground[0].range.clone(), b.foreground[0].z), (0..2, 7));
+    assert_eq!((b.foreground[0].range.clone(), b.foreground[0].layer), (0..2, PaintLayer::Foreground(7)));
 }
 
 /// Cell float metadata survives two row splits and a later behind-text insertion.

@@ -10,7 +10,8 @@ use wordcraft_geom::Rect;
 
 use crate::para::{CellText, ClKind, ParaLayout};
 use crate::{
-    BoxContext, BoxLayout, Ctx, Foreground, LineFit, Placed, extend_foreground, fit_box_tracked, fit_cell_box, layout_box, remap_foreground,
+    BoxContext, BoxLayout, Ctx, Foreground, LineFit, PaintLayer, Placed, extend_foreground, fit_box_tracked, fit_cell_box, layout_box,
+    remap_foreground,
 };
 
 /// Largest preferred table width, as a share of the text column, that a file can ask for.
@@ -807,7 +808,9 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             if c.vmerge != VMerge::Continue
                 && let Some(f) = c.fill
             {
+                let start = items.len();
                 items.push(Placed::Fill { rect, color: f });
+                foreground.push(Foreground { range: start..items.len(), layer: PaintLayer::CellFill });
             }
             // Behind-text frames count towards vertical alignment even without inline content.
             // They do not increase the row's flow height.
