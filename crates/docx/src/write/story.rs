@@ -247,7 +247,16 @@ impl Writer<'_> {
         // Split into pieces with their props.
         let mut pieces: Vec<(Piece, &CharProps)> = Vec::new();
         let mut k = 0usize;
-        for (range, props) in p.run_ranges() {
+        // Runs of mixed direction are split so Word orders them as WordCraft does (#1543).
+        let rtl_para = self.doc.styles.resolve_para(&p.props).bidi;
+        let styles = &self.doc.styles;
+        let para_style = p.props.style.as_deref();
+        let para_lang = super::bidi::para_inherits_lang_bidi(styles, para_style);
+        let spans =
+            super::bidi::direction_spans(&p.text, rtl_para, p.run_ranges(), |c| para_lang || super::bidi::char_style_has_lang_bidi(styles, c));
+        for (range, props) in &spans {
+            let props: &CharProps = props;
+            let range = range.clone();
             let base = range.start;
             let Some(text) = p.text.get(range) else { continue };
             let mut buf = String::new();
@@ -520,7 +529,12 @@ impl Writer<'_> {
                         self.rev_open(w, props);
                         w.open("w:r", &[]);
                         self.rpr(w, &p);
-                        w.empty(mark, &[]);
+                        // A custom mark is plain text; the placeholder would turn it into a number.
+                        if custom.is_empty() {
+                            w.empty(mark, &[]);
+                        } else {
+                            w.leaf("w:t", &[("xml:space", "preserve")], custom);
+                        }
                         w.close("w:r");
                         self.rev_close(w, props);
                     }
@@ -1081,6 +1095,7 @@ impl Writer<'_> {
             None => {
                 w.open("a:ln", &[]);
                 w.empty("a:noFill", &[]);
+                line_dash(w, &extra.dash);
                 w.close("a:ln");
             }
         }

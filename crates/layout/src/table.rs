@@ -61,6 +61,8 @@ pub struct CellPart {
     pub(crate) bottom_band: f32,
     /// Top cell margin and visible border band retained on a continuation.
     pub(crate) top: f32,
+    /// Source alignment used by the row-wide widow guard.
+    pub(crate) valign: VAlign,
     pub(crate) merge: Option<MergeEdge>,
     pub(crate) center: Option<CellCenter>,
     /// Its items in the row's `items` (its fill, text, borders and cell area).
@@ -243,7 +245,7 @@ pub fn measure_table_columns(doc: &wordcraft_doc::Document, t: &Table) -> Vec<(f
                 fields: &fields,
                 show_hidden: false,
                 field_codes: false,
-                hide_deleted: false,
+                hide_deleted: Default::default(),
                 table: text.as_ref(),
                 proofing: None,
                 // Measurement uses a fixed environment (like show_hidden/proofing above).
@@ -952,7 +954,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 clip: turned_clip || exact && c.h > span_h + 0.01,
             });
             let top = c.margins[0] + c.top_band;
-            parts.push(CellPart { anchored_rules, bottom_rule, top, bottom_band, items: first..items.len(), end, center, merge });
+            parts.push(CellPart { anchored_rules, bottom_rule, top, bottom_band, valign: c.valign, items: first..items.len(), end, center, merge });
         }
         out.push(RowLayout {
             height: rh,
@@ -1007,6 +1009,23 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                 .collect()
         })
         .collect();
+    // A top-aligned cell that widow/orphan control leaves with nothing on this page, though its first line
+    // would fit there, takes the whole row on with it: Word doesn't leave the other cells behind
+    // beside an empty one (observed with synthetic documents). Trailing space alone can move
+    // the last paragraph without deferring the whole row.
+    for ((items, splits), cell) in cells.iter().zip(&splits).zip(&row.cells) {
+        let first = items.iter().zip(splits).find_map(|(it, &split)| text_lines(it).map(|t| (t, split)));
+        if let Some(((para, l0, l1, y), split)) = first
+            && cell.valign == VAlign::Top
+            && split == l0
+            && para.rp.widow_control
+            && l1.saturating_sub(l0) > 1
+            && crate::item_bottom(y, para, l0, l1).is_some_and(|bottom| !fits(bottom))
+            && para.lines.get(l0).is_some_and(|l| fits(y + l.top - para.lines.get(l0).map_or(0.0, |f| f.top) + l.height))
+        {
+            return None;
+        }
+    }
     // The top of the first thing that moves on in each cell.
     let mut kept_any = false;
     let mut moved_content = false;
@@ -1272,6 +1291,7 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
             bottom_rule,
             bottom_band: c.bottom_band,
             top: c.top,
+            valign: c.valign,
             items: start..b.len(),
             end: c.end.filter(|_| center.is_none()).map(|e| e - shift),
             center: None,

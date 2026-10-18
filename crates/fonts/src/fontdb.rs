@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use kurbo::BezPath;
 use skrifa::instance::{Location, LocationRef, Size};
-use skrifa::outline::{DrawSettings, OutlinePen};
+use skrifa::outline::{DrawSettings, Engine, HintingInstance, HintingOptions, OutlinePen, Target};
 use skrifa::raw::FileRef;
 use skrifa::string::StringId;
 use skrifa::{GlyphId, MetadataProvider};
 
-mod user;
+pub(crate) mod user;
 pub use user::{FONT_FILE_EXTS, FontFormat, Installed, MAX_FONT_FILE_BYTES, UserFont, UserFontError, decode_font_file, is_font_file_name, sniff};
 
 /// The family used when a requested family is unknown (the UI sans).
@@ -62,6 +62,7 @@ pub struct FontFace {
     pub local_names: Vec<LocalName>,
     /// Exact OpenType name ID 6, distinct from family and style names.
     postscript: Option<String>,
+    /// Exact OpenType full name (name ID 4), distinct from family and style names.
     full_name: Option<String>,
     /// usWeightClass-style weight (400 = regular).
     pub weight: f32,
@@ -85,6 +86,8 @@ pub struct FontFace {
     pub instance: Option<harfrust::ShaperInstance>,
     /// Basic Multilingual Plane coverage bitset, built on first use.
     bmp: std::sync::OnceLock<Box<[u64]>>,
+    // Some legacy CJK fonts assemble their contours with TrueType instructions.
+    outline_hinter: std::sync::OnceLock<Option<HintingInstance>>,
 }
 
 /// A cheap `Copy` handle to a face. Faces are never unloaded, so the handle lives for the rest of
@@ -178,11 +181,32 @@ impl FontFace {
         if let Some(f) = self.skrifa()
             && let Some(g) = f.outline_glyphs().get(GlyphId::new(gid))
         {
-            let _ = g.draw(DrawSettings::unhinted(Size::unscaled(), self.location()), &mut pen);
+            let hinter = self.outline_hinter.get_or_init(|| {
+                let outlines = f.outline_glyphs();
+                if !outlines.require_interpreter() {
+                    return None;
+                }
+                // At UPEM pixels, hinted coordinates remain in font units. This
+                // executes contour assembly without tying the cache to view zoom.
+                HintingInstance::new(
+                    &outlines,
+                    Size::new(self.upem as f32),
+                    self.location(),
+                    HintingOptions { engine: Engine::Interpreter, target: Target::Mono },
+                )
+                .map_err(|e| log::warn!("Cannot initialize outline interpreter for {}: {e}", self.family))
+                .ok()
+            });
+            let settings =
+                hinter.as_ref().map_or_else(|| DrawSettings::unhinted(Size::unscaled(), self.location()), |h| DrawSettings::hinted(h, false));
+            if let Err(e) = g.draw(settings, &mut pen) {
+                log::warn!("Cannot draw glyph {gid} in {}: {e}", self.family);
+                return BezPath::new();
+            }
         }
         pen.0
     }
-    /// Is `family` this face's typographic, legacy or PostScript name?
+    /// Is `family` this face's typographic, legacy, PostScript or full name?
     pub fn named(&self, family: &str) -> bool {
         self.family.eq_ignore_ascii_case(family)
             || self.legacy_family.eq_ignore_ascii_case(family)
@@ -304,6 +328,28 @@ struct CatalogEntry {
     path: std::path::PathBuf,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum NameRank {
+    Family,
+    Legacy,
+    Full,
+    Postscript,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NameRank {
+    fn of(name: &str, family: &str, legacy: &str, full: Option<&str>, postscript: Option<&str>) -> Option<Self> {
+        [(Self::Family, Some(family)), (Self::Legacy, Some(legacy)), (Self::Full, full), (Self::Postscript, postscript)]
+            .into_iter()
+            .find_map(|(rank, alias)| alias.is_some_and(|n| n.eq_ignore_ascii_case(name)).then_some(rank))
+    }
+
+    fn face(name: &str, face: &FontFace) -> Option<Self> {
+        Self::of(name, &face.family, &face.legacy_family, face.full_name.as_deref(), face.postscript.as_deref())
+    }
+}
+
 /// Process-wide font database.
 pub struct FontDb {
     faces: RwLock<Vec<Arc<FontFace>>>,
@@ -313,7 +359,7 @@ pub struct FontDb {
     /// search sorts every loaded face, so without this text in a script the requested font lacks
     /// (Thai, #59) got slower with every font loaded.
     fallbacks: RwLock<FallbackCache>,
-    ea_fallbacks: RwLock<EaFallbackCache>,
+    run_fallbacks: RwLock<RunFallbackCache>,
     #[cfg(not(target_arch = "wasm32"))]
     catalog: RwLock<Vec<CatalogEntry>>,
     /// Fonts the user added at run time, and the folder they are stored in (#582).
@@ -549,10 +595,10 @@ struct FallbackCache {
     map: HashMap<(char, u32), Option<Arc<FontFace>>>,
 }
 
-/// [`FontDb::fallback_for_east_asian`] results: (sorted, deduplicated chars, excluded face, bold,
+/// [`FontDb::fallback_for_run`] results: (sorted, deduplicated chars, excluded face, bold,
 /// italic) → face, valid while the loaded face count is `faces`.
 #[derive(Default)]
-struct EaFallbackCache {
+struct RunFallbackCache {
     faces: usize,
     /// Chars held in the keys (bounds memory: hostile runs can be long).
     chars: usize,
@@ -560,19 +606,24 @@ struct EaFallbackCache {
     map: HashMap<(Vec<char>, u32, bool, bool), Option<Arc<FontFace>>>,
 }
 
-/// Most cached run-level East Asian fallbacks, and most chars in their keys, before the cache is
-/// reset.
-const EA_FALLBACK_CACHE_MAX: usize = 4096;
-const EA_FALLBACK_CACHE_CHARS: usize = 1 << 20;
+/// Most cached run-level fallbacks, and most chars in their keys, before the cache is reset.
+const RUN_FALLBACK_CACHE_MAX: usize = 4096;
+const RUN_FALLBACK_CACHE_CHARS: usize = 1 << 20;
 
 /// Loaded faces other than `exclude`, in fallback order: for right-to-left text the fonts made
-/// for the script first (so a word isn't split across fonts, which breaks Arabic joining), then
-/// the fallback family, upright, nearest to regular weight.
-fn fallback_order(faces: &[Arc<FontFace>], exclude: u32, rtl: bool) -> Vec<&Arc<FontFace>> {
+/// for the script first (so a word isn't split across fonts, which breaks Arabic joining); for a
+/// complex-script character `complex` (Thai, Myanmar…) faces with OpenType layout tables, the
+/// script's own families first, as the per-character fallback ranks them; then the fallback
+/// family, upright, nearest to regular weight.
+fn fallback_order(faces: &[Arc<FontFace>], exclude: u32, rtl: bool, complex: Option<char>) -> Vec<&Arc<FontFace>> {
     let mut order: Vec<&Arc<FontFace>> = faces.iter().filter(|f| f.id != exclude).collect();
     let rank =
         |f: &FontFace| if rtl { RTL_FALLBACKS.iter().position(|n| f.family.eq_ignore_ascii_case(n)).unwrap_or(RTL_FALLBACKS.len()) } else { 0 };
-    order.sort_by_key(|f| (rank(f), !f.family.eq_ignore_ascii_case(FALLBACK_FAMILY), f.italic, (f.weight - 400.0).abs() as i32));
+    let shaping = |f: &FontFace| match complex {
+        Some(c) => (!f.has_layout_tables(), crate::fallback_rank(c, &f.family)),
+        None => (false, 0),
+    };
+    order.sort_by_key(|f| (rank(f), shaping(f), !f.family.eq_ignore_ascii_case(FALLBACK_FAMILY), f.italic, (f.weight - 400.0).abs() as i32));
     order
 }
 
@@ -758,6 +809,7 @@ struct Found {
     legacy: String,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     postscript: Option<String>,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     full_name: Option<String>,
     /// The family's names in other languages ([`FontFace::local_names`]).
     local: Vec<LocalName>,
@@ -872,6 +924,7 @@ fn make_face(bytes: FontBytes, index: u32, family: String, style: String, legacy
         bytes,
         index,
         bmp: std::sync::OnceLock::new(),
+        outline_hinter: std::sync::OnceLock::new(),
     })
 }
 
@@ -932,7 +985,7 @@ impl FontDb {
             faces: RwLock::new(faces),
             outlines: Mutex::new(HashMap::new()),
             fallbacks: RwLock::new(FallbackCache::default()),
-            ea_fallbacks: RwLock::new(EaFallbackCache::default()),
+            run_fallbacks: RwLock::new(RunFallbackCache::default()),
             #[cfg(not(target_arch = "wasm32"))]
             catalog: RwLock::new(Vec::new()),
             user: RwLock::new(user::UserFonts::default()),
@@ -962,7 +1015,7 @@ impl FontDb {
         }
         // Misses remembered while it was off may be found now.
         self.fallbacks.write().unwrap_or_else(|e| e.into_inner()).map.clear();
-        *self.ea_fallbacks.write().unwrap_or_else(|e| e.into_inner()) = EaFallbackCache::default();
+        *self.run_fallbacks.write().unwrap_or_else(|e| e.into_inner()) = RunFallbackCache::default();
         #[cfg(target_arch = "wasm32")]
         let _ = on;
     }
@@ -1204,7 +1257,7 @@ impl FontDb {
     fn load_cataloged(&self, family: &str) -> bool {
         let _loading = self.loading.lock().unwrap_or_else(|e| e.into_inner());
         // Another lookup may have loaded it while this one waited.
-        if self.is_loaded(family) {
+        if self.is_loaded(family) && !self.catalog_preferred(family) {
             return true;
         }
         let paths: Vec<std::path::PathBuf> = {
@@ -1228,12 +1281,48 @@ impl FontDb {
         self.add_fonts(files) > 0
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn loaded_rank(&self, name: &str) -> Option<NameRank> {
+        self.read_faces().iter().filter_map(|f| NameRank::face(name, f)).min()
+    }
+
+    /// Catalog names may outrank a loaded alias, regardless of which face loaded first.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn catalog_preferred(&self, name: &str) -> bool {
+        let loaded = self.loaded_rank(name);
+        if loaded == Some(NameRank::Family) {
+            return false;
+        }
+        self.read_catalog()
+            .iter()
+            .filter_map(|c| NameRank::of(name, &c.family, &c.legacy, c.full_name.as_deref(), c.postscript.as_deref()))
+            .min()
+            .is_some_and(|rank| loaded.is_none_or(|old| rank < old))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resolve_loaded(&self, family: &str, style: &str, found: Arc<FontFace>) -> Arc<FontFace> {
+        let selected = NameRank::face(family, &found);
+        if selected == Some(NameRank::Family) {
+            return found;
+        }
+        // Another lookup can load a stronger match after the first find released its guard.
+        if self.catalog_preferred(family) || selected.zip(self.loaded_rank(family)).is_some_and(|(old, current)| current < old) {
+            self.load_cataloged(family);
+            return self.find(family, style).unwrap_or(found);
+        }
+        found
+    }
+
     /// Resolve a family + style to a face, falling back to the closest style of the family, then to
     /// Source Sans 3 Regular. `family` is a typographic family ("Roboto") or a face's legacy family
     /// name ("Roboto Light", whose styles are Light and Light Italic). Installed system fonts are
     /// found by name whatever ran before. An exact PostScript or full name selects its face.
     pub fn face(&self, family: &str, style: &str) -> Arc<FontFace> {
         if let Some(f) = self.find(family, style) {
+            #[cfg(not(target_arch = "wasm32"))]
+            return self.resolve_loaded(family, style, f);
+            #[cfg(target_arch = "wasm32")]
             return f;
         }
         // Look again even when this load added nothing: another thread may have just loaded it.
@@ -1247,6 +1336,9 @@ impl FontDb {
         // A localized family name (宋体 → SimSun).
         if let Some(en) = self.english_family(family).filter(|en| !en.eq_ignore_ascii_case(family)) {
             if let Some(f) = self.find(&en, style) {
+                #[cfg(not(target_arch = "wasm32"))]
+                return self.resolve_loaded(&en, style, f);
+                #[cfg(target_arch = "wasm32")]
                 return f;
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -1413,8 +1505,8 @@ impl FontDb {
             // Exact face names apply only after family names, regardless of requested style.
             return faces
                 .iter()
-                .find(|f| f.postscript.as_ref().is_some_and(|n| n.eq_ignore_ascii_case(family)))
-                .or_else(|| faces.iter().find(|f| f.full_name.as_ref().is_some_and(|n| n.eq_ignore_ascii_case(family))))
+                .find(|f| f.full_name.as_ref().is_some_and(|n| n.eq_ignore_ascii_case(family)))
+                .or_else(|| faces.iter().find(|f| f.postscript.as_ref().is_some_and(|n| n.eq_ignore_ascii_case(family))))
                 .cloned();
         }
         let ns = norm(style);
@@ -1553,16 +1645,20 @@ impl FontDb {
         (order.into_iter().find(|f| f.covers(c)).cloned(), faces.len())
     }
 
-    /// One fallback face for a run's East Asian characters: the first face in the fallback order
-    /// that covers **every** given character, so a whole run draws in a single CJK face instead of
-    /// mixing faces character by character (a bundled Japanese Mincho for JIS-covered ideographs
-    /// beside a Simplified-Chinese sans for the rest). Like [`Self::fallback_for`], a system font
-    /// is loaded lazily the first time no loaded face covers a character. `None` when no single
-    /// face covers them all, and the caller keeps the per-character fallback.
+    /// One fallback face for a run: the first face in the fallback order that covers **every**
+    /// given character, so a whole run draws in a single face instead of mixing faces character
+    /// by character. East Asian runs: a bundled Japanese Mincho for JIS-covered ideographs beside
+    /// a Simplified-Chinese sans for the rest. A missing Thai font (#1549): the Thai letters in
+    /// one face and the Latin letters and digits beside them in another, at another size; a Thai
+    /// face covers them all, so the run is given every character, Latin ones included.
+    /// Complex-script characters prefer the script's own families with OpenType layout tables, as
+    /// [`Self::fallback_for`] does. Like it, a system font is loaded lazily the first time no
+    /// loaded face covers a character. `None` when no single face covers them all, and the caller
+    /// keeps the per-character fallback.
     ///
     /// Cached per (character set, excluded face, bold, italic) and dropped when the loaded faces
     /// change, like [`Self::fallback_for`], so relayout doesn't repeat the search.
-    pub fn fallback_for_east_asian(&self, chars: &[char], exclude: u32, bold: bool, italic: bool) -> Option<Arc<FontFace>> {
+    pub fn fallback_for_run(&self, chars: &[char], exclude: u32, bold: bool, italic: bool) -> Option<Arc<FontFace>> {
         if chars.is_empty() {
             return None;
         }
@@ -1572,18 +1668,18 @@ impl FontDb {
         let key = (set, exclude, bold, italic);
         let n = self.read_faces().len();
         {
-            let cache = self.ea_fallbacks.read().unwrap_or_else(|e| e.into_inner());
+            let cache = self.run_fallbacks.read().unwrap_or_else(|e| e.into_inner());
             if cache.faces == n
                 && let Some(hit) = cache.map.get(&key)
             {
                 return hit.clone();
             }
         }
-        let found = self.search_east_asian(&key.0, exclude, bold, italic);
+        let found = self.search_run(&key.0, exclude, bold, italic);
         // Keyed by the face count after the search (a system fallback may have loaded fonts).
         let n = self.read_faces().len();
-        let mut cache = self.ea_fallbacks.write().unwrap_or_else(|e| e.into_inner());
-        if cache.faces != n || cache.map.len() >= EA_FALLBACK_CACHE_MAX || cache.chars.saturating_add(key.0.len()) > EA_FALLBACK_CACHE_CHARS {
+        let mut cache = self.run_fallbacks.write().unwrap_or_else(|e| e.into_inner());
+        if cache.faces != n || cache.map.len() >= RUN_FALLBACK_CACHE_MAX || cache.chars.saturating_add(key.0.len()) > RUN_FALLBACK_CACHE_CHARS {
             cache.map.clear();
             cache.faces = n;
             cache.chars = 0;
@@ -1593,7 +1689,7 @@ impl FontDb {
         found
     }
 
-    fn search_east_asian(&self, chars: &[char], exclude: u32, bold: bool, italic: bool) -> Option<Arc<FontFace>> {
+    fn search_run(&self, chars: &[char], exclude: u32, bold: bool, italic: bool) -> Option<Arc<FontFace>> {
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut base = self.loaded_covering(chars, exclude);
         #[cfg(not(target_arch = "wasm32"))]
@@ -1633,7 +1729,10 @@ impl FontDb {
     fn loaded_covering(&self, chars: &[char], exclude: u32) -> Option<Arc<FontFace>> {
         let faces = self.read_faces();
         let rtl = chars.iter().any(|c| crate::is_rtl(*c) || arabic_block(*c));
-        fallback_order(&faces, exclude, rtl).into_iter().find(|f| chars.iter().all(|c| f.covers(*c))).cloned()
+        // A complex-script character picks the families its script prefers (the lowest one: the
+        // run's characters come sorted).
+        let complex = chars.iter().copied().find(|c| crate::needs_layout_tables(*c));
+        fallback_order(&faces, exclude, rtl, complex).into_iter().find(|f| chars.iter().all(|c| f.covers(*c))).cloned()
     }
 
     /// Load a system font covering `c` (preferred fallback families first, then any cataloged
@@ -1771,6 +1870,26 @@ mod tests_sysfonts;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires a locally licensed kaiu.ttf; set WORDCRAFT_TEST_KAI_FONT"]
+    fn kai_contours_include_complete_character_body() {
+        use kurbo::Shape;
+        let path = std::env::var_os("WORDCRAFT_TEST_KAI_FONT").expect("set WORDCRAFT_TEST_KAI_FONT");
+        let db = super::FontDb::with_font_dirs(vec![]);
+        db.set_system_fallback(false);
+        assert!(db.add_font(std::fs::read(path).unwrap()) > 0);
+        let face = db.face("DFKai-SB", "Regular");
+        assert_eq!(face.family, "DFKai-SB");
+        for ch in ['中', '文', '契', '約'] {
+            let outline = face.glyph_outline(face.glyph_for(ch));
+            let bounds = outline.bounding_box();
+            eprintln!("{ch}: {bounds:?}, upem={}", face.upem);
+            assert!(bounds.width() > face.upem * 0.5, "{ch}: missing horizontal strokes");
+            assert!(bounds.height() > face.upem * 0.5, "{ch}: missing vertical strokes");
+            assert!(std::sync::Arc::ptr_eq(&db.outline(&face, face.glyph_for(ch)), &db.outline(&face, face.glyph_for(ch))));
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -1812,15 +1931,15 @@ mod tests {
     }
 
     #[test]
-    fn east_asian_run_fallback_is_cached_per_char_set() {
+    fn run_fallback_is_cached_per_char_set() {
         let db = FontDb::with_font_dirs(Vec::new());
         db.set_system_fallback(false);
         let latin = db.face(FALLBACK_FAMILY, "Regular");
-        let a = db.fallback_for_east_asian(&['分', '类', '分'], latin.id(), false, false).map(|f| f.id());
+        let a = db.fallback_for_run(&['分', '类', '分'], latin.id(), false, false).map(|f| f.id());
         // The same set in another order (and without the repeat) is the same entry.
-        assert_eq!(db.fallback_for_east_asian(&['类', '分'], latin.id(), false, false).map(|f| f.id()), a);
+        assert_eq!(db.fallback_for_run(&['类', '分'], latin.id(), false, false).map(|f| f.id()), a);
         {
-            let cache = db.ea_fallbacks.read().unwrap();
+            let cache = db.run_fallbacks.read().unwrap();
             assert_eq!(cache.faces, db.read_faces().len());
             assert_eq!(cache.map.len(), 1);
             assert!(cache.map.contains_key(&(vec!['分', '类'], latin.id(), false, false)));
@@ -1828,14 +1947,40 @@ mod tests {
         // Long hostile runs keep the cache bounded.
         let many: Vec<char> = (0x4E00u32..0x4E00 + 50_000).filter_map(char::from_u32).collect();
         for i in 0..30 {
-            let _ = db.fallback_for_east_asian(many.get(i..).unwrap_or(&[]), latin.id(), false, false);
+            let _ = db.fallback_for_run(many.get(i..).unwrap_or(&[]), latin.id(), false, false);
         }
-        let cache = db.ea_fallbacks.read().unwrap();
-        assert!(cache.chars <= EA_FALLBACK_CACHE_CHARS, "{}", cache.chars);
+        let cache = db.run_fallbacks.read().unwrap();
+        assert!(cache.chars <= RUN_FALLBACK_CACHE_CHARS, "{}", cache.chars);
         // Turning the system fallback on or off forgets remembered misses.
         drop(cache);
         db.set_system_fallback(false);
-        assert!(db.ea_fallbacks.read().unwrap().map.is_empty());
+        assert!(db.run_fallbacks.read().unwrap().map.is_empty());
+    }
+
+    /// The issue's run (#1549): Thai letters and digits, Latin letters, digits and the baht sign.
+    const THAI_RUN: &str = "[D] น้ำ ค่ำ ปั้น ฝั่ง ปู่ ๑๒๓๔๕๖๗๘๙๐ ฿1,250.50";
+
+    #[test]
+    fn a_thai_run_with_latin_falls_back_to_one_face() {
+        let db = FontDb::global();
+        if db.fallback_for('น', 0).is_none() {
+            eprintln!("skipped: no Thai font installed");
+            return;
+        }
+        let latin = db.face(FALLBACK_FAMILY, "Regular");
+        let chars: Vec<char> = THAI_RUN.chars().filter(|c| !c.is_whitespace()).collect();
+        let f = db.fallback_for_run(&chars, latin.id(), false, false).expect("one face covers the run");
+        assert_ne!(f.id, latin.id);
+        for c in &chars {
+            assert!(f.covers(*c), "{} covers {c}", f.family);
+        }
+        // A Thai font with OpenType tables, as the per-character fallback prefers.
+        assert!(f.has_layout_tables(), "{} shapes Thai", f.family);
+        // Without system fonts no bundled face covers Thai: the caller keeps the per-character path.
+        let bundled = FontDb::with_font_dirs(Vec::new());
+        bundled.set_system_fallback(false);
+        let latin = bundled.face(FALLBACK_FAMILY, "Regular");
+        assert!(bundled.fallback_for_run(&chars, latin.id(), false, false).is_none());
     }
 
     #[test]
@@ -1922,5 +2067,301 @@ mod tests {
         }
         assert!(!db.has_family("NotAFont-Bold"));
         assert_eq!(db.face("Source Serif 4", "Regular").style, "Regular");
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    enum AliasName {
+        Postscript,
+        Family,
+        Legacy,
+    }
+
+    /// A synthetic loaded alias colliding with a cataloged bundled OFL face's full name.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn font_alias_fixture(kind: AliasName) -> (FontDb, Arc<FontFace>, Arc<FontFace>) {
+        const FAMILY: &str = "Synthetic Alias";
+        const FULL_NAME: &str = "Synthetic Alias Regular";
+        let db = FontDb::with_font_dirs(Vec::new());
+        let full = db.face("Source Sans 3", "Bold");
+        let wanted = full.full_name.clone().unwrap();
+        let mut alias = make_face(full.bytes.clone(), full.index, FAMILY.into(), "Regular".into(), FAMILY.into(), Vec::new()).unwrap();
+        alias.full_name = Some(FULL_NAME.into());
+        alias.postscript = Some(wanted.clone());
+        match kind {
+            AliasName::Postscript => {}
+            AliasName::Family => alias.family = wanted,
+            AliasName::Legacy => alias.legacy_family = wanted,
+        }
+        let alias = Arc::new(alias);
+        {
+            let mut faces = db.faces.write().unwrap();
+            faces.retain(|f| f.family != full.family);
+            faces.push(alias.clone());
+        }
+        db.cataloged.set(()).unwrap();
+        db.catalog.write().unwrap().push(CatalogEntry {
+            family: full.family.clone(),
+            style: full.style.clone(),
+            legacy: full.legacy_family.clone(),
+            full_name: full.full_name.clone(),
+            postscript: full.postscript.clone(),
+            local: Vec::new(),
+            east_asian: false,
+            path: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts/SourceSans3-Bold.ttf"),
+        });
+        (db, alias, full)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn full_name_beats_loaded_alias() {
+        for style in ["Regular", "Italic"] {
+            let (db, alias, full) = font_alias_fixture(AliasName::Postscript);
+            let wanted = full.full_name.as_ref().unwrap().to_ascii_lowercase();
+            assert_eq!(db.find(&wanted, style).unwrap().id(), alias.id(), "only the PostScript alias is loaded");
+            let selected = db.face(&wanted, style);
+            assert_eq!((selected.family.as_str(), selected.style.as_str()), (full.family.as_str(), full.style.as_str()));
+            assert_ne!(selected.id(), alias.id());
+            // The same winner after both faces load, in either insertion order.
+            db.faces.write().unwrap().reverse();
+            assert_eq!(db.face(&wanted, style).id(), selected.id());
+            assert_eq!(db.face(&alias.family, "Regular").id(), alias.id());
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn catalog_full_beats_alias() {
+        let (db, alias, full) = font_alias_fixture(AliasName::Postscript);
+        let wanted = full.full_name.as_ref().unwrap();
+        assert!(db.is_loaded(wanted), "the PostScript alias satisfies the old loading guard");
+        assert!(db.load_cataloged(wanted));
+        let selected = db.find(wanted, "Italic").unwrap();
+        assert_eq!(selected.family, full.family);
+        assert_ne!(selected.id(), alias.id());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn family_aliases_keep_priority() {
+        for kind in [AliasName::Family, AliasName::Legacy] {
+            let (db, alias, full) = font_alias_fixture(kind);
+            let wanted = full.full_name.as_ref().unwrap();
+            let loaded = db.read_faces().len();
+            assert_eq!(db.face(wanted, "Regular").id(), alias.id());
+            assert_eq!(db.read_faces().len(), loaded, "family and legacy matches do not load an exact-name collision");
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[derive(Clone, Copy)]
+    enum AliasSpace {
+        Family,
+        Legacy,
+        Full,
+        Postscript,
+    }
+
+    /// Synthetic name records over an existing OFL face keep catalog metadata and file bytes consistent.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn namespace_font(space: AliasSpace) -> Vec<u8> {
+        let mut data = include_bytes!("../../../assets/fonts/SourceSans3-Bold.ttf").to_vec();
+        let mut names = [(1u16, "Priority Legacy"), (2, "Bold"), (4, "Priority Full"), (6, "PriorityPS"), (16, "Priority Family"), (17, "Bold")];
+        let index = match space {
+            AliasSpace::Family => 4,
+            AliasSpace::Legacy => 0,
+            AliasSpace::Full => 2,
+            AliasSpace::Postscript => 3,
+        };
+        names[index].1 = "Collision";
+        let mut table = Vec::new();
+        for n in [0u16, names.len() as u16, 6 + 12 * names.len() as u16] {
+            table.extend_from_slice(&n.to_be_bytes());
+        }
+        let mut strings = Vec::new();
+        for (id, name) in names {
+            let bytes: Vec<_> = name.encode_utf16().flat_map(u16::to_be_bytes).collect();
+            for n in [3u16, 1, 0x409, id, bytes.len() as u16, strings.len() as u16] {
+                table.extend_from_slice(&n.to_be_bytes());
+            }
+            strings.extend_from_slice(&bytes);
+        }
+        table.extend_from_slice(&strings);
+        data.resize(data.len().next_multiple_of(4), 0);
+        let offset = data.len() as u32;
+        let count = u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize;
+        let entry = (0..count).map(|i| 12 + i * 16).find(|i| &data[*i..*i + 4] == b"name").unwrap();
+        data[entry + 8..entry + 12].copy_from_slice(&offset.to_be_bytes());
+        data[entry + 12..entry + 16].copy_from_slice(&(table.len() as u32).to_be_bytes());
+        data.extend_from_slice(&table);
+        data
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct NamespaceFixture {
+        db: FontDb,
+        alias: Arc<FontFace>,
+        target: Arc<FontFace>,
+        path: std::path::PathBuf,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl Drop for NamespaceFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn namespace_fixture(loaded: AliasSpace, catalog: AliasSpace) -> NamespaceFixture {
+        let db = FontDb::with_font_dirs(Vec::new());
+        let mut alias =
+            make_face(FontBytes::Static(BUNDLED[0]), 0, "Loaded Alias".into(), "Regular".into(), "Loaded Legacy".into(), Vec::new()).unwrap();
+        alias.full_name = Some("Loaded Full".into());
+        alias.postscript = Some("LoadedPS".into());
+        match loaded {
+            AliasSpace::Family => alias.family = "Collision".into(),
+            AliasSpace::Legacy => alias.legacy_family = "Collision".into(),
+            AliasSpace::Full => alias.full_name = Some("Collision".into()),
+            AliasSpace::Postscript => alias.postscript = Some("Collision".into()),
+        }
+        let alias = Arc::new(alias);
+        db.faces.write().unwrap().push(alias.clone());
+        let bytes = namespace_font(catalog);
+        let found = enumerate_faces(&bytes).pop().unwrap();
+        let target = Arc::new(
+            make_face(FontBytes::Owned(Arc::new(bytes.clone())), found.index, found.family, found.style, found.legacy, found.coords).unwrap(),
+        );
+        let path = std::env::temp_dir().join(format!("wc-alias-rank-{}-{}.ttf", std::process::id(), alias.id()));
+        std::fs::write(&path, bytes).unwrap();
+        db.cataloged.set(()).unwrap();
+        db.catalog.write().unwrap().push(CatalogEntry {
+            family: target.family.clone(),
+            style: target.style.clone(),
+            legacy: target.legacy_family.clone(),
+            full_name: target.full_name.clone(),
+            postscript: target.postscript.clone(),
+            local: Vec::new(),
+            east_asian: false,
+            path: path.clone(),
+        });
+        NamespaceFixture { db, alias, target, path }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn check_catalog_winner(loaded: AliasSpace, catalog: AliasSpace) {
+        for style in ["Regular", "Bold", "Italic"] {
+            let f = namespace_fixture(loaded, catalog);
+            assert!(f.db.is_loaded("Collision"));
+            let selected = f.db.face("cOlLiSiOn", style);
+            assert_eq!((selected.family.as_str(), selected.style.as_str()), (f.target.family.as_str(), "Bold"));
+            assert_ne!(selected.id(), f.alias.id());
+            f.db.faces.write().unwrap().reverse();
+            assert_eq!(f.db.face("Collision", style).id(), selected.id());
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn catalog_family_beats_ps() {
+        check_catalog_winner(AliasSpace::Postscript, AliasSpace::Family);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn catalog_legacy_beats_ps() {
+        check_catalog_winner(AliasSpace::Postscript, AliasSpace::Legacy);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn catalog_family_beats_full() {
+        check_catalog_winner(AliasSpace::Full, AliasSpace::Family);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn catalog_family_beats_legacy() {
+        check_catalog_winner(AliasSpace::Legacy, AliasSpace::Family);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn catalog_legacy_beats_full() {
+        check_catalog_winner(AliasSpace::Full, AliasSpace::Legacy);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn catalog_rank_guard() {
+        for (loaded, catalog) in
+            [(AliasSpace::Postscript, AliasSpace::Family), (AliasSpace::Postscript, AliasSpace::Legacy), (AliasSpace::Full, AliasSpace::Family)]
+        {
+            let f = namespace_fixture(loaded, catalog);
+            assert!(f.db.load_cataloged("Collision"));
+            assert_eq!(f.db.find("Collision", "Bold").unwrap().family, f.target.family);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn loaded_rank_keeps_priority() {
+        for (loaded, catalog) in [
+            (AliasSpace::Family, AliasSpace::Legacy),
+            (AliasSpace::Family, AliasSpace::Full),
+            (AliasSpace::Family, AliasSpace::Postscript),
+            (AliasSpace::Legacy, AliasSpace::Full),
+            (AliasSpace::Legacy, AliasSpace::Postscript),
+            (AliasSpace::Full, AliasSpace::Postscript),
+        ] {
+            let f = namespace_fixture(loaded, catalog);
+            let count = f.db.read_faces().len();
+            assert_eq!(f.db.face("Collision", "Italic").id(), f.alias.id());
+            assert_eq!(f.db.read_faces().len(), count);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn namespace_ties_keep_styles() {
+        for space in [AliasSpace::Family, AliasSpace::Legacy, AliasSpace::Full, AliasSpace::Postscript] {
+            let f = namespace_fixture(space, space);
+            let count = f.db.read_faces().len();
+            assert_eq!(f.db.face("Collision", "Regular").id(), f.alias.id());
+            assert_eq!(f.db.read_faces().len(), count, "equal rank does not force a catalog load");
+            assert_eq!(f.db.add_font(std::fs::read(&f.path).unwrap()), 1);
+            let selected = f.db.face("Collision", "Regular");
+            assert_eq!(selected.id(), f.alias.id());
+            f.db.faces.write().unwrap().reverse();
+            match space {
+                AliasSpace::Family | AliasSpace::Legacy => {
+                    assert_eq!(f.db.face("Collision", "Regular").id(), f.alias.id());
+                    assert_eq!(f.db.face("Collision", "Bold").style, "Bold");
+                }
+                AliasSpace::Full | AliasSpace::Postscript => {
+                    assert_eq!(f.db.face("Collision", "Regular").family, f.target.family);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn localized_family_beats_ps() {
+        let f = namespace_fixture(AliasSpace::Postscript, AliasSpace::Family);
+        f.db.catalog.write().unwrap()[0].local.push(LocalName { lang: "nl".into(), name: "Lokale familie".into(), english: "Collision".into() });
+        assert_eq!(f.db.face("Lokale familie", "Bold").family, f.target.family);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn loaded_alias_is_refreshed() {
+        let (db, alias, full) = font_alias_fixture(AliasName::Postscript);
+        let wanted = full.full_name.as_ref().unwrap();
+        let stale = db.find(wanted, "Regular").unwrap();
+        assert_eq!(stale.id(), alias.id());
+        // Resume the lookup after another thread has completed the stronger catalog load.
+        std::thread::scope(|scope| assert!(scope.spawn(|| db.load_cataloged(wanted)).join().unwrap()));
+        let selected = db.resolve_loaded(wanted, "Regular", stale);
+        assert_eq!(selected.family, full.family);
+        assert_ne!(selected.id(), alias.id());
     }
 }

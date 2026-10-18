@@ -561,3 +561,138 @@ fn list_label_moves_with_its_text_when_the_paragraph_is_aligned() {
         }
     }
 }
+
+const REF_BIDI_CASES: &[(&str, bool)] = &[
+    ("אבג דהו זחט יכל", false),
+    ("Alpha (123) Beta [45] Gamma", true),
+    ("123 (Alpha Beta) [45] Gamma", true),
+    ("אבג (123) דהו [45] זחט", false),
+    ("אבגABC DEF זחט", false),
+    ("Alphaאבג דהו Beta", true),
+];
+
+/// Compare a wrappable REF with the same cached result in an atomic field.
+fn ref_context_doc(text: &str) -> Document {
+    use wordcraft_doc::para::InlineObject;
+    const REF: &str = r"REF Synthetic \h";
+    const ATOMIC: &str = "SYNTHETIC";
+    let mut d = Document::from_text("\n");
+    for (i, instr) in [REF, ATOMIC].into_iter().enumerate() {
+        let p = d.para_mut(StoryRef::Body, &Path::top(i)).unwrap();
+        let cp = wordcraft_doc::CharProps {
+            font: Some("Source Sans 3".into()),
+            size: Some(12.0),
+            link: (instr == ATOMIC).then(|| "#Synthetic".into()),
+            ..Default::default()
+        };
+        p.insert_object(
+            0,
+            InlineObject::Field { instr: instr.into(), result: text.into(), locked: true, dirty: false, code: false, form: String::new() },
+            &cp,
+        )
+        .unwrap();
+    }
+    d
+}
+
+/// Original result offsets and glyph ids, read from left to right on one physical line.
+fn result_glyph_order(pl: &ParaLayout, li: usize) -> Vec<(usize, u32)> {
+    let line = &pl.lines[li];
+    let mut glyphs = Vec::new();
+    let mut offset = 0;
+    for (k, text, ranges) in &pl.shown {
+        if (line.c0..line.c1).contains(k) {
+            let c = &pl.clusters[*k];
+            let x = line.cl_left(*k).unwrap();
+            for (g, range) in pl.glyphs[c.g0 as usize..c.g1 as usize].iter().zip(ranges) {
+                if text[range.start..].chars().next().is_some_and(|ch| !ch.is_whitespace()) {
+                    glyphs.push((x + g.dx, offset + range.start, g.gid));
+                }
+            }
+        }
+        offset += text.len();
+    }
+    glyphs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    glyphs.into_iter().map(|(_, off, gid)| (off, gid)).collect()
+}
+
+#[test]
+fn ref_bidi_keeps_result_context() {
+    for &(text, rtl) in REF_BIDI_CASES {
+        let mut d = ref_context_doc(text);
+        for i in 0..2 {
+            d.para_mut(StoryRef::Body, &Path::top(i)).unwrap().props.bidi = Some(rtl);
+        }
+        let l = lay(&d);
+        let (wrapped, _) = first_line(&l, 0);
+        let (atomic, _) = first_line(&l, 1);
+        assert_eq!(wrapped.lines.len(), 1);
+        assert_eq!(atomic.lines.len(), 1);
+        let actual = result_glyph_order(wrapped, 0);
+        assert!(!actual.is_empty());
+        assert_eq!(actual, result_glyph_order(atomic, 0), "whole-result order and bracket glyphs: {text}");
+        if text.is_ascii() {
+            assert!(actual.windows(2).all(|w| w[0].0 < w[1].0), "Latin and numbers read left to right: {text}");
+        } else if text.chars().all(|ch| ch == ' ' || ('א'..='ת').contains(&ch)) {
+            assert!(actual.windows(2).all(|w| w[0].0 > w[1].0), "Hebrew words read right to left: {text}");
+        }
+    }
+}
+
+#[test]
+fn ref_bidi_wraps_at_spaces() {
+    for &(text, rtl) in REF_BIDI_CASES {
+        let mut d = ref_context_doc(text);
+        for i in 0..2 {
+            d.para_mut(StoryRef::Body, &Path::top(i)).unwrap().props.bidi = Some(rtl);
+        }
+        let wide = lay(&d);
+        let (whole, _) = first_line(&wide, 1);
+        let expected = result_glyph_order(whole, 0);
+        let (reference, _) = first_line(&wide, 0);
+        let mut word_width = 0.0f32;
+        let mut word = 0.0f32;
+        for c in &reference.clusters {
+            if c.kind == crate::para::ClKind::Space {
+                word_width = word_width.max(word);
+                word = 0.0;
+            } else {
+                word += c.adv;
+            }
+        }
+        word_width = word_width.max(word);
+        let total_width: f32 = reference.clusters.iter().map(|c| c.adv).sum();
+        let width = (total_width * 0.65).max(word_width * 1.05);
+        d.last_section.page_w = d.last_section.margin_left + d.last_section.margin_right + width;
+        let narrow = lay(&d);
+        let (pl, _) = first_line(&narrow, 0);
+        assert!(pl.lines.len() > 1, "the REF result wraps: {text}");
+        assert_eq!(pl.shown.iter().map(|s| s.1.as_str()).collect::<String>(), text);
+        let source_end = d.para(StoryRef::Body, &Path::top(0)).unwrap().len();
+        assert!(pl.clusters.iter().all(|c| c.start == 0 && c.end == source_end));
+        assert!(
+            pl.shown.iter().all(|(k, _, _)| {
+                let style = pl.clusters[*k].style as usize;
+                pl.styles[style].rc.link.as_deref() == Some("#Synthetic")
+            }),
+            "REF hyperlink survives every piece"
+        );
+        assert_eq!(pl.line_of(0), 0);
+        assert_eq!(pl.line_of(source_end), pl.lines.len() - 1);
+        let mut seen = Vec::new();
+        for (li, line) in pl.lines.iter().enumerate() {
+            let actual = result_glyph_order(pl, li);
+            let wanted: Vec<_> = expected.iter().copied().filter(|g| actual.iter().any(|a| a.0 == g.0)).collect();
+            assert!(!actual.is_empty(), "no empty continuation: {text}");
+            assert_eq!(actual, wanted, "wrapped line {li} keeps whole-result context: {text}");
+            if li + 1 < pl.lines.len() {
+                assert_eq!(pl.clusters[line.c1 - 1].kind, crate::para::ClKind::Space);
+            }
+            seen.extend(actual);
+        }
+        seen.sort_unstable();
+        let mut expected = expected;
+        expected.sort_unstable();
+        assert_eq!(seen, expected, "no result glyph is lost or repeated: {text}");
+    }
+}

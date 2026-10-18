@@ -9,6 +9,7 @@ use wordcraft_doc::numbering::{Level, LevelSuffix};
 use wordcraft_doc::para::{COLUMN_BREAK, InlineObject, LINE_BREAK, NoteKind, OBJ, PAGE_BREAK, PTabAlign, PTabBase, RubyAlign, SOFT_HYPHEN, WrapText};
 use wordcraft_doc::props::{Align, CharProps, LineSpacing, ParaProps, TabAlign, TabLeader, TabStop};
 use wordcraft_doc::resolve::{ResolvedChar, ResolvedPara};
+use wordcraft_doc::section::NumFormat;
 use wordcraft_doc::{Document, Paragraph};
 use wordcraft_fonts::FaceRef;
 
@@ -60,6 +61,21 @@ impl<'a> SymbolRun<'a> {
             _ => u,
         }
     }
+}
+
+/// Whether a bullet level's `text` has a private-use character that no installed font draws:
+/// its font isn't installed (or lacks it) and it isn't a symbol-font code with a Unicode
+/// equivalent. Private-use codes mean something different in every font, so another face's
+/// glyph there is an unrelated icon, not a bullet.
+fn undrawable_bullet(text: &str, lvl: &Level, rc: &ResolvedChar) -> bool {
+    let private = |c: char| matches!(u32::from(c), 0xE000..=0xF8FF | 0xF0000..=0x10FFFF);
+    lvl.format == NumFormat::Bullet
+        && text.chars().any(|c| {
+            private(c) && wordcraft_doc::symbol_fonts::symbol_char(&rc.font, c).is_none() && {
+                let r = wordcraft_fonts::word::resolve(&rc.font, rc.bold, rc.italic);
+                r.substituted || !r.face.covers(c)
+            }
+        })
 }
 
 /// A face at a size with the formatting needed to draw it.
@@ -359,6 +375,9 @@ pub struct ParaLayout {
     pub shown: Vec<(usize, String, Vec<std::ops::Range<usize>>)>,
     /// Shapes drawn around overstruck field text (enclosed characters, `EQ \o`), by cluster index.
     pub enclosures: Vec<(usize, Enclosed)>,
+    /// Room after a cluster between Asian text and Latin text or digits ([`auto_space`]), by
+    /// cluster index, sorted. It is part of the cluster's advance, but takes no room at a line's end.
+    pub auto_space: Vec<(usize, f32)>,
 }
 
 /// A shape drawn over a cluster (an enclosed character's circle, square, triangle or diamond),
@@ -393,8 +412,9 @@ pub struct ParaEnv<'a> {
     pub show_hidden: bool,
     /// Show field codes instead of results ([`crate::LayoutOptions::field_codes`]).
     pub field_codes: bool,
-    /// Leave tracked deletions out, like hidden text (the final, "No Markup" text).
-    pub hide_deleted: bool,
+    /// Which tracked deletions to leave out, like hidden text (all of them in the final, "No
+    /// Markup" text).
+    pub hide_deleted: crate::HideDeleted,
     /// The table style's formatting for text in this paragraph's cell (`None` outside tables).
     pub table: Option<&'a CellText>,
     /// Check spelling (and grammar, as the options say) for squiggles; `None` = no squiggles.
@@ -489,6 +509,54 @@ pub enum WordFit {
     Split,
 }
 
+/// Automatic spacing (`w:autoSpaceDE`, `w:autoSpaceDN`): a quarter of the Asian character's font
+/// size between Asian text and Latin text or digits that touch, across runs. Measured on Word's
+/// PDF of a Chinese document at 16 pt (#2358), as JIS X 4051 asks. A field or note number is
+/// classed by the text it shows. The room goes after the first of the two characters; returns it
+/// by cluster index.
+fn auto_space(b: &mut Builder, text: &str, de: bool, dn: bool) -> Vec<(usize, f32)> {
+    let mut out = Vec::new();
+    if !de && !dn {
+        return out;
+    }
+    let mut shown = b.shown.iter().map(|s| (s.0, s.1.as_str())).peekable();
+    // The previous text cluster: index, its last character, its font size.
+    let mut prev: Option<(usize, char, f32)> = None;
+    for k in 0..b.clusters.len() {
+        let Some(c) = b.clusters.get(k) else { break };
+        match c.kind {
+            ClKind::Text => {}
+            ClKind::Marker if c.adv == 0.0 => continue,
+            _ => {
+                prev = None;
+                continue;
+            }
+        }
+        while shown.next_if(|s| s.0 < k).is_some() {}
+        let s = match shown.peek() {
+            Some(&(i, t)) if i == k => t,
+            _ => text.get(c.start..c.end).unwrap_or(""),
+        };
+        let (Some(first), Some(last)) = (s.chars().next(), s.chars().next_back()) else {
+            prev = None;
+            continue;
+        };
+        let size = b.styles.get(c.style as usize).map_or(0.0, |st| st.size);
+        if let Some((pk, pc, psize)) = prev
+            && let Some(side) = crate::kinsoku::auto_space(pc, first, de, dn)
+        {
+            let asian = if side == crate::kinsoku::AsianSide::Left { psize } else { size };
+            let gap = if asian.is_finite() { (asian / 4.0).clamp(0.0, 400.0) } else { 0.0 };
+            if let Some(pc) = b.clusters.get_mut(pk) {
+                pc.adv += gap;
+                out.push((pk, gap));
+            }
+        }
+        prev = Some((k, last, size));
+    }
+    out
+}
+
 /// An area text wraps around.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Exclusion {
@@ -518,6 +586,19 @@ struct Builder<'a> {
     levels: Vec<u8>,
     /// Text drawn by clusters that stand for an object, by cluster index (see `ParaLayout::shown`).
     shown: Vec<(usize, String, Vec<std::ops::Range<usize>>)>,
+}
+
+/// A REF wrap piece shares its object's source range but has its own bidi level.
+struct RefPiece {
+    cluster: usize,
+    break_after: Option<bool>,
+    level: u8,
+    word_start: usize,
+    word_width: f32,
+}
+
+fn ref_piece_at(pieces: &[RefPiece], k: usize) -> Option<&RefPiece> {
+    pieces.binary_search_by_key(&k, |p| p.cluster).ok().and_then(|i| pieces.get(i))
 }
 
 /// What a piece of text is shaped as: one face, case, script formatting and direction.
@@ -627,6 +708,27 @@ pub(crate) fn remap_range(map_starts: &[usize], orig_of: &[usize], orig_len: usi
     (s.min(e), s.max(e))
 }
 
+/// The bidi levels a piece of text is shaped by.
+#[derive(Clone, Copy)]
+enum Dir<'l> {
+    /// Paragraph text: the paragraph's levels at the piece's offset.
+    Para,
+    /// Text laid out on its own (a field result): these levels, by byte of the text.
+    Own(&'l [u8]),
+    /// Each strong run in its own direction (list labels, ruby, left-to-right results).
+    Guess,
+}
+
+/// The direction of `c` if it is a strong letter (UAX #9 P2): `Some(true)` right to left.
+fn strong_rtl(c: char) -> Option<bool> {
+    use unicode_bidi::BidiClass::{AL, L, R};
+    match unicode_bidi::bidi_class(c) {
+        R | AL => Some(true),
+        L => Some(false),
+        _ => None,
+    }
+}
+
 /// Bidi embedding levels per byte of `text` (UAX #9 rules up to I2), or empty when the
 /// paragraph is left to right and has no right-to-left characters.
 pub fn bidi_levels(text: &str, rtl_para: bool) -> Vec<u8> {
@@ -681,10 +783,12 @@ fn east_asian(c: char) -> bool {
 const MISSING_ROMAN_FONT: &str = "Cambria";
 
 /// The family to look `font` up as: [`MISSING_ROMAN_FONT`] for a missing roman font, else `font`.
+/// A missing Thai font keeps its name: it is drawn in a Thai face, not in Cambria (#1549).
 fn lookup_family<'f>(doc: &Document, font: &'f str) -> &'f str {
     let db = wordcraft_fonts::FontDb::global();
     let roman = doc.settings.roman_fonts.iter().any(|f| f.eq_ignore_ascii_case(font));
     if roman
+        && !wordcraft_fonts::word::is_thai_family(font)
         && !wordcraft_doc::symbol_fonts::is_symbol_font(font)
         && !db.has_family(font)
         && !db.has_family(wordcraft_fonts::word::charset_base_family(font))
@@ -693,6 +797,28 @@ fn lookup_family<'f>(doc: &Document, font: &'f str) -> &'f str {
     } else {
         font
     }
+}
+
+/// One face for a run in a Thai font that isn't installed (#1549): Word substitutes one font
+/// (Cordia New) for the whole run, so the Latin letters, digits and ฿ keep the Thai letters' face
+/// and size. `None` unless `font` is a Thai family, it was substituted, and its substitute
+/// `primary` lacks some of the run's Thai or Latin characters; then the first face covering all of
+/// them, if one does. Other families keep Latin text in their own substitute, as Word does.
+pub(crate) fn thai_run_face(font: &str, substituted: bool, primary: FaceRef, text: &str, bold: bool, italic: bool) -> Option<FaceRef> {
+    if !substituted || !wordcraft_fonts::word::is_thai_family(font) {
+        return None;
+    }
+    let run: Vec<char> = text.chars().filter(|c| thai_or_latin(*c)).collect();
+    if run.iter().all(|c| primary.covers(*c)) {
+        return None;
+    }
+    wordcraft_fonts::FontDb::global().fallback_for_run(&run, primary.id(), bold, italic).map(|f| FaceRef::of(&f))
+}
+
+/// Text a Thai substitute draws: Thai letters, digits and signs (฿), and Latin letters, digits
+/// and punctuation.
+fn thai_or_latin(c: char) -> bool {
+    matches!(u32::from(c), 0x0021..=0x024F | 0x0E00..=0x0E7F) && !c.is_whitespace() && !c.is_control() && c != SOFT_HYPHEN
 }
 
 impl<'a> Builder<'a> {
@@ -768,12 +894,11 @@ impl<'a> Builder<'a> {
 
     /// Shape `text` (a piece of the paragraph starting at byte `base`) in one style and append clusters.
     fn shape(&mut self, text: &str, base: usize, rc: &Arc<ResolvedChar>, kind_override: Option<ClKind>) {
-        self.shape_with(text, base, rc, kind_override, true);
+        self.shape_with(text, base, rc, kind_override, Dir::Para);
     }
 
-    /// `para_text`: `text` is paragraph text at `base`, so the paragraph's bidi levels apply
-    /// (false for field results and list labels, which are shaped on their own).
-    fn shape_with(&mut self, text: &str, base: usize, rc: &Arc<ResolvedChar>, kind_override: Option<ClKind>, para_text: bool) {
+    /// `dir`: the bidi levels `text` is shaped by (see [`Dir`]).
+    fn shape_with(&mut self, text: &str, base: usize, rc: &Arc<ResolvedChar>, kind_override: Option<ClKind>, dir: Dir<'_>) {
         if text.is_empty() {
             return;
         }
@@ -795,8 +920,21 @@ impl<'a> Builder<'a> {
             .map(|f| wordcraft_fonts::word::resolve(f, rc.bold, rc.italic))
             .filter(|r| !r.substituted)
             .map(|r| r.face);
-        let use_levels = para_text && !self.levels.is_empty();
-        let context = if self.env.numeral == NumeralMode::Context && use_levels { context_digit_dirs(text, &self.levels, base) } else { Vec::new() };
+        // The levels by byte of `text`, from `lbase` on.
+        let (levels, lbase): (&[u8], usize) = match dir {
+            Dir::Para => (&self.levels, base),
+            Dir::Own(l) => (l, 0),
+            Dir::Guess => (&[], 0),
+        };
+        let use_levels = !levels.is_empty();
+        let context = if self.env.numeral == NumeralMode::Context && use_levels { context_digit_dirs(text, levels, lbase) } else { Vec::new() };
+        // A missing Thai font: one face for the run's Thai and Latin text (#1549). A run with its
+        // own complex-script font keeps that font for the Thai letters.
+        let run_face: Option<FaceRef> = if primary_cs.is_none_or(|f| f.id() == primary.id()) {
+            thai_run_face(&rc.font, resolved.substituted, primary, text, rc.bold, rc.italic)
+        } else {
+            None
+        };
         // One fallback face for the run's East Asian characters: the first face in fallback order
         // covering every character the primary font lacks, so the run draws in a single CJK face
         // instead of mixing faces per character (e.g. a bundled Japanese Mincho for JIS-covered
@@ -810,7 +948,7 @@ impl<'a> Builder<'a> {
             if ea.is_empty() {
                 None
             } else {
-                wordcraft_fonts::FontDb::global().fallback_for_east_asian(&ea, primary.id(), rc.bold, rc.italic).map(|f| FaceRef::of(&f))
+                wordcraft_fonts::FontDb::global().fallback_for_run(&ea, primary.id(), rc.bold, rc.italic).map(|f| FaceRef::of(&f))
             }
         };
         // Split by font coverage (fallback faces), small caps case, script formatting and direction.
@@ -818,7 +956,7 @@ impl<'a> Builder<'a> {
         let mut cur: Option<SegKey> = None;
         let mut segs: Vec<(usize, usize, SegKey)> = Vec::new();
         for (i, c) in text.char_indices() {
-            let rtl = use_levels && self.levels.get(base + i).is_some_and(|l| l % 2 == 1);
+            let rtl = use_levels && levels.get(lbase + i).is_some_and(|l| l % 2 == 1);
             // A symbol-font character becomes its Unicode symbol (#776).
             let c = show(c);
             // Displayed form (Word › Numeral): one char in, one char out. Coverage and the
@@ -834,6 +972,8 @@ impl<'a> Builder<'a> {
             let face = match cur {
                 Some(k) if mark => k.face,
                 _ if !complex && east_asian(c) && primary_ea.is_some_and(|f| f.covers(c)) => primary_ea,
+                // The run's one substitute face for a missing Thai font (#1549).
+                _ if !c.is_control() && c != SOFT_HYPHEN && run_face.is_some_and(|f| f.covers(dc)) => run_face,
                 _ if prim.covers(dc) || c.is_whitespace() || c.is_control() || c == SOFT_HYPHEN => None,
                 // Stay in the fallback face the word started in while it covers the letters.
                 Some(SegKey { face: Some(f), .. }) if f.covers(dc) => Some(f),
@@ -970,8 +1110,19 @@ impl<'a> Builder<'a> {
 
     /// One cluster for a whole object with its display text (fields, note references).
     fn shape_atomic(&mut self, text: &str, start: usize, end: usize, rc: &Arc<ResolvedChar>) {
+        // Right-to-left text in the result reads like ordinary text (UAX #9, #1670): the result is
+        // an isolate whose direction is its first strong letter's (else the text's around the
+        // field), and each level run is shaped (mirrored, joined) and placed in that direction.
+        let around = self.levels.get(start).is_some_and(|l| l % 2 == 1);
+        let rtl_base = text.chars().find_map(strong_rtl).unwrap_or(around);
+        let lv = bidi_levels(text, rtl_base);
+        self.shape_field(text, start, end, rc, &lv);
+    }
+
+    /// Shape one field piece using bidi context resolved for its whole result.
+    fn shape_field(&mut self, text: &str, start: usize, end: usize, rc: &Arc<ResolvedChar>, lv: &[u8]) {
         let before = self.clusters.len();
-        self.shape_with(text, start, rc, None, false);
+        self.shape_with(text, start, rc, None, if lv.is_empty() { Dir::Guess } else { Dir::Own(lv) });
         let added: Vec<Cluster> = self.clusters.drain(before..).collect();
         let Some(first) = added.first() else {
             let si = self.style(rc, None, false);
@@ -991,15 +1142,23 @@ impl<'a> Builder<'a> {
             });
             return;
         };
-        // Merge into one cluster: rebase glyph dx onto the first cluster, and keep each glyph's
-        // text (a ligature's glyph takes the letters of the clusters after it that have none).
+        let order = if lv.is_empty() {
+            (0..added.len()).collect()
+        } else {
+            let cl_lv: Vec<u8> = added.iter().map(|c| lv.get(c.start.saturating_sub(start)).copied().unwrap_or(0)).collect();
+            visual_order(&cl_lv)
+        };
+        // Merge into one cluster: rebase glyph dx onto the first cluster drawn, and keep each
+        // glyph's text (a ligature's glyph takes the letters of the clusters after it that have none).
         let mut x = 0.0;
-        let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
-        for c in &added {
+        for c in order.iter().filter_map(|&i| added.get(i)) {
             for g in self.glyphs.get_mut(c.g0 as usize..c.g1 as usize).into_iter().flatten() {
                 g.dx += x;
             }
             x += c.adv;
+        }
+        let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+        for c in &added {
             let (a, b) = (c.start.saturating_sub(start), c.end.saturating_sub(start));
             if c.g1 <= c.g0 {
                 let from = ranges.last().map(|r| r.start);
@@ -1016,30 +1175,64 @@ impl<'a> Builder<'a> {
         self.clusters.push(Cluster { start, end, adv: x, kind: ClKind::Text, style, g0, g1, break_after: false, obj_h: 0.0, obj_d: 0.0, dot: false });
     }
 
-    /// Wrap cached REF text at ordinary spaces without changing its document range or format.
-    fn shape_ref(&mut self, text: &str, start: usize, end: usize, rc: &Arc<ResolvedChar>, breaks: &mut Vec<(usize, bool)>) {
-        let first = self.clusters.len();
-        for piece in text.split_inclusive(' ') {
-            if let Some(word) = piece.strip_suffix(' ') {
-                if !word.is_empty() {
-                    self.shape_atomic(word, start, end, rc);
+    /// Wrap REF text at ordinary spaces while keeping its whole-result bidi context.
+    fn shape_ref(&mut self, text: &str, start: usize, end: usize, rc: &Arc<ResolvedChar>, pieces: &mut Vec<RefPiece>) {
+        let outer = self.levels.get(start).copied().unwrap_or(0);
+        let base = u8::from(text.chars().find_map(strong_rtl).unwrap_or(outer % 2 == 1));
+        let levels = bidi_levels(text, base == 1);
+        // Embed the result in the surrounding text without inheriting its direction.
+        let embedding = outer.saturating_add(u8::from(outer % 2 != base));
+        let mut offset = 0;
+        for piece in text.split_inclusive(' ').flat_map(|s| s.strip_suffix(' ').map_or([s, ""], |word| [word, " "])) {
+            if piece.is_empty() {
+                continue;
+            }
+            let end_offset = offset + piece.len();
+            let lv = levels.get(offset..end_offset).unwrap_or(&[]);
+            let word_start = self.clusters.len();
+            let first_piece = pieces.len();
+            // A word can cross bidi runs. Keep those runs separate for visual ordering.
+            let mut runs = Vec::new();
+            let mut from = 0;
+            for (at, _) in piece.char_indices().skip(1) {
+                if lv.get(at) != lv.get(from) {
+                    runs.push(from..at);
+                    from = at;
                 }
-                self.shape_atomic(" ", start, end, rc);
-                if let Some(c) = self.clusters.last_mut() {
+            }
+            runs.push(from..piece.len());
+            for run in runs {
+                let Some(run_text) = piece.get(run.clone()) else { continue };
+                let run_levels = lv.get(run.clone()).unwrap_or(&[]);
+                let cluster = self.clusters.len();
+                self.shape_field(run_text, start, end, rc, run_levels);
+                let space = run_text == " ";
+                if space && let Some(c) = self.clusters.last_mut() {
                     c.kind = ClKind::Space;
                 }
-            } else {
-                self.shape_atomic(piece, start, end, rc);
+                let level = run_levels.first().copied().unwrap_or(base);
+                pieces.push(RefPiece {
+                    cluster,
+                    break_after: if space {
+                        Some(true)
+                    } else if offset + run.end < text.len() {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    level: embedding.saturating_add(level.saturating_sub(base)),
+                    word_start,
+                    word_width: 0.0,
+                });
             }
+            let width = self.clusters.get(word_start..).unwrap_or(&[]).iter().map(|c| c.adv).sum();
+            for part in pieces.get_mut(first_piece..).unwrap_or(&mut []) {
+                part.word_width = width;
+            }
+            offset = end_offset;
         }
-        if self.clusters.len() == first {
+        if text.is_empty() {
             self.shape_atomic(text, start, end, rc);
-        }
-        let last = self.clusters.len().saturating_sub(1);
-        for (i, c) in self.clusters.iter().enumerate().skip(first) {
-            if i < last || c.kind == ClKind::Space {
-                breaks.push((i, c.kind == ClKind::Space));
-            }
         }
     }
 
@@ -1201,7 +1394,7 @@ impl Builder<'_> {
         self.shape_atomic(base, start, end, rc);
         let ci = self.clusters.len().checked_sub(1)?;
         let (bc, bg) = (self.clusters.len(), self.glyphs.len());
-        self.shape_with(ruby, 0, ruby_rc, None, false);
+        self.shape_with(ruby, 0, ruby_rc, None, Dir::Guess);
         let cl: Vec<Cluster> = self.clusters.drain(bc..).collect();
         let ruby_w: f32 = cl.iter().map(|c| c.adv).sum();
         let base_w = self.clusters.get(ci).map_or(0.0, |c| c.adv);
@@ -1244,8 +1437,8 @@ impl Builder<'_> {
 
 /// Whether text with this formatting is left out of the layout: hidden text unless it is shown, and
 /// tracked deletions in the final text. It takes no room, draws nothing and is no place to break.
-pub(crate) fn left_out(rc: &ResolvedChar, show_hidden: bool, hide_deleted: bool) -> bool {
-    (rc.hidden && !show_hidden) || (rc.del.is_some() && hide_deleted)
+pub(crate) fn left_out(doc: &Document, rc: &ResolvedChar, show_hidden: bool, hide_deleted: crate::HideDeleted) -> bool {
+    (rc.hidden && !show_hidden) || hide_deleted.hides(doc, rc.del)
 }
 
 /// Lay out one paragraph.
@@ -1298,7 +1491,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
     let mark_rc = resolve(&p.mark);
     let mark_style = b.style(&mark_rc, None, false);
     let mut has_page_fields = false;
-    let mut ref_breaks = Vec::new();
+    let mut ref_pieces = Vec::new();
     let mut notes = Vec::new();
     let mut obj_index = 0usize;
     // Drop cap: the first character, sized so its capital spans `lines` lines.
@@ -1324,7 +1517,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         let rc = resolve(props);
         runs.push(ProofRun::of(range.clone(), &rc));
         let Some(text) = p.text.get(range.clone()) else { continue };
-        if left_out(&rc, b.env.show_hidden, b.env.hide_deleted) {
+        if left_out(doc, &rc, b.env.show_hidden, b.env.hide_deleted) {
             match left.last_mut() {
                 Some(last) if last.end == range.start => last.end = range.end,
                 _ => left.push(range.clone()),
@@ -1333,7 +1526,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
             let g = b.glyphs.len() as u32;
             // Word still prints the note of a hidden reference mark (and numbers it); a deleted
             // reference is gone from the final text, note and all.
-            let keeps_notes = !(rc.del.is_some() && b.env.hide_deleted);
+            let keeps_notes = !b.env.hide_deleted.hides(doc, rc.del);
             for (i, c) in text.char_indices() {
                 let mut note = None;
                 if c == OBJ {
@@ -1456,7 +1649,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
                                             rc.clone()
                                         };
                                         if crate::fields::field_name(instr) == "REF" {
-                                            b.shape_ref(&t, start, end, &rc, &mut ref_breaks);
+                                            b.shape_ref(&t, start, end, &rc, &mut ref_pieces);
                                         } else {
                                             b.shape_atomic(&t, start, end, &rc);
                                         }
@@ -1536,6 +1729,9 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
     if rp.snap_to_grid {
         snap_chars(&mut b, &p.text, &env.grid);
     }
+    // Text on a character grid keeps to its cells.
+    let auto_space =
+        if rp.snap_to_grid && env.grid.chars.is_some() { Vec::new() } else { auto_space(&mut b, &p.text, rp.auto_space_de, rp.auto_space_dn) };
     // Break opportunities and hyphenation points come from the text as laid out: hidden text that is
     // not shown and, without markup, tracked deletions are left out, so a space or soft hyphen there
     // is no place to break, and words are hyphenated as they read.
@@ -1583,8 +1779,10 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         c.break_after = opps.contains(&c.end) || matches!(c.kind, ClKind::Object(_) | ClKind::Tab);
     }
     // Expanded REF pieces share one object offset, so use their own space boundaries.
-    for (i, allowed) in ref_breaks {
-        if let Some(c) = b.clusters.get_mut(i) {
+    for piece in &ref_pieces {
+        if let Some(allowed) = piece.break_after
+            && let Some(c) = b.clusters.get_mut(piece.cluster)
+        {
             c.break_after = allowed;
         }
     }
@@ -1596,12 +1794,18 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
     let label = env.label.as_ref().filter(|_| !break_only).map(|(text, lvl)| {
         let lc = p.mark.clone().overlaid(&lvl.chr);
         let rc = resolve(&lc);
+        // A bullet no installed font can draw would come from whatever icon font has its
+        // private-use code (Font Awesome's Twitter logo at U+F081, #1683): it shows the level's
+        // default bullet instead.
+        let fixed = undrawable_bullet(text, lvl, &rc)
+            .then(|| wordcraft_doc::numbering::default_bullet(usize::from(rp.numbering.map_or(0, |n| n.level))).to_string());
+        let text: &str = fixed.as_deref().unwrap_or(text);
         // A Symbol/Wingdings bullet (U+F0B7…) is drawn as its Unicode equivalent when the font
         // isn't installed (shaping maps it); the label's text reads as that character too.
         let shown = |t: &str| -> String { wordcraft_doc::symbol_fonts::map_text(&rc.font, t) };
         let before_c = b.clusters.len();
         let before_g = b.glyphs.len();
-        b.shape_with(text, 0, &rc, None, false);
+        b.shape_with(text, 0, &rc, None, Dir::Guess);
         let mut cl: Vec<Cluster> = b.clusters.drain(before_c..).collect();
         // A right-to-left paragraph's label reads right to left too ("1." shows as ".1").
         if rp.bidi {
@@ -1663,17 +1867,42 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         ptabs,
         left_out: Vec::new(),
         enclosures,
+        auto_space,
     };
     let auto = env.doc.settings.auto_hyphenation && !pl.rp.suppress_hyphens;
     pl.hyph_after = hyphenation_points(&text, to_para, &pl, auto, env.doc.settings.hyphenate_caps, &runs);
+    // A paragraph whose text and mark are all a deletion the layout leaves out (a deleted
+    // paragraph in the final text, or moved-away text marked Hidden) is gone: it takes no room.
+    let gone = env.hide_deleted.hides(doc, mark_rc.del) && (p.text.is_empty() || left.first() == Some(&(0..p.text.len())));
     pl.left_out = left;
     for k in pl.hyph_after.clone() {
         if let Some(c) = pl.clusters.get_mut(k as usize) {
             c.break_after = true;
         }
     }
-    break_lines(&mut pl, env, mark_style, env.label.as_ref().map(|(_, l)| l));
+    break_lines(&mut pl, env, mark_style, env.label.as_ref().map(|(_, l)| l), &ref_pieces);
+    if gone {
+        collapse(&mut pl);
+    }
     pl
+}
+
+/// Lays a paragraph out as nothing: no height, no spacing, no label, its lines (kept for the
+/// caret and hit testing) all at its top with no height.
+fn collapse(pl: &mut ParaLayout) {
+    for l in &mut pl.lines {
+        l.top = 0.0;
+        l.height = 0.0;
+        l.fit_height = 0.0;
+        l.baseline = 0.0;
+    }
+    pl.height = 0.0;
+    pl.rp.space_before = 0.0;
+    pl.rp.space_after = 0.0;
+    pl.label = None;
+    // Its shading and borders would be drawn across the page at no height.
+    pl.rp.shading = None;
+    pl.rp.borders = None;
 }
 
 /// Next tab stop after `x` (column coordinates): explicit stops, the hanging-indent implicit stop,
@@ -1713,7 +1942,7 @@ fn ptab_stop(align: PTabAlign, base: PTabBase, leader: TabLeader, width: f32, in
     TabStop { pos, align, leader }
 }
 
-fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Option<&Level>) {
+fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Option<&Level>, ref_pieces: &[RefPiece]) {
     let suffix = level.map(|l| l.suffix);
     let rp = pl.rp.clone();
     // Narrow cells and float spans must retain their usable width.
@@ -1737,7 +1966,7 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
     // The document grid's line pitch, for paragraphs that snap to it.
     let grid = Some(env.grid).filter(|g| g.line.is_some() && rp.snap_to_grid);
     let grid = grid.as_ref();
-    let bidi = rtl_para || !pl.bidi_levels.is_empty();
+    let bidi = rtl_para || !pl.bidi_levels.is_empty() || !ref_pieces.is_empty();
     let mirrored: Vec<Exclusion>;
     let exclusions: &[Exclusion] = if rtl_para {
         mirrored = env
@@ -1917,17 +2146,24 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                 end = LineEnd::Wrap;
                 break;
             }
+            // Bidi runs inside a REF word still fit and wrap as one word.
+            let ref_piece = ref_piece_at(ref_pieces, j);
+            let advance = ref_piece.filter(|p| p.word_start == j).map_or(c.adv, |p| p.word_width);
+            let continues_ref = ref_piece.is_some_and(|p| p.word_start >= c0 && p.word_start < j);
             // Text after a right/centre tab grows leftwards into the tab's space first.
             let absorbs = pending_tab.is_some_and(|(tj, stop, _)| {
                 let room = pl.clusters.get(tj).map(|t| t.adv).unwrap_or(0.0);
                 match stop.align {
-                    TabAlign::Right | TabAlign::Decimal => room >= c.adv,
-                    TabAlign::Center => room >= c.adv / 2.0 && x + c.adv / 2.0 <= right_edge + 0.01,
+                    TabAlign::Right | TabAlign::Decimal => room >= advance,
+                    TabAlign::Center => room >= advance / 2.0 && x + advance / 2.0 <= right_edge + 0.01,
                     _ => false,
                 }
             });
             let shrink = if shrink_spaces && !has_tab { space_w * MAX_SPACE_SHRINK } else { 0.0 };
-            let fits = absorbs || x + c.adv <= right_edge + shrink + 0.01 || c.kind == ClKind::Space || c.kind == ClKind::Marker;
+            let fits = continues_ref
+                || absorbs
+                || x + advance - pl.auto_space_after(j) <= right_edge + shrink + 0.01
+                || matches!(c.kind, ClKind::Space | ClKind::Marker);
             // A line's first item stays on it even when it doesn't fit; markers before it
             // (a content control's start, a bookmark) take no room and don't count (Word).
             if !fits && (c0..j).any(|k| pl.clusters.get(k).is_some_and(|c| c.kind != ClKind::Marker)) {
@@ -2198,7 +2434,11 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                 Some(ClKind::Space) | Some(ClKind::Marker) | Some(ClKind::LineBreak) | Some(ClKind::PageBreak) | Some(ClKind::ColumnBreak) => {
                     content_end = xs.get(k - c0).copied().unwrap_or(content_end);
                 }
-                _ => break,
+                _ => {
+                    // The automatic space after the line's last character goes with the wrap.
+                    content_end -= pl.auto_space_after(k);
+                    break;
+                }
             }
         }
         let slack = right_edge - content_end;
@@ -2291,7 +2531,7 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
             rtl: rtl_para,
         };
         if bidi {
-            reorder_line(pl, &mut line, width);
+            reorder_line(pl, &mut line, width, ref_pieces);
         }
         lines.push(line);
         first = false;
@@ -2386,7 +2626,7 @@ fn even_row(row: &mut [Line]) -> f32 {
 /// (UAX #9 rule L1), order the clusters visually (rule L2) and give each its box. `line.xs`
 /// arrive in logical order measured from the paragraph's start edge (mirrored for a
 /// right-to-left paragraph); afterwards `line.vis` holds the boxes and `xs` their left edges.
-fn reorder_line(pl: &ParaLayout, line: &mut Line, width: f32) {
+fn reorder_line(pl: &ParaLayout, line: &mut Line, width: f32, ref_pieces: &[RefPiece]) {
     let rtl_para = line.rtl;
     if rtl_para {
         let (l, r) = (line.left, line.right);
@@ -2402,7 +2642,13 @@ fn reorder_line(pl: &ParaLayout, line: &mut Line, width: f32) {
         return;
     }
     let para_level = u8::from(rtl_para);
-    let mut levels: Vec<u8> = (c0..c1).map(|k| pl.clusters.get(k).and_then(|c| pl.bidi_levels.get(c.start)).copied().unwrap_or(para_level)).collect();
+    let mut levels: Vec<u8> = (c0..c1)
+        .map(|k| {
+            ref_piece_at(ref_pieces, k)
+                .map(|p| p.level)
+                .unwrap_or_else(|| pl.clusters.get(k).and_then(|c| pl.bidi_levels.get(c.start)).copied().unwrap_or(para_level))
+        })
+        .collect();
     // L1: tabs and breaks, and the whitespace before them or at the end of the line, take the
     // paragraph level (so trailing spaces stay at the line's end edge).
     let mut trailing = true;
@@ -2696,6 +2942,10 @@ fn resolve_tab(pl: &mut ParaLayout, pending: &mut Option<(usize, TabStop, f32)>,
 }
 
 impl ParaLayout {
+    /// The automatic space in cluster `k`'s advance ([`auto_space`]), 0 without one.
+    fn auto_space_after(&self, k: usize) -> f32 {
+        self.auto_space.binary_search_by_key(&k, |a| a.0).ok().and_then(|i| self.auto_space.get(i)).map_or(0.0, |a| a.1)
+    }
     /// The line the list label is drawn on: the first, unless the paragraph opens with a page
     /// break, when Word draws it with the text on the next page.
     pub fn label_line(&self) -> usize {
@@ -2722,6 +2972,21 @@ impl ParaLayout {
             }
         }
         l.xs.last().copied()
+    }
+    /// The farthest right a caret goes on left-to-right line `li`: spaces at the end of a line
+    /// hang past its right edge, but the caret after them stays at the edge, as in Word (#2146);
+    /// text that overflows the line still carries it. `None` on bidirectional lines.
+    pub fn caret_limit(&self, li: usize) -> Option<f32> {
+        let l = self.lines.get(li)?;
+        if !l.vis.is_empty() {
+            return None;
+        }
+        let ink = (l.c0..l.c1).rev().find(|&k| self.clusters.get(k).is_some_and(|c| c.kind != ClKind::Space));
+        let end = match ink {
+            Some(k) => l.xs.get(k + 1 - l.c0).copied(),
+            None => l.xs.first().copied(),
+        };
+        Some(end.unwrap_or(l.left).max(l.right))
     }
     /// The line holding offset `off` (a position at a wrap point belongs to the next line).
     pub fn line_of(&self, off: usize) -> usize {
@@ -2914,7 +3179,7 @@ mod label_spacing_tests {
             width: 100.0,
             label: Some(("•".into(), level.clone())),
             show_hidden: false,
-            hide_deleted: false,
+            hide_deleted: Default::default(),
             table: None,
             proofing: None,
             field_codes: false,
@@ -2934,7 +3199,7 @@ mod label_spacing_tests {
             (st.ascent, st.descent) = if i == label_style as usize { label_metrics } else { text_metrics };
         }
         let mark_style = pl.clusters[0].style;
-        break_lines(&mut pl, &env, mark_style, Some(&level));
+        break_lines(&mut pl, &env, mark_style, Some(&level), &[]);
         pl.lines
     }
 
