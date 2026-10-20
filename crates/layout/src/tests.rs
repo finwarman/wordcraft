@@ -9778,6 +9778,44 @@ mod continuous_picture_fit {
     }
 
     #[test]
+    fn first_header_keeps_owned_page() {
+        let sample = |start| {
+            let mut d = document(Case::Overflow, Flow::Unbroken, 1);
+            d.body.drain(..BEFORE_LINES);
+            d.last_section.start = start;
+            d.last_section.title_page = true;
+            d.last_section.header = BODY_TOP;
+            let header = paragraph("FIRST HEADER", BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT);
+            let id = d.add_part(wordcraft_doc::PartKind::Header, vec![wordcraft_doc::para_block(header)]);
+            d.last_section.headers.first = Some(id);
+            let laid = lay(&d);
+            let first = &laid.pages[0];
+            assert_eq!(first.section, 0);
+            assert!((first.body.y - (BODY_TOP + BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT)).abs() < EPSILON);
+            let images: Vec<_> =
+                laid.pages.iter().enumerate().flat_map(|(page, data)| image_rects(&data.items).into_iter().map(move |r| (page, r))).collect();
+            let after = laid
+                .pages
+                .iter()
+                .enumerate()
+                .find_map(|(page, data)| {
+                    data.items.iter().find_map(|item| match item {
+                        Placed::Lines { path, l0, x, y, para, .. } if *path == Path::top(1) && *l0 == 0 => {
+                            Some((page, x + para.lines[*l0].xs[0], *y))
+                        }
+                        _ => None,
+                    })
+                })
+                .unwrap();
+            (images, after)
+        };
+        let ordinary = sample(SectionStart::NextPage);
+        assert_eq!(ordinary.0, [(0, Rect::new(BODY_TOP, BODY_TOP + BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT, PICTURE_WIDTH, OVERFLOW_HEIGHT))]);
+        assert_eq!(ordinary.1, (0, BODY_TOP + PICTURE_WIDTH, BODY_TOP + BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT + ANCHOR_LINE_HEIGHT));
+        assert_eq!(sample(SectionStart::Continuous), ordinary);
+    }
+
+    #[test]
     fn bookmarks_keep_geometry() {
         for (case, page, top) in [(Case::Fits, 0, BODY_TOP + BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT), (Case::Overflow, 1, BODY_TOP)] {
             let mut d = document(case, Flow::Continuous, 1);
