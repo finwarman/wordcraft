@@ -27,18 +27,48 @@ enum RefPass<'a> {
     Pages(&'a DocLayout),
 }
 
+#[derive(Clone, Copy)]
+struct RefLimits {
+    inspection: usize,
+    results: usize,
+    page_passes: usize,
+}
+
+impl Default for RefLimits {
+    fn default() -> Self {
+        Self { inspection: MAX_REF_WORK_BYTES, results: MAX_REF_WORK_BYTES, page_passes: MAX_PAGE_REF_PASSES }
+    }
+}
+
 /// Evaluate a copy: exporting never changes editor caches, saved results or TOC structure.
 pub(crate) fn prepare(doc: &Document, opts: &LayoutOptions) -> Result<PrintCopy, String> {
+    Ok(prepare_with(doc, opts, RefLimits::default()))
+}
+
+fn prepare_with(doc: &Document, opts: &LayoutOptions, limits: RefLimits) -> PrintCopy {
+    match refresh_copy(doc, opts, limits) {
+        Ok(copy) => copy,
+        Err(reason) => {
+            log::warn!("Print cross-reference refresh kept cached results: {reason}");
+            // Discard every partial update, including results changed before a later limit.
+            let doc = doc.clone();
+            let layout = wordcraft_layout::layout(&doc, &mut LayoutCache::new(), opts);
+            PrintCopy { doc, layout }
+        }
+    }
+}
+
+fn refresh_copy(doc: &Document, opts: &LayoutOptions, limits: RefLimits) -> Result<PrintCopy, String> {
     let mut doc = doc.clone();
     let mut cache = LayoutCache::new();
     if doc.settings.protection.is_some() {
         let layout = wordcraft_layout::layout(&doc, &mut cache, opts);
         return Ok(PrintCopy { doc, layout });
     }
-    let held = held_ref_targets(&doc, MAX_REF_WORK_BYTES)?;
-    let mut budget = MAX_REF_WORK_BYTES;
+    let held = held_ref_targets(&doc, limits.inspection)?;
+    let mut budget = limits.results;
     settle_text(&mut doc, &mut budget, &held)?;
-    for _ in 0..MAX_PAGE_REF_PASSES {
+    for _ in 0..limits.page_passes {
         let layout = wordcraft_layout::layout(&doc, &mut cache, opts);
         if !refresh(&mut doc, RefPass::Pages(&layout), &mut budget, &held)? {
             return Ok(PrintCopy { doc, layout });
@@ -210,6 +240,33 @@ fn bookmark_end(para: &Paragraph, name: &str, start: usize) -> Option<usize> {
         .find_map(|(off, object)| (off > start && matches!(object, InlineObject::BookmarkEnd { name: n } if n == name)).then_some(off))
 }
 
+// Store prefix maximum ends so nested ranges do not hide a longer enclosing range.
+struct FieldIndex(Vec<(Pos, Pos)>);
+
+impl FieldIndex {
+    fn new(ranges: Vec<wordcraft_doc::FieldRange>, budget: &mut usize) -> Result<Self, String> {
+        let bytes = ranges.len().checked_mul(std::mem::size_of::<wordcraft_doc::FieldRange>()).ok_or(REF_INSPECTION_LIMIT)?;
+        *budget = budget.checked_sub(bytes).ok_or(REF_INSPECTION_LIMIT)?;
+        let mut ranges: Vec<_> = ranges.into_iter().map(|range| (range.start, range.end)).collect();
+        ranges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let mut end: Option<Pos> = None;
+        for (_, current) in &mut ranges {
+            if let Some(previous) = &end
+                && *current < *previous
+            {
+                *current = previous.clone();
+            }
+            end = Some(current.clone());
+        }
+        Ok(Self(ranges))
+    }
+
+    fn overlaps(&self, start: &Pos, stop: &Pos) -> bool {
+        let count = self.0.partition_point(|range| range.0 < *stop);
+        count.checked_sub(1).and_then(|index| self.0.get(index)).is_some_and(|range| range.1 > *start)
+    }
+}
+
 /// Layout-only or unsupported fields cannot supply their stored text to a REF.
 /// Propagate this restriction through REF dependencies once, without recursion.
 /// Charge selected inspection work; initial scans and total heap use are not capped.
@@ -226,7 +283,7 @@ fn held_ref_targets(doc: &Document, mut budget: usize) -> Result<HashSet<String>
     let bookmarks: HashMap<_, _> = doc.bookmarks().into_iter().collect();
     let nonbody = nonbody_bookmarks(doc);
     let mut held: HashSet<_> = nonbody.iter().filter(|name| !bookmarks.contains_key(*name)).cloned().collect();
-    let ranges = doc.field_ranges(StoryRef::Body);
+    let ranges = FieldIndex::new(doc.field_ranges(StoryRef::Body), &mut budget)?;
     let mut parents: HashMap<String, Vec<String>> = HashMap::new();
     for (name, start) in &bookmarks {
         let Some(para) = doc.para(start.story, &start.path) else {
@@ -239,15 +296,7 @@ fn held_ref_targets(doc: &Document, mut budget: usize) -> Result<HashSet<String>
             continue;
         };
         let stop = Pos { off: end, ..start.clone() };
-        let mut in_field = false;
-        for range in &ranges {
-            budget = budget.checked_sub(std::mem::size_of::<wordcraft_doc::FieldRange>()).ok_or(REF_INSPECTION_LIMIT)?;
-            if range.start < stop && range.end > *start {
-                in_field = true;
-                break;
-            }
-        }
-        if in_field {
+        if ranges.overlaps(start, &stop) {
             held.insert(name.clone());
             continue;
         }
@@ -345,7 +394,7 @@ fn inline_bookmark(doc: &Document, name: &str, start: &Pos, budget: usize) -> Re
 
 #[cfg(test)]
 mod tests {
-    use wordcraft_doc::{CharProps, Document, InlineObject, Paragraph, Path, StoryRef, para_block};
+    use wordcraft_doc::{CharProps, Document, InlineObject, Paragraph, Path, Pos, StoryRef, para_block};
 
     enum FieldFlags {
         Clean,
@@ -983,21 +1032,91 @@ mod tests {
     }
 
     #[test]
-    fn print_crossrefs_reject_cycles() {
+    fn print_cycles_keep_caches() {
         let mut doc = control();
         let target = doc.para_mut(StoryRef::Body, &Path::top(5)).unwrap();
         target.insert_object(wordcraft_doc::para::OBJ.len_utf8(), field("REF PublicTarget", "loop", FieldFlags::Clean), &Default::default()).unwrap();
         let before = serde_json::to_value(&doc).unwrap();
-        assert!(super::prepare(&doc, &Default::default()).err().unwrap().contains("did not converge"));
-        for name in ["out.pdf", "out.png"] {
-            assert!(crate::io::save_bytes(name, &doc).unwrap_err().contains("did not converge"));
-        }
-        let mut session = crate::Session::new(doc.clone());
-        for command in ["file.exportPdf", "file.exportPng", "file.printPdf"] {
-            let error = session.run(command, &serde_json::json!({"path": "/tmp/wordcraft-crossref-cycle"})).unwrap_err();
-            assert!(error.to_string().contains("did not converge"), "{command}: {error}");
-        }
+        let prepared = super::prepare(&doc, &Default::default()).unwrap();
+        assert_eq!(serde_json::to_value(&prepared.doc).unwrap(), before, "discard partial refresh results");
+        let cached_pdf = wordcraft_pdf::export(&doc, &Default::default()).unwrap();
+        let expected = pdf_text(&cached_pdf);
+        assert_eq!(pdf_text(&crate::io::save_bytes("out.pdf", &doc).unwrap()), expected);
+        let cached_layout = wordcraft_layout::layout(&doc, &mut wordcraft_layout::LayoutCache::new(), &Default::default());
+        let cached_png = wordcraft_render::render_page(&doc, &cached_layout.pages[0], 2.0, &Default::default()).to_png();
+        assert_eq!(crate::io::save_bytes("out.png", &doc).unwrap(), cached_png);
+        let session = crate::Session::new(doc.clone());
+        assert_eq!(pdf_text(&session.print_pdf(&serde_json::json!({})).unwrap().0), expected);
         assert_eq!(serde_json::to_value(&doc).unwrap(), before);
         assert_eq!(serde_json::to_value(&session.doc).unwrap(), before);
+    }
+
+    #[test]
+    fn print_limits_keep_caches() {
+        let doc = control();
+        let before = serde_json::to_value(&doc).unwrap();
+        let opts = Default::default();
+        for limits in [
+            super::RefLimits { inspection: 0, ..Default::default() },
+            super::RefLimits { results: 0, ..Default::default() },
+            super::RefLimits { page_passes: 0, ..Default::default() },
+        ] {
+            assert!(super::refresh_copy(&doc, &opts, limits).is_err(), "exercise a real refresh limit");
+            let prepared = super::prepare_with(&doc, &opts, limits);
+            assert_eq!(serde_json::to_value(&prepared.doc).unwrap(), before, "retain every original cache");
+            let cached = wordcraft_layout::layout(&doc, &mut wordcraft_layout::LayoutCache::new(), &opts);
+            assert_eq!(prepared.layout.pages.len(), cached.pages.len());
+            for path in doc.para_paths(StoryRef::Body) {
+                let pos = Pos::new(StoryRef::Body, path, 0);
+                assert_eq!(prepared.layout.caret(&pos), cached.caret(&pos));
+            }
+            assert_eq!(serde_json::to_value(&doc).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn ref_index_keeps_overlap_rule() {
+        let pos = |index: usize| Pos::new(StoryRef::Body, Path::top(index / 4), index % 4);
+        // An outer range must survive the shorter nested range's end.
+        let ranges: Vec<_> = [(0, 11), (2, 3), (5, 8), (5, 6), (11, 11), (10, 9)]
+            .into_iter()
+            .map(|(start, end)| wordcraft_doc::FieldRange { instr: "TOC".into(), locked: false, start: pos(start), end: pos(end), depth: 0 })
+            .collect();
+        let mut budget = usize::MAX;
+        let index = super::FieldIndex::new(ranges.clone(), &mut budget).unwrap();
+        for start in 0..=12 {
+            for stop in 0..=12 {
+                let expected = ranges.iter().any(|range| range.start < pos(stop) && range.end > pos(start));
+                assert_eq!(index.overlaps(&pos(start), &pos(stop)), expected, "{start}..{stop}");
+            }
+        }
+        assert!(!super::FieldIndex::new(Vec::new(), &mut 0).unwrap().overlaps(&pos(0), &pos(12)));
+        assert!(super::FieldIndex::new(ranges, &mut 0).is_err());
+    }
+
+    #[test]
+    fn ref_ranges_charge_once() {
+        const BOOKMARKS: usize = 128;
+        const RANGES: usize = 64;
+        const WORK_BYTES: usize = 64 * 1024;
+
+        let props = CharProps::default();
+        let mut doc = Document::new();
+        let mut lookup = Paragraph::new();
+        lookup.insert_object(0, field("REF B0", "Cached", FieldFlags::Clean), &props).unwrap();
+        doc.body = vec![para_block(lookup)];
+        for index in 0..BOOKMARKS {
+            let mut p = Paragraph::with_text("Target", props.clone());
+            p.insert_object(0, InlineObject::BookmarkStart { name: format!("B{index}") }, &props).unwrap();
+            p.insert_object(p.len(), InlineObject::BookmarkEnd { name: format!("B{index}") }, &props).unwrap();
+            doc.body.push(para_block(p));
+        }
+        for _ in 0..RANGES {
+            let mut p = Paragraph::with_text("Range", props.clone());
+            p.insert_object(0, InlineObject::FieldStart { instr: "TOC".into(), locked: false, dirty: false }, &props).unwrap();
+            p.insert_object(p.len(), InlineObject::FieldEnd, &props).unwrap();
+            doc.body.push(para_block(p));
+        }
+        assert!(super::held_ref_targets(&doc, WORK_BYTES).unwrap().is_empty(), "unrelated ranges do not multiply inspection work");
     }
 }
