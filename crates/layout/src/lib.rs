@@ -2034,9 +2034,7 @@ impl PageBuilder<'_> {
         let s = self.sect;
         self.number = self.restart_at.take().unwrap_or_else(|| self.number.saturating_add(1));
         let (w, h) = if self.web { (s.page_w, f32::MAX / 4.0) } else { (s.page_w, s.page_h) };
-        // A footer taller than the bottom margin pushes the body up (Word: no gap), leaving it at
-        // least a little room.
-        let bottom = (s.page_h - s.margin_bottom).min(self.foot_top.max(body_top + 36.0));
+        let bottom = self.page_bottom(body_top);
         let body = Rect::new(s.margin_left + s.gutter, body_top, s.text_width(), (bottom - body_top).max(36.0));
         let mut decor = Vec::new();
         if !self.web {
@@ -2073,6 +2071,10 @@ impl PageBuilder<'_> {
         self.max_y = self.top;
         self.content_bottom = self.top;
         self.cap_columns();
+    }
+    // A tall footer pushes the body up, leaving at least a little room.
+    fn page_bottom(&self, body_top: f32) -> f32 {
+        (self.sect.page_h - self.sect.margin_bottom).min(self.foot_top.max(body_top + 36.0))
     }
     /// Where the columns end on this page: the page bottom above its footnotes, or higher up
     /// when the columns are balanced.
@@ -3517,7 +3519,20 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
         anchor_y = y0 - applied_before;
     }
     // A wrapping picture that fits a column moves with its anchor instead of clipping below it.
-    let picture_paragraph = p.objects.len() == 1 && p.text.chars().all(|c| c == wordcraft_doc::para::OBJ || c.is_whitespace());
+    // Bookmarks delimit ranges without adding content; other annotations still exclude the anchor.
+    let picture_paragraph = p.objects.iter().filter(|o| !matches!(o, InlineObject::BookmarkStart { .. } | InlineObject::BookmarkEnd { .. })).count()
+        == 1
+        && p.text.chars().all(|c| c == wordcraft_doc::para::OBJ || c.is_whitespace());
+    // One column at a continuous section's partial top advances straight to a fresh page.
+    // Pending notes can change that page's capacity; keep their existing route.
+    let partial_page_start = !pb.web
+        && pb.sect.start == SectionStart::Continuous
+        && pb.cols.len() == 1
+        && pb.at_top()
+        && pb.top > body_top + 0.01
+        && pb.notes.is_empty()
+        && pb.carry.is_empty();
+    let float_capacity = if partial_page_start { pb.page_bottom(body_top) - body_top } else { pb.uncapped_bottom() - pb.top };
     let float_overflows = picture_paragraph
         && p.objects.iter().enumerate().any(|(i, o)| {
             let picture = match o {
@@ -3529,12 +3544,10 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
                 && floating(o).is_some_and(|(_, _, f)| {
                     f.v_rel == Anchor::Paragraph
                         && !matches!(f.wrap, Wrap::Inline | Wrap::BehindText | Wrap::InFrontOfText)
-                        && float_rects
-                            .get(&i)
-                            .is_some_and(|r| r.bottom() > pb.bottom + 0.01 && r.bottom() - anchor_y <= pb.uncapped_bottom() - pb.top + 0.01)
+                        && float_rects.get(&i).is_some_and(|r| r.bottom() > pb.bottom + 0.01 && r.bottom() - anchor_y <= float_capacity + 0.01)
                 })
         });
-    if float_overflows && !pb.web && !pb.at_top() {
+    if float_overflows && !pb.web && (!pb.at_top() || partial_page_start) {
         pb.advance(block, body_top);
         pb.y += pl.rp.space_before.min(0.0);
         applied_before = pl.rp.space_before.min(0.0);

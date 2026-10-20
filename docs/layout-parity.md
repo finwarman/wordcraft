@@ -16,6 +16,8 @@ Additive paragraph spacing retains the full before-space after a section page br
 
 Exact line spacing keeps the run font baseline around tall equations; automatic and minimum spacing still grow for math. Synthetic control: `layout::tests::exact_math_keeps_run_baseline`.
 
+Single-column continuous-section picture fitting has a bounded source prototype: a picture-only wrapping anchor at the section's partial top uses the fresh page's body capacity when no notes are pending. Bookmark boundaries do not count as additional content; comments and other objects retain their exclusions. An original Word Best for printing export on 2026-10-20 retained a 160 by 200 pt picture at y=472 after 400 pt of preceding text, and moved a 160 by 280 pt picture to y=72 on the next page. AFTER followed beside each picture; native anchor caret movement was not observed. Multicolumn transitions and oversized-picture policy remain open; the 700 pt native picture moved to another page and extended below its body, which this prototype does not implement.
+
 ## Checklist
 
 ✅ matches Word as far as our tests show · 🟡 implemented, differs or untested against Word · ❌ missing
@@ -214,6 +216,7 @@ Page-relative footer tables keep their physical wrap bounds without adding to fo
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | trivial | Prepare single-column continuous-section picture fitting from an original native export, ignoring only bookmark boundaries in picture-only eligibility. Image/AFTER controls retain comment, other-object, oversized and multicolumn exclusions. |
 | 2026-10-18 | trivial | A word after a slash (" /word") wraps whole instead of splitting between two letters (#2963) |
 | 2026-10-15 | trivial | An at-least table row with less room than its minimum on a page that holds something starts the next page whole, as checked in Word (#1742); the taller-than-a-page case (it then splits from the top of that page) and repeated header rows (they go with it) follow the issue and synthetic tests, not a Word check |
 | 2026-10-16 | trivial | Table row keep-next uses the first paragraph of the first cell, including inherited flags. Kept row chains start on a fresh page when the following row cannot start below them. Synthetic Word export covers mixed-cell flags, multiple paragraphs and kept prefixes before oversized followers. |
