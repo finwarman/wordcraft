@@ -9431,6 +9431,7 @@ fn turned_text_uses_min_height() {
         let mut t = Table::new(1, 2, 160.0);
         t.props.style = None;
         t.rows[0].props.height = Some(80.0);
+        t.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::AtLeast;
         t.rows[0].cells[1].props.text_direction = turn;
         t.rows[0].cells[1].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Compensation pad type", Default::default()))];
         d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
@@ -9453,6 +9454,45 @@ fn turned_text_uses_min_height() {
             })
             .unwrap();
         assert!(lines > 1);
+    }
+}
+
+#[test]
+fn auto_turned_height_is_natural() {
+    for turn in [TextDirection::Up, TextDirection::Down] {
+        let sample = |height| {
+            let mut d = Document::from_text("After");
+            let mut table = Table::new(1, 2, 160.0);
+            table.props.style = None;
+            table.rows[0].props.height = height;
+            table.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::Auto;
+            table.rows[0].cells[1].props.text_direction = turn;
+            table.rows[0].cells[1].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Compensation pad type", Default::default()))];
+            d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(table)).unwrap();
+            let layout = lay(&d);
+            let cell = layout.pages[0]
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Placed::Cell { rect, cell: 1, .. } => Some(*rect),
+                    _ => None,
+                })
+                .unwrap();
+            let lines = layout.pages[0]
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Placed::Lines { path, l0, l1, .. } if path.0 == [0, 0, 1, 0] => Some(l1 - l0),
+                    _ => None,
+                })
+                .unwrap();
+            (cell.h, lines)
+        };
+        let natural = sample(None);
+        let automatic = sample(Some(80.0));
+        assert_eq!(natural.1, 1);
+        assert_eq!(automatic.1, natural.1, "Auto height must not wrap turned text: {automatic:?}");
+        assert!((automatic.0 - natural.0).abs() < 0.01, "{automatic:?} != {natural:?}");
     }
 }
 
