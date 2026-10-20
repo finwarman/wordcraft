@@ -86,6 +86,8 @@ The same gaps grouped the way the parity documents are, for agents working in on
 
 ## Current integration
 
+Fitting unmerged centered picture cells and their fitting text siblings stay in the first split-row fragment. The splitter recalculates ownership before placing the continuation. Text-only rows, rotated or complex content, and non-fitting groups retain the prior path.
+
 The Scope integration includes explicit DrawingML outline dashes, font-defined minimum display operator sizes and header-table collision clearance. Fraction/root packing, late floating-table reflow, preferred-width rounding, body textbox boundaries and print-time cross-reference refresh still need work.
 
 The Language dialog reads effective character formatting, including document defaults, paragraph styles and character styles. Accepting it unchanged keeps inherited language and no-proof choices (#2717); explicit direct formatting still takes precedence. Other proofing and Windows-specific reports remain separate.
@@ -94,6 +96,7 @@ The Language dialog reads effective character formatting, including document def
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | trivial | Bounded first-fragment centering for fitting inline picture rows; oversized, complex and text-only rows retain existing splitting. |
 | 2026-10-17 | trivial | Explicit outline dashes, display operators and header-table collisions. |
 | 2026-10-16 | trivial | #24: the Spike (Ctrl+F3, Ctrl+Shift+F3) |
 | 2026-10-17 | trivial | Glossary/building blocks closed (DOCX glossary read, kept and written); `w:altChunk` and sub-documents remain |
