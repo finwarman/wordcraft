@@ -2831,7 +2831,7 @@ fn split_row_rejects_a_hostile_cut() {
         height,
         items: vec![line(0.0), line(150.0)],
         bottom,
-        cells: vec![CellPart { top: 2.0, center: None, items: 0..2, end: Some(170.0) }],
+        cells: vec![CellPart { top: 2.0, merge: None, center: None, items: 0..2, end: Some(170.0) }],
     };
     for cut in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0, 200.0] {
         assert!(split_row(&row(200.0, 4.0), cut).is_none(), "{cut}");
@@ -2845,8 +2845,8 @@ fn split_row_rejects_a_hostile_cut() {
     }
     // Cell ranges past the items are ignored.
     let mut r = row(200.0, 4.0);
-    r.cells.push(CellPart { top: 2.0, center: None, items: 5..9, end: None });
-    r.cells.push(CellPart { top: 2.0, center: None, items: std::ops::Range { start: 2, end: 1 }, end: None });
+    r.cells.push(CellPart { top: 2.0, merge: None, center: None, items: 5..9, end: None });
+    r.cells.push(CellPart { top: 2.0, merge: None, center: None, items: std::ops::Range { start: 2, end: 1 }, end: None });
     assert!(split_row(&r, 100.0).is_some());
 }
 
@@ -5328,7 +5328,7 @@ fn a_split_row_moves_shading_below_the_cut_with_it() {
         height: 200.0,
         items: vec![line_row(0.0), line_row(150.0), fill(0.0, 200.0), fill(150.0, 50.0)],
         bottom: 0.0,
-        cells: vec![CellPart { top: 2.0, center: None, items: 0..4, end: None }],
+        cells: vec![CellPart { top: 2.0, merge: None, center: None, items: 0..4, end: None }],
     };
     let (a, b) = split_row(&row, 100.0).expect("splits");
     let fills = |r: &RowLayout| {
@@ -8400,8 +8400,12 @@ fn split_border_follows_content() {
     assert_eq!(l.pages.len(), 3);
 }
 
-#[test]
-fn split_merge_centers_first() {
+enum MergeBorders {
+    Grid,
+    Hidden,
+}
+
+fn merge_fragment_sample(borders: MergeBorders) -> DocLayout {
     use wordcraft_doc::props::{HeightRule, LineSpacing, VAlign, VMerge};
     let mut d = Document::new();
     d.last_section.page_h = 360.0;
@@ -8417,6 +8421,10 @@ fn split_merge_centers_first() {
         wordcraft_doc::para_block(p)
     };
     let mut t = Table::new(2, 2, 300.0);
+    if matches!(borders, MergeBorders::Hidden) {
+        let none = Some(Border::default());
+        t.props.borders = Some(Borders { top: none, bottom: none, left: none, right: none, between: none, inside_v: none });
+    }
     for (i, count) in [35, 55].into_iter().enumerate() {
         t.rows[i].props.height = Some(if i == 0 { 200.0 } else { 100.0 });
         t.rows[i].props.height_rule = HeightRule::AtLeast;
@@ -8426,7 +8434,12 @@ fn split_merge_centers_first() {
     t.rows[0].cells[0].blocks = vec![para("Label")];
     t.rows[0].cells[0].props.valign = Some(VAlign::Center);
     d.body = vec![std::sync::Arc::new(Block::Table(t))];
-    let l = lay(&d);
+    lay(&d)
+}
+
+#[test]
+fn split_merge_centers_first() {
+    let l = merge_fragment_sample(MergeBorders::Grid);
     let (page, y) = l
         .pages
         .iter()
@@ -8442,6 +8455,38 @@ fn split_merge_centers_first() {
     // Twenty-eight fitted10pt lines; existing top border leaves its matching inset.
     assert!((y - 171.5).abs() < 0.05, "label top {y}");
     assert_eq!(l.pages.len(), 4);
+}
+
+#[test]
+fn split_merge_closes_pages() {
+    let l = merge_fragment_sample(MergeBorders::Grid);
+    for (page, pg) in l.pages.iter().enumerate() {
+        let left = pg
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Cell { table, rect, cell: 0, .. } if table.0 == [0] => Some(*rect),
+                _ => None,
+            })
+            .unwrap();
+        let right = pg
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Cell { table, rect, cell: 1, .. } if table.0 == [0] => Some(*rect),
+                _ => None,
+            })
+            .unwrap();
+        for edge in [right.y, right.bottom()] {
+            assert!(
+                pg.items.iter().any(|it| matches!(it,
+                    Placed::Rule { x0, x1, y0, y1, .. }
+                    if *x0 <= left.x && *x1 >= left.right() && (*y0-edge).abs()<0.01 && (*y1-edge).abs()<0.01
+                )),
+                "page {page}, missing merge edge at {edge}"
+            );
+        }
+    }
 }
 
 /// Continued text keeps the cell's border inset, as on its first fragment.
@@ -8528,7 +8573,7 @@ fn split_cell_moves_image_frame() {
             height: 200.0,
             bottom: 4.0,
             items: vec![kept, image, frame],
-            cells: vec![CellPart { top, center: None, items: 0..3, end: Some(170.0) }],
+            cells: vec![CellPart { top, center: None, merge: None, items: 0..3, end: Some(170.0) }],
         };
         let (first, rest) = split_row(&row, 100.0).unwrap();
         assert_eq!(first.items.len(), 1);
@@ -8871,6 +8916,13 @@ fn exact_math_keeps_run_baseline() {
             }
         }
     }
+}
+
+#[test]
+fn merge_edges_keep_hidden_style() {
+    let l = merge_fragment_sample(MergeBorders::Hidden);
+    assert_eq!(l.pages.len(), 4);
+    assert!(!l.pages.iter().flat_map(|p| &p.items).any(|it| matches!(it, Placed::Rule { .. })));
 }
 
 #[test]
@@ -9648,7 +9700,7 @@ fn split_frame_keeps_flow_bottom() {
                 min_height,
                 height: 200.0,
                 bottom: BOTTOM,
-                cells: vec![CellPart { top: 2.0, center: None, items: 0..items.len(), end: Some(160.0) }],
+                cells: vec![CellPart { top: 2.0, center: None, merge: None, items: 0..items.len(), end: Some(160.0) }],
                 items,
             };
             let (first, rest) = split_row(&row, CUT).unwrap();
@@ -9711,4 +9763,200 @@ fn split_frame_keeps_flow_bottom() {
             assert_eq!(images(&rest), vec![(Rect::new(5.0, 2.0, 20.0, 10.0), [0.1, 0.2, 0.3, 0.4], String::from("synthetic"))]);
         }
     }
+}
+
+fn para_border_row(kept_space: f32, moved_space: f32) -> crate::table::RowLayout {
+    use crate::table::{CellPart, RowLayout};
+    use wordcraft_doc::props::{LineSpacing, Rgb};
+    const ROW_HEIGHT: f32 = 200.0;
+    const BOTTOM: f32 = 4.0;
+    const MOVED_TOP: f32 = 60.0;
+    const CELL_TOP: f32 = 2.0;
+    let kept_border = Border { space: kept_space, color: Some(Rgb(200, 0, 0)), ..Border::single(1.5) };
+    let moved_border = Border { space: moved_space, color: Some(Rgb(0, 0, 200)), ..Border::single(2.5) };
+    let row_border = Border::single(BOTTOM);
+    let mut d = Document::new();
+    d.body.clear();
+    assert!(d.body.is_empty());
+    for (text, borders) in [
+        ("Kept", Borders { bottom: Some(kept_border), ..Default::default() }),
+        ("Move\nMove", Borders { top: Some(moved_border), ..Default::default() }),
+    ] {
+        let mut p = Paragraph::with_text(text, Default::default());
+        p.props = ParaProps {
+            borders: Some(borders),
+            space_before: Some(0.0),
+            space_after: Some(0.0),
+            line_spacing: Some(LineSpacing::Exactly(20.0)),
+            widow_control: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(p.text, text);
+        d.body.push(wordcraft_doc::para_block(p));
+    }
+    assert_eq!(d.body.len(), 2);
+    let laid = lay(&d);
+    let mut items = Vec::new();
+    for (index, y) in [(0, 0.0), (1, MOVED_TOP)] {
+        let para = laid.pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Lines { path, para, .. } if path.0 == [index] => Some(para.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(para.text_len, if index == 0 { "Kept".len() } else { "Move\nMove".len() });
+        assert_eq!(para.lines.len(), if index == 0 { 1 } else { 2 });
+        // Use the production border emitter, including its paragraph item ordering.
+        push_para(&mut items, StoryRef::Body, &[index], &para, 0, para.lines.len(), 0.0, y, 100.0);
+    }
+    items.push(Placed::Image {
+        rect: Rect::new(5.0, 150.0, 20.0, 20.0),
+        media: "synthetic".into(),
+        crop: [0.0; 4],
+        story: StoryRef::Body,
+        path: Path::top(2),
+        off: 0,
+        spin: Default::default(),
+    });
+    let rect = Rect::new(0.0, 0.0, 100.0, ROW_HEIGHT);
+    items.push(Placed::Cell { rect, covered: false, table: Path::top(0), row: 0, cell: 0, story: StoryRef::Body, clip: false });
+    for y in [0.0, ROW_HEIGHT] {
+        items.push(Placed::Rule { x0: 0.0, y0: y, x1: 100.0, y1: y, border: row_border });
+    }
+    RowLayout {
+        height: ROW_HEIGHT,
+        min_height: 0.0,
+        bottom: BOTTOM,
+        cells: vec![CellPart { top: CELL_TOP, items: 0..items.len(), end: None, center: None, merge: None }],
+        items,
+    }
+}
+
+fn para_border_rules(part: &crate::table::RowLayout, color: wordcraft_doc::props::Rgb) -> Vec<f32> {
+    part.items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Rule { y0, y1, border, .. } if border.color == Some(color) && y0 == y1 => Some(*y0),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn split_para_border_spacing() {
+    use crate::table::split_row;
+    use wordcraft_doc::props::Rgb;
+    for kept_space in [0.0, 8.0, 20.0] {
+        for moved_space in [0.0, 8.0, 40.0, 80.0] {
+            let row = para_border_row(kept_space, moved_space);
+            for cut in [80.0, 110.0] {
+                let (first, rest) = split_row(&row, cut).unwrap();
+                let moves = cut == 80.0;
+                let expected_height = if moves { 24.0 + kept_space } else { 104.0 };
+                assert_eq!(first.height, expected_height);
+                assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + kept_space]);
+                assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
+                let shift = (60.0_f32 - moved_space - 2.0).max(0.0);
+                let original_top = 60.0 - moved_space;
+                let after_top = original_top - shift;
+                if moves {
+                    assert!(para_border_rules(&first, Rgb(0, 0, 200)).is_empty());
+                    assert_eq!(para_border_rules(&rest, Rgb(0, 0, 200)), vec![after_top]);
+                    let text_y = rest
+                        .items
+                        .iter()
+                        .find_map(|it| match it {
+                            Placed::Lines { path, y, .. } if path.0 == [1] => Some(*y),
+                            _ => None,
+                        })
+                        .unwrap();
+                    assert_eq!(text_y, 60.0 - shift);
+                    assert_eq!(text_y - after_top, moved_space, "one shared shift preserves border space");
+                    if original_top >= 0.0 {
+                        assert!(after_top >= 0.0);
+                    } else {
+                        assert_eq!(after_top, original_top, "existing negative overflow is not clamped");
+                    }
+                } else {
+                    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![original_top]);
+                    assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
+                }
+                for paragraph in [0, 1] {
+                    let lines: Vec<_> = first
+                        .items
+                        .iter()
+                        .chain(&rest.items)
+                        .filter_map(|it| match it {
+                            Placed::Lines { path, l0, l1, .. } if path.0 == [paragraph] => Some(*l0..*l1),
+                            _ => None,
+                        })
+                        .flatten()
+                        .collect();
+                    assert_eq!(lines, (0..if paragraph == 0 { 1 } else { 2 }).collect::<Vec<_>>());
+                }
+                let edges = |part: &crate::table::RowLayout| {
+                    part.items
+                        .iter()
+                        .filter_map(|it| match it {
+                            Placed::Rule { y0, y1, border, .. } if *border == Border::single(4.0) && y0 == y1 => Some(*y0),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(edges(&first), vec![0.0, first.height]);
+                assert_eq!(edges(&rest), vec![0.0, rest.height]);
+            }
+        }
+    }
+}
+
+#[test]
+fn split_para_border_fallbacks() {
+    use crate::table::split_row;
+    use wordcraft_doc::props::Rgb;
+    // A retained bottom crossing the available content limit does not alter line policy.
+    for space in [56.0, 57.0] {
+        let row = para_border_row(space, 8.0);
+        let (first, rest) = split_row(&row, 80.0).unwrap();
+        assert_eq!(first.height, if space == 56.0 { 80.0 } else { 24.0 });
+        assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + space]);
+        assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
+    }
+    // A bottom beyond the physical cut keeps the generic overflow route. The shared cell
+    // shift may change coordinates, but ownership does not pull it into retained flow.
+    let row = para_border_row(61.0, 8.0);
+    let (first, rest) = split_row(&row, 80.0).unwrap();
+    assert_eq!(first.height, 24.0);
+    assert!(para_border_rules(&first, Rgb(200, 0, 0)).is_empty());
+    assert_eq!(para_border_rules(&rest, Rgb(200, 0, 0)), vec![31.0]);
+
+    // Partial runs retain the previous cut and vertical-border policy.
+    let row = para_border_row(0.0, 8.0);
+    let (first, rest) = split_row(&row, 90.0).unwrap();
+    assert_eq!(first.height, 84.0);
+    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0]);
+    assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
+    let ranges = |part: &crate::table::RowLayout| {
+        part.items
+            .iter()
+            .filter_map(|it| match it {
+                Placed::Lines { path, l0, l1, .. } if path.0 == [1] => Some(*l0..*l1),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ranges(&first), vec![0..1]);
+    assert_eq!(ranges(&rest), vec![1..2]);
+
+    // An interrupted emitter sequence is not reconstructed from nearby matching rules.
+    let mut row = para_border_row(0.0, 8.0);
+    let index = row.items.iter().position(|it| matches!(it, Placed::Rule { border, .. } if border.color == Some(Rgb(0, 0, 200)))).unwrap();
+    row.items.insert(index, Placed::Fill { rect: Rect::new(0.0, 0.0, 1.0, 1.0), color: Rgb(1, 2, 3) });
+    row.cells[0].items.end += 1;
+    let (first, rest) = split_row(&row, 80.0).unwrap();
+    assert_eq!(first.height, 24.0);
+    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0]);
+    assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
 }

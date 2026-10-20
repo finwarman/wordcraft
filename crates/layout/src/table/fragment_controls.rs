@@ -39,7 +39,7 @@ fn generated_para(text: &str, height: f32, borders: Option<Borders>) -> Arc<Para
 }
 
 fn make_cell(items: std::ops::Range<usize>, end: f32) -> CellPart {
-    CellPart { top: 0.0, center: None, items, end: Some(end) }
+    CellPart { top: 0.0, center: None, merge: None, items, end: Some(end) }
 }
 
 fn make_row(height: f32, borders: Option<Borders>, sibling: &str) -> RowLayout {
