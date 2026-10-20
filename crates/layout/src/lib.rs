@@ -1583,6 +1583,13 @@ fn push_para(items: &mut Vec<Placed>, story: StoryRef, path: &[u32], pl: &Arc<Pa
     }
 }
 
+/// Seeded decoration stays between prepended paint and body items.
+#[derive(Clone, Copy, Default)]
+struct PagePrefix {
+    behind: usize,
+    decor: usize,
+}
+
 #[derive(Clone)]
 struct PageBuilder<'a> {
     pages: Vec<Page>,
@@ -1636,9 +1643,8 @@ struct PageBuilder<'a> {
     page_valign: wordcraft_doc::section::PageVAlign,
     /// The document's own footnote separators, laid out for the section's text width.
     seps: NoteSeps,
-    /// Per page: how many items were inserted at the front of its list (behind the text), so a
-    /// [`Snap`] can take them out again.
-    behind: Vec<usize>,
+    /// Per-page prefix counts, moved outside the builder when [`Snap`] clones its state.
+    behind: Vec<PagePrefix>,
     /// The bottom of the tallest column on the current page before the current one.
     max_y: f32,
     /// The bottom of the lowest line or table row placed on the current page (without the space
@@ -1872,6 +1878,12 @@ fn page_border_rules(s: &SectionProps) -> Vec<Placed> {
 }
 
 impl PageBuilder<'_> {
+    fn overlaps_body(&self, rect: &Rect) -> bool {
+        let prefix = self.behind.last().copied().unwrap_or_default();
+        let decor = prefix.behind..prefix.behind.saturating_add(prefix.decor);
+        self.pages.last().is_some_and(|page| page.items.iter().enumerate().any(|(i, item)| !decor.contains(&i) && placed_intersects(item, rect)))
+    }
+
     fn wrap_areas(&self) -> Vec<WrapArea> {
         self.replay_excl.iter().chain(&self.excl).cloned().collect()
     }
@@ -1975,7 +1987,7 @@ impl PageBuilder<'_> {
     /// A top-level block starts here (see `block_marks`).
     fn mark_block(&mut self) {
         if let Some(pg) = self.pages.last() {
-            let behind = self.behind.last().copied().unwrap_or(0);
+            let behind = self.behind.last().map_or(0, |p| p.behind);
             self.block_marks.push(pg.items.len().saturating_sub(behind));
         }
     }
@@ -1986,7 +1998,7 @@ impl PageBuilder<'_> {
         if self.web || self.cols.len() > 1 {
             return;
         }
-        let behind = self.behind.last().copied().unwrap_or(0);
+        let behind = self.behind.last().map_or(0, |p| p.behind);
         let first = self.page_items_start;
         // The room is measured below the last paragraph's space after: Word for Mac 16.113.4 keeps
         // it inside the justified height (72 pt after leaves the last line 72 pt above the margin).
@@ -2084,11 +2096,12 @@ impl PageBuilder<'_> {
                 }
             }
         }
-        self.page_items_start = decor.len();
+        let decor_len = decor.len();
+        self.page_items_start = decor_len;
         self.block_marks.clear();
         self.page_valign = s.valign;
         self.pages.push(Page { w, h, section: self.sect_idx, number: self.number, body, first_block, items: decor, ..Default::default() });
-        self.behind.push(0);
+        self.behind.push(PagePrefix { behind: 0, decor: decor_len });
         self.col = 0;
         self.cols = s.column_boxes();
         self.top = body_top;
@@ -2581,7 +2594,7 @@ struct Snap<'a> {
     pb: PageBuilder<'a>,
     pages: usize,
     items: usize,
-    behind: usize,
+    prefix: PagePrefix,
     counters: Counters,
     eq_count: u32,
     page_field: u32,
@@ -2598,7 +2611,7 @@ impl<'a> Snap<'a> {
             pb: copy,
             pages: pb.pages.len(),
             items: pb.pages.last().map_or(0, |p| p.items.len()),
-            behind: pb.behind.last().copied().unwrap_or(0),
+            prefix: pb.behind.last().copied().unwrap_or_default(),
             counters: ctx.counters.clone(),
             eq_count: ctx.eq_count,
             page_field: ctx.fields.page,
@@ -2613,12 +2626,12 @@ impl<'a> Snap<'a> {
         pages.truncate(self.pages);
         behind.truncate(self.pages);
         if let Some(pg) = pages.last_mut() {
-            let k = behind.last().copied().unwrap_or(0).saturating_sub(self.behind).min(pg.items.len());
+            let k = behind.last().map_or(0, |p| p.behind).saturating_sub(self.prefix.behind).min(pg.items.len());
             pg.items.drain(..k);
             pg.items.truncate(self.items);
         }
         if let Some(b) = behind.last_mut() {
-            *b = self.behind;
+            *b = self.prefix;
         }
         *pb = self.pb.clone();
         (pb.pages, pb.behind) = (pages, behind);
@@ -3818,7 +3831,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
             pg.items.extend(items);
         }
         if let Some(b) = pb.behind.last_mut() {
-            *b += n_behind;
+            b.behind += n_behind;
         }
         if let (Some(f), Some(l)) = (pl.lines.get(l0), pl.lines.get(l1 - 1)) {
             pb.y = y + (l.top + l.height - f.top);
@@ -3929,11 +3942,15 @@ fn place_outline_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     // Collapsed, or with something under it hidden by Show Level: the wavy line says so.
     let collapsed = children && o.hidden.get(block + 1).copied().unwrap_or(false);
     items.extend(outline::symbol_items(&pl, x, y, level, children, collapsed));
+    let n_behind = behind.len();
     if let Some(pg) = pb.page() {
         for (i, it) in behind.into_iter().enumerate() {
             pg.items.insert(i.min(pg.items.len()), it);
         }
         pg.items.extend(items);
+    }
+    if let Some(prefix) = pb.behind.last_mut() {
+        prefix.behind += n_behind;
     }
     if let (Some(f), Some(l)) = (pl.lines.first(), l1.checked_sub(1).and_then(|k| pl.lines.get(k))) {
         pb.y = y + (l.top + l.height - f.top);
@@ -4352,7 +4369,7 @@ fn place_floating_table(ctx: &mut Ctx, pb: &mut PageBuilder, tl: &table::TableLa
         }
         if matches!(f.v_rel, Anchor::Page | Anchor::Margin) {
             let area = r.inset(-dl, -dt, -dr, -db);
-            pb.late_table |= pb.pages.last().is_some_and(|page| page.items.iter().any(|item| placed_intersects(item, &area)));
+            pb.late_table |= pb.overlaps_body(&area);
             pb.placed_tables.push(TableWrap { block, page: pb.pages.len().saturating_sub(1), area });
         }
         if let Some(pg) = pb.page() {

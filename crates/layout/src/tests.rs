@@ -9621,3 +9621,124 @@ fn late_float_ignores_clipped_row() {
     assert!(page.items.iter().any(|it| matches!(it, Placed::Cell { table, rect, .. } if table.0 == vec![2] && (rect.y - 160.0).abs() < 0.01)));
     assert_eq!(l.caret(&Pos::body(3, 0)).unwrap().page, 0);
 }
+
+#[derive(Clone, Copy, Debug)]
+enum PageDecoration {
+    Border,
+    Separator,
+}
+
+fn replay_probe() -> Document {
+    let mut doc = Document::new();
+    doc.body.clear();
+    let section = &mut doc.last_section;
+    section.page_w = 400.0;
+    section.page_h = 500.0;
+    section.margin_left = 40.0;
+    section.margin_right = 40.0;
+    section.margin_top = 40.0;
+    section.margin_bottom = 40.0;
+    doc
+}
+
+fn replay_table(rect: Rect) -> Block {
+    use wordcraft_doc::para::Anchor;
+    use wordcraft_doc::props::{HeightRule, TableFloat};
+
+    let mut table = Table::new(1, 1, rect.w);
+    table.props.style = None;
+    table.props.fixed = true;
+    table.rows[0].props.height = Some(rect.h);
+    table.rows[0].props.height_rule = HeightRule::Exact;
+    table.props.float = Some(TableFloat { h_rel: Anchor::Page, v_rel: Anchor::Page, x: rect.x, y: rect.y, ..Default::default() });
+    Block::Table(table)
+}
+
+fn decorated_float_doc(kind: PageDecoration) -> Document {
+    let mut doc = replay_probe();
+    let x = match kind {
+        PageDecoration::Border => {
+            doc.last_section.page_borders = Some(Borders::all(Border { space: 24.0, ..Border::single(0.5) }));
+            20.0
+        }
+        PageDecoration::Separator => {
+            doc.last_section.columns.count = 2;
+            doc.last_section.columns.space = 20.0;
+            doc.last_section.columns.separator = true;
+            150.0
+        }
+    };
+    doc.body = vec![
+        Arc::new(replay_table(Rect::new(x, 100.0, 100.0, 20.0))),
+        wordcraft_doc::para_block(Paragraph::with_text("Following", Default::default())),
+    ];
+    doc
+}
+
+fn first_float_pass(doc: &Document) -> Pass {
+    let totals = Totals::first_guess(doc.sections().len());
+    layout_pass(doc, &mut LayoutCache::new(), &LayoutOptions::default(), &HashMap::new(), &totals, true, &mut FloatReplay::default())
+}
+
+#[test]
+fn decoration_needs_no_replay() {
+    let observed: Vec<_> = [PageDecoration::Border, PageDecoration::Separator]
+        .into_iter()
+        .map(|kind| {
+            let pass = first_float_pass(&decorated_float_doc(kind));
+            (kind, matches!(&pass, Pass::Done(_)), matches!(&pass, Pass::FloatReplay))
+        })
+        .collect();
+    assert!(observed.iter().all(|(_, done, _)| *done), "observed (kind, done, replay): {observed:?}");
+}
+
+#[test]
+fn behind_keeps_decor_identity() {
+    use wordcraft_doc::para::{Anchor, Float, ShapeKind, Wrap};
+
+    let mut observed = Vec::new();
+    for kind in [PageDecoration::Border, PageDecoration::Separator] {
+        let mut doc = decorated_float_doc(kind);
+        doc.body.insert(0, wordcraft_doc::para_block(Paragraph::with_text("Earlier", Default::default())));
+        let shape = InlineObject::Shape {
+            kind: ShapeKind::Rectangle,
+            w: 10.0,
+            h: 10.0,
+            fill: Some(wordcraft_doc::props::Rgb(40, 80, 120)),
+            stroke: None,
+            stroke_width: 0.0,
+            float: Float { wrap: Wrap::BehindText, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 300.0, y: 300.0, ..Default::default() },
+            story: None,
+            effects: Default::default(),
+            freeform: None,
+            extra: Default::default(),
+        };
+        doc.insert_object(&Pos::body(0, 0), shape, &Default::default()).unwrap();
+        let pass = first_float_pass(&doc);
+        observed.push((kind, matches!(&pass, Pass::Done(_)), matches!(&pass, Pass::FloatReplay)));
+    }
+    assert!(observed.iter().all(|(_, done, _)| *done), "prepended paint (kind, done, replay): {observed:?}");
+}
+
+#[test]
+fn paragraph_rule_keeps_replay() {
+    use wordcraft_doc::props::LineSpacing;
+
+    let mut doc = replay_probe();
+    let mut text = Paragraph::with_text("Earlier", Default::default());
+    text.props.line_spacing = Some(LineSpacing::Exactly(12.0));
+    text.props.space_after = Some(0.0);
+    text.props.borders = Some(Borders { bottom: Some(Border::single(0.5)), ..Default::default() });
+    doc.body.push(wordcraft_doc::para_block(text));
+    let baseline = lay(&doc);
+    let rule_y = baseline.pages[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Placed::Rule { y0, y1, .. } if y0 == y1 => Some(*y0),
+            _ => None,
+        })
+        .expect("paragraph bottom border");
+    doc.body.push(Arc::new(replay_table(Rect::new(250.0, rule_y - 1.0, 100.0, 2.0))));
+    assert!(matches!(first_float_pass(&doc), Pass::FloatReplay), "body border overlap still needs replay");
+}
