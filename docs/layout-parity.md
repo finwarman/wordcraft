@@ -20,6 +20,8 @@ For an explicit page-break paragraph followed by an empty section-ending paragra
 
 The numbering correction is separate from structural-mark placement. Pagination absorbs a terminal mark after an explicit page break into the old-page fragment. Both internal lines formerly received numbers. The numbering loop now skips only that absorbed terminal mark; placement and caret lines remain intact. `tests_section_marks::break_mark_counted_once` isolates this case without a section boundary.
 
+A relocated section mark derives its vertical position only from body lines and cells, as body_floor does. `tests_section_marks::mark_stays_above_footnote` places a real footnote before the manual break and checks the mark caret immediately after the last body line, above the footnote. This is an internal ownership invariant, not a native Word caret observation.
+
 ## Checklist
 
 ✅ matches Word as far as our tests show · 🟡 implemented, differs or untested against Word · ❌ missing

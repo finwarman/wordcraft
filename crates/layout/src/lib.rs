@@ -3348,7 +3348,7 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
         let y = prev
             .items
             .iter()
-            .filter(|it| matches!(it, Placed::Lines { .. } | Placed::Cell { .. }))
+            .filter(|it| matches!(it, Placed::Lines { story: StoryRef::Body, .. } | Placed::Cell { story: StoryRef::Body, .. }))
             .map(v_span)
             .map(|(_, bottom)| bottom)
             .fold(prev.body.y, f32::max);

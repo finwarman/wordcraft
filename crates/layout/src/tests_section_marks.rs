@@ -313,3 +313,52 @@ fn relocated_bookmark_page_refs() {
         assert_eq!(shown, ["1"]);
     }
 }
+
+#[test]
+fn mark_stays_above_footnote() {
+    let mut doc = bookmarked_document(LineNumberRestart::Continuous);
+    let note = doc.add_part(
+        wordcraft_doc::PartKind::Footnote,
+        vec![wordcraft_doc::para_block(Paragraph::with_text("Original footnote text.", Default::default()))],
+    );
+    let before = doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap();
+    before
+        .insert_object(
+            before.len(),
+            InlineObject::NoteRef { kind: wordcraft_doc::para::NoteKind::Footnote, id: note, custom: String::new() },
+            &Default::default(),
+        )
+        .unwrap();
+    let laid = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+    assert_eq!(laid.pages.len(), 7);
+    let page = &laid.pages[0];
+    let mark_path = Path::top(3);
+    let body_bottom = page
+        .items
+        .iter()
+        .filter(|item| match item {
+            Placed::Lines { story: StoryRef::Body, path, .. } => *path != mark_path,
+            Placed::Cell { story: StoryRef::Body, .. } => true,
+            _ => false,
+        })
+        .map(|item| v_span(item).1)
+        .fold(page.body.y, f32::max);
+    let note_top = page
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Placed::Lines { story: StoryRef::Part(id), .. } if *id == note => Some(v_span(item).0),
+            _ => None,
+        })
+        .reduce(f32::min)
+        .unwrap();
+    assert!(note_top > body_bottom + LINE_HEIGHT, "a real footnote must lie below the body");
+    let caret = laid.caret(&wordcraft_doc::Pos::body(3, 0)).unwrap();
+    assert_eq!(caret.page, 0);
+    assert!(
+        caret.top >= body_bottom - 0.01 && caret.top < body_bottom + LINE_HEIGHT,
+        "caret {caret:?} must follow body bottom {body_bottom}, not footnote {note_top}"
+    );
+    assert!((body_slot(&laid, 3).1 - body_bottom).abs() < 0.01, "mark must start at body bottom {body_bottom}, not footnote {note_top}");
+    assert!(caret.top + caret.height < note_top);
+}
