@@ -9086,6 +9086,7 @@ fn turned_text_uses_min_height() {
         let mut t = Table::new(1, 2, 160.0);
         t.props.style = None;
         t.rows[0].props.height = Some(80.0);
+        t.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::AtLeast;
         t.rows[0].cells[1].props.text_direction = turn;
         t.rows[0].cells[1].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Compensation pad type", Default::default()))];
         d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
@@ -9112,12 +9113,52 @@ fn turned_text_uses_min_height() {
 }
 
 #[test]
+fn auto_turned_height_is_natural() {
+    const TEXT: &str = "Compensation pad type";
+    let natural = lay(&Document::from_text(TEXT));
+    let natural_lines = natural.pages[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Placed::Lines { path, l0, l1, .. } if path.0 == [0] => Some(l1 - l0),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(natural_lines, 1);
+
+    for turn in [TextDirection::Up, TextDirection::Down] {
+        let mut d = Document::from_text("After");
+        let mut table = Table::new(1, 2, 160.0);
+        table.props.style = None;
+        table.rows[0].props.height = Some(80.0);
+        table.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::Auto;
+        table.rows[0].cells[1].props.text_direction = turn;
+        table.rows[0].cells[1].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text(TEXT, Default::default()))];
+        d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(table)).unwrap();
+        let layout = lay(&d);
+        let lines = layout.pages[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Lines { path, para, l0, l1, .. } if path.0 == [0, 0, 1, 0] => {
+                    assert_eq!((*l0, *l1), (0, para.lines.len()), "the whole target paragraph remains visible");
+                    Some(l1 - l0)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(lines, natural_lines, "Auto height must retain natural turned-text length: {turn:?}");
+    }
+}
+
+#[test]
 fn narrow_turned_cell_wraps() {
     let mut d = Document::from_text("After");
     let mut t = Table::new(1, 1, 20.0);
     t.props.style = None;
     t.props.fixed = true;
     t.rows[0].props.height = Some(20.0);
+    t.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::AtLeast;
     t.rows[0].cells[0].props.text_direction = TextDirection::Up;
     t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Compensation pad type", Default::default()))];
     d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
