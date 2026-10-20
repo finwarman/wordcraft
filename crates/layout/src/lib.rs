@@ -3785,8 +3785,7 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
         && pb.after_break_mark
         && pb.next_starts_page
         && p.section.is_some()
-        && p.text.is_empty()
-        && p.objects.is_empty()
+        && only_bookmarks(p)
         && !ctx.has_label(p)
         && let Some(page) = pb.pages.len().checked_sub(2)
     {
@@ -3797,7 +3796,7 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
         let y = prev
             .items
             .iter()
-            .filter(|it| matches!(it, Placed::Lines { .. } | Placed::Cell { .. }))
+            .filter(|it| matches!(it, Placed::Lines { story: StoryRef::Body, .. } | Placed::Cell { story: StoryRef::Body, .. }))
             .map(v_span)
             .map(|(_, bottom)| bottom)
             .fold(prev.body.y, f32::max);
@@ -4006,6 +4005,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     // Pending notes can change that page's capacity; keep their existing route.
     let partial_page_start = !pb.web
         && pb.sect.start == SectionStart::Continuous
+        && pb.pages.last().is_some_and(|p| p.section != pb.sect_idx)
         && pb.cols.len() == 1
         && pb.at_top()
         && pb.top > body_top + 0.01
@@ -4258,6 +4258,10 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
             && let Some(first) = pl.lines.get(l0)
         {
             for li in l0..l1 {
+                // The absorbed terminal mark shares the break's counted line.
+                if mark_with_break && li == l1.saturating_sub(1) {
+                    continue;
+                }
                 let Some(line) = pl.lines.get(li).filter(|l| !l.beside) else { continue };
                 pb.line_no = pb.line_no.saturating_add(1);
                 let n = pb.line_no.saturating_add(ln.start.saturating_sub(1));
@@ -4345,6 +4349,18 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     let space_after = if pb.after_break_mark { 0.0 } else { pl.rp.space_after };
     pb.y += space_after + if pb.after_break_mark { 0.0 } else { border_after(&pl) };
     pb.prev = Some((pl.rp.style.clone(), pl.rp.contextual_spacing, space_after, pl.rp.after_auto, label.is_some()));
+}
+
+/// Pair each character with one bookmark object without rescanning text prefixes.
+fn only_bookmarks(p: &Paragraph) -> bool {
+    let mut objects = p.objects.iter();
+    for c in p.text.chars() {
+        if c != wordcraft_doc::para::OBJ || !matches!(objects.next(), Some(InlineObject::BookmarkStart { .. } | InlineObject::BookmarkEnd { .. })) {
+            return false;
+        }
+    }
+
+    objects.next().is_none()
 }
 
 /// Whether `range` of `p`'s text holds nothing but zero-width markers (bookmarks, field and
@@ -5236,6 +5252,8 @@ mod tests_grid;
 mod tests_numeral;
 #[cfg(test)]
 mod tests_pages;
+#[cfg(test)]
+mod tests_section_marks;
 #[cfg(test)]
 mod tests_styleref;
 #[cfg(test)]
