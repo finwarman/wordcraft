@@ -1444,6 +1444,151 @@ fn nested_merge_clip_is_bounded() {
     assert!(clip.bottom() <= after.top, "nested ink can overlap following content: {clip:?} vs {after:?}");
 }
 
+const NESTED_FILL: wordcraft_doc::props::Rgb = wordcraft_doc::props::Rgb(231, 203, 179);
+const NESTED_EDGE: wordcraft_doc::props::Rgb = wordcraft_doc::props::Rgb(17, 43, 61);
+
+fn nested_cell_table() -> Table {
+    use wordcraft_doc::props::{HeightRule, LineSpacing};
+
+    let mut text = Paragraph::with_text("A\nB\nC\nD\nE\nF", CharProps { size: Some(10.0), ..Default::default() });
+    text.props.line_spacing = Some(LineSpacing::Exactly(10.0));
+    text.props.space_after = Some(0.0);
+    let mut inner = Table::new(1, 1, 120.0);
+    inner.props.style = None;
+    inner.props.fixed = true;
+    inner.props.cell_margins = Some([0.0; 4]);
+    inner.props.borders = Some(Borders::all(Border { color: Some(NESTED_EDGE), ..Border::single(0.5) }));
+    inner.rows[0].cells[0].props.shading = Some(NESTED_FILL);
+    inner.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(text)];
+    let mut outer = Table::new(1, 1, 220.0);
+    outer.props.style = None;
+    outer.props.fixed = true;
+    outer.props.cell_margins = Some([0.0; 4]);
+    outer.props.borders = Some(Borders::default());
+    outer.rows[0].props.height = Some(20.0);
+    outer.rows[0].props.height_rule = HeightRule::Exact;
+    outer.rows[0].cells[0].blocks = vec![Arc::new(Block::Table(inner))];
+    outer
+}
+
+#[test]
+fn plain_exact_decoration() {
+    let mut doc = Document::from_text("After");
+    doc.insert_block(StoryRef::Body, &Path::top(0), Block::Table(nested_cell_table())).unwrap();
+    let layout = lay(&doc);
+    let cell = layout.pages[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Placed::Cell { table, rect, clip: true, .. } if table.0 == vec![0] => Some(*rect),
+            _ => None,
+        })
+        .expect("plain exact cell has a physical clip");
+    assert!((cell.h - 20.0).abs() < 0.01, "{cell:?}");
+    let retained: usize = layout.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Placed::Lines { story: StoryRef::Body, path, l0, l1, .. } if path.0.starts_with(&[0, 0, 0]) => Some(l1 - l0),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(retained, 6, "owner lines remain under the cell clip");
+    assert!(
+        layout.pages[0].items.iter().any(|item| matches!(item, Placed::Cell { table, rect, .. } if table.0 == vec![0, 0, 0, 0] && rect.h > cell.h)),
+        "nested cell marker remains whole"
+    );
+    let draws = display::page_display(&doc, &layout.pages[0], &Default::default());
+    let fills: Vec<_> = draws
+        .iter()
+        .filter_map(|draw| match draw {
+            display::Draw::Fill { rect, color: NESTED_FILL, .. } => Some(rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills.len(), 1, "nested fill remains visible");
+    assert!(fills[0].bottom() <= cell.bottom() + 0.5, "nested fill escaped: {:?} vs {cell:?}", fills[0]);
+    let edges: Vec<_> = draws
+        .iter()
+        .filter_map(|draw| match draw {
+            display::Draw::Line { y0, y1, color: NESTED_EDGE, .. } => Some((*y0, *y1)),
+            _ => None,
+        })
+        .collect();
+    assert!(!edges.is_empty(), "nested border remains visible");
+    assert!(edges.iter().all(|(a, b)| *a <= cell.bottom() + 0.5 && *b <= cell.bottom() + 0.5), "nested border escaped: {edges:?}");
+    let after = layout.caret(&Pos::body(1, 0)).unwrap();
+    assert!((after.top - cell.bottom()).abs() < 0.01, "overflow must not move following content: {after:?}");
+}
+
+#[test]
+fn minimum_keeps_decoration() {
+    let mut table = nested_cell_table();
+    table.rows[0].props.height_rule = wordcraft_doc::props::HeightRule::AtLeast;
+    let mut doc = Document::new();
+    doc.body = vec![Arc::new(Block::Table(table))];
+    let layout = lay(&doc);
+    let draws = display::page_display(&doc, &layout.pages[0], &Default::default());
+    let fill = draws
+        .iter()
+        .find_map(|draw| match draw {
+            display::Draw::Fill { rect, color: NESTED_FILL, .. } => Some(*rect),
+            _ => None,
+        })
+        .unwrap();
+    assert!(fill.h >= 60.0, "minimum rows retain full decoration: {fill:?}");
+    assert!(
+        draws.iter().any(
+            |draw| matches!(draw, display::Draw::Line { y0, y1, color: NESTED_EDGE, .. } if (y0-y1).abs() < 0.01 && (*y0-fill.bottom()).abs() < 0.01)
+        ),
+        "nested bottom border remains"
+    );
+}
+
+#[test]
+fn turned_keeps_decoration() {
+    for direction in [TextDirection::Up, TextDirection::Down] {
+        let mut table = nested_cell_table();
+        let cell = &mut table.rows[0].cells[0];
+        cell.props.text_direction = direction;
+        // The inset exceeds the exact height, exercising overflow after the turn.
+        cell.props.margins = Some([30.0, 0.0, 0.0, 0.0]);
+        let mut doc = Document::new();
+        doc.body = vec![Arc::new(Block::Table(table))];
+        let layout = lay(&doc);
+        let draws = display::page_display(&doc, &layout.pages[0], &Default::default());
+        let fill = draws
+            .iter()
+            .find_map(|draw| match draw {
+                display::Draw::Fill { rect, color: NESTED_FILL, .. } => Some(*rect),
+                _ => None,
+            })
+            .expect("turned decoration remains");
+        assert!((fill.h - 120.0).abs() < 0.01, "{direction:?}: turned width is not trimmed as horizontal height: {fill:?}");
+    }
+}
+
+#[test]
+fn covered_decoration_is_empty() {
+    let mut table = nested_cell_table();
+    let mut continuation = table.rows[0].clone();
+    continuation.cells[0].props.vmerge = wordcraft_doc::props::VMerge::Continue;
+    continuation.cells[0].props.margins = Some([30.0, 0.0, 0.0, 0.0]);
+    table.rows[0].cells[0].props.vmerge = wordcraft_doc::props::VMerge::Restart;
+    table.rows[0].cells[0].blocks.clear();
+    table.rows.push(continuation);
+    let mut doc = Document::new();
+    doc.body = vec![Arc::new(Block::Table(table))];
+    let layout = lay(&doc);
+    assert!(layout.pages[0].items.iter().any(|item| matches!(item, Placed::Cell { covered: true, table, .. } if table.0 == vec![0])));
+    assert!(!layout.pages[0].items.iter().any(|item| matches!(item, Placed::Lines { .. })), "continuations do not own the nested source");
+    let draws = display::page_display(&doc, &layout.pages[0], &Default::default());
+    assert!(
+        !draws.iter().any(|draw| matches!(draw, display::Draw::Fill { color: NESTED_FILL, .. } | display::Draw::Line { color: NESTED_EDGE, .. })),
+        "covered source must not generate decoration"
+    );
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ExactMergeCase {
     Body,

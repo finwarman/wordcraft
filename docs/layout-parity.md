@@ -210,6 +210,8 @@ Footer flow-table strokes reserve their drawn top edge, including the half-width
 
 Page-relative footer tables keep their physical wrap bounds without adding to footer text height. Body text resumes below the table. Original native controls cover empty, text-bearing and minimum-height tables. Body textbox boundaries and nested footer painting remain separate gaps.
 
+## Exact table rows
+
 Exact-height vertical merges retain declared row heights; owning-story partial ink stays under physical clips and nested decoration is bounded. Combined dependency qualification pending. Original three-case native Word controls cover exact, minimum and mixed heights. No new native interaction or broad pagination claim.
 
 ## Revision history
