@@ -183,6 +183,77 @@ fn measure(ctx: &mut Ctx, id: u32, len: f32, vert: TextVert, depth: usize) -> Op
     (!ctx.measure_exhausted).then_some(items)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct FrameKey {
+    id: u32,
+    len: u32,
+    direct: bool,
+    depth: usize,
+    grid: (u32, u32, u32, bool),
+    fitted: usize,
+}
+
+/// Only outer measurements of source-stable graphs can share an extent.
+#[derive(Default)]
+pub(super) struct FrameCache {
+    eligible: Option<std::collections::HashSet<u32>>,
+    extents: HashMap<FrameKey, Option<f32>>,
+}
+
+impl FrameCache {
+    fn supports(&mut self, doc: &wordcraft_doc::Document, id: u32) -> bool {
+        if self.eligible.is_none() {
+            let mut bad = std::collections::HashSet::new();
+            let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+            for (&id, part) in &doc.parts {
+                if part.kind != wordcraft_doc::PartKind::TextBox {
+                    bad.insert(id);
+                    continue;
+                }
+                if let Some(next) = part.body.next {
+                    // Header/footer probes replace flow maps, so linked graphs keep fresh measurements.
+                    bad.insert(id);
+                    parents.entry(next).or_default().push(id);
+                    parents.entry(id).or_default().push(next);
+                }
+                for block in &part.blocks {
+                    let Block::Para(p) = block.as_ref() else {
+                        bad.insert(id);
+                        continue;
+                    };
+                    if p.props.numbering.or_else(|| doc.styles.resolve_para(&p.props).numbering).is_some_and(|n| n.num != 0) {
+                        bad.insert(id);
+                    }
+                    for obj in &p.objects {
+                        match obj {
+                            wordcraft_doc::para::InlineObject::Shape { story: Some(child), .. } => parents.entry(*child).or_default().push(id),
+                            wordcraft_doc::para::InlineObject::Shape { story: None, .. }
+                            | wordcraft_doc::para::InlineObject::Image { .. }
+                            | wordcraft_doc::para::InlineObject::BookmarkStart { .. }
+                            | wordcraft_doc::para::InlineObject::BookmarkEnd { .. } => {}
+                            // Fields, counters and unclassified compound content keep their current context.
+                            _ => {
+                                bad.insert(id);
+                            }
+                        }
+                    }
+                }
+            }
+            // Reverse reachability handles shared graphs and cycles once, without expanding stories.
+            let mut pending: Vec<_> = bad.iter().copied().collect();
+            while let Some(child) = pending.pop() {
+                for &parent in parents.get(&child).into_iter().flatten() {
+                    if bad.insert(parent) {
+                        pending.push(parent);
+                    }
+                }
+            }
+            self.eligible = Some(doc.parts.keys().copied().filter(|id| !bad.contains(id)).collect());
+        }
+        self.eligible.as_ref().is_some_and(|eligible| eligible.contains(&id))
+    }
+}
+
 /// Measure an unlinked horizontal auto-fit shape before positioning and wrapping it.
 pub(super) fn fit_size(ctx: &mut Ctx, obj: &wordcraft_doc::para::InlineObject, w: f32, h: f32, depth: usize) -> (f32, f32) {
     let Some(id) = obj.text_box() else { return (w, h) };
@@ -196,18 +267,34 @@ pub(super) fn fit_size(ctx: &mut Ctx, obj: &wordcraft_doc::para::InlineObject, w
         return (w, h);
     }
     let (len, _) = frame(&body, w, h);
-    let Some(mut items) = measure(ctx, id, len, body.vert, depth) else { return (w, h) };
-    if direct_parent(ctx, obj, id) {
-        let owners = suppressed_rects(ctx, id, &items);
-        items.retain(|item| !item_owner(item).is_some_and(|owner| owners.contains(&owner)));
-    }
+    let direct = direct_parent(ctx, obj, id);
+    let key = FrameKey { id, len: len.to_bits(), direct, depth, grid: ctx.grid.key(), fitted: ctx.fitted_order.len() };
+    // Nested calls retain their active cycle/depth/work guards and cannot create cache entries.
+    let reusable = ctx.measure_depth == 0 && !ctx.boxes.inside() && ctx.frames.supports(ctx.doc, id);
+    let used = match reusable.then(|| ctx.frames.extents.get(&key).copied()).flatten() {
+        Some(used) => used,
+        None => {
+            let used = measure(ctx, id, len, body.vert, depth).map(|mut items| {
+                if direct {
+                    let owners = suppressed_rects(ctx, id, &items);
+                    items.retain(|item| !item_owner(item).is_some_and(|owner| owners.contains(&owner)));
+                }
+                extent(&items)
+            });
+            if reusable {
+                ctx.frames.extents.insert(key, used);
+            }
+            used
+        }
+    };
+    let Some(used) = used else { return (w, h) };
     let [_, top, _, bottom] = body.insets_pt();
     // Word fits the frame to the text and both margins, including a visible outline's width.
     let outline = match obj {
         wordcraft_doc::para::InlineObject::Shape { stroke: Some(_), stroke_width, .. } => wordcraft_geom::finite(*stroke_width).max(0.0),
         _ => 0.0,
     };
-    (w, extent(&items) + top + bottom + outline)
+    (w, used + top + bottom + outline)
 }
 
 /// The items showing text box `id` in its frame `rect` (page coordinates): its text, or its
@@ -687,6 +774,7 @@ mod probe_work_tests {
             pin: None,
             footer_wraps: HashMap::new(),
             header_tables: HashMap::new(),
+            frames: Default::default(),
             fitted: HashMap::new(),
             fitted_order: Vec::new(),
             measure_left: 3,
@@ -739,6 +827,7 @@ mod probe_work_tests {
             pin: None,
             footer_wraps: HashMap::new(),
             header_tables: HashMap::new(),
+            frames: Default::default(),
             fitted: HashMap::new(),
             fitted_order: Vec::new(),
             measure_left: 0,
@@ -914,6 +1003,346 @@ mod probe_work_tests {
             let items = lay(ctx, root, blocks, 180.0, TextVert::Horz, 0);
             assert!(suppressed_rects(ctx, root, &items).is_empty(), "malformed marker ownership is not classified");
         });
+    }
+
+    fn floating_doc(text: &str) -> (Document, u32, InlineObject) {
+        let mut d = Document::from_text("");
+        d.styles.default_chr.font = Some("Source Sans 3".into());
+        let id = d.add_part(PartKind::TextBox, Document::from_text(text).body);
+        d.parts.get_mut(&id).unwrap().body = TextBody { auto_fit: true, inset: Some([0; 4]), ..Default::default() };
+        let obj = shape(id, 240.0);
+        d.insert_object(&Pos::body(0, 0), obj.clone(), &Default::default()).unwrap();
+        (d, id, obj)
+    }
+
+    #[test]
+    fn floating_none_is_reused() {
+        for graph in [Graph::Shared, Graph::Varied, Graph::Long] {
+            let (d, root) = shared_graph(graph, Fit::Auto);
+            let obj = shape(root, 240.0);
+            with_probe_ctx(&d, |ctx| {
+                MEASURE_COUNTS.with(|v| v.borrow_mut().clear());
+                COPIED_BLOCKS.with(|v| v.set(0));
+                assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), (240.0, 2000.0));
+                let before = MEASURE_COUNTS.with(|v| v.borrow().clone());
+                let copied = COPIED_BLOCKS.with(std::cell::Cell::get);
+                assert_eq!(before, [MAX_MEASURE_BOXES]);
+                for _ in 0..=wordcraft_doc::BoxBudget::MAX_NESTED {
+                    assert!(ctx.boxes.enter(root));
+                    ctx.boxes.leave();
+                }
+                let actual_total = ctx.boxes.total();
+                assert!(actual_total > wordcraft_doc::BoxBudget::MAX_NESTED);
+                for saved in [2000.0, 2100.0, 80.0] {
+                    assert_eq!(fit_size(ctx, &obj, 240.0, saved, 0), (240.0, saved));
+                }
+                assert_eq!(MEASURE_COUNTS.with(|v| v.borrow().clone()), before, "one exhausted outer measurement per context");
+                assert_eq!(COPIED_BLOCKS.with(std::cell::Cell::get), copied);
+                assert_eq!(ctx.boxes.total(), actual_total);
+                assert!(!ctx.boxes.inside());
+                assert_eq!(ctx.measure_depth, 0);
+            });
+        }
+    }
+
+    #[test]
+    fn floating_success_is_reused() {
+        let (mut d, _, obj) = floating_doc("Original floating content");
+        let list = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+        d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.numbering = Some(wordcraft_doc::props::NumRef { num: list, level: 0 });
+        let unused = d.add_part(PartKind::TextBox, Document::from_text("Unrelated numbered part").body);
+        d.para_mut(StoryRef::Part(unused), &Path::top(0)).unwrap().props.numbering = Some(wordcraft_doc::props::NumRef { num: list, level: 0 });
+        with_probe_ctx(&d, |ctx| {
+            MEASURE_COUNTS.with(|v| v.borrow_mut().clear());
+            let first = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+            let before = MEASURE_COUNTS.with(|v| v.borrow().clone());
+            assert!(first.1 < 2000.0);
+            assert_eq!(before, [1]);
+            for _ in 0..=wordcraft_doc::BoxBudget::MAX_NESTED {
+                assert!(ctx.boxes.enter(obj.text_box().unwrap()));
+                ctx.boxes.leave();
+            }
+            let actual_total = ctx.boxes.total();
+            assert!(actual_total > wordcraft_doc::BoxBudget::MAX_NESTED);
+            for _ in 0..4 {
+                assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), first);
+            }
+            assert_eq!(MEASURE_COUNTS.with(|v| v.borrow().clone()), before, "unrelated numbering does not disable static fitting reuse");
+            assert_eq!(ctx.boxes.total(), actual_total);
+        });
+    }
+
+    #[test]
+    fn floating_active_keeps_guards() {
+        let (d, root, obj) = floating_doc("Original cycle guard");
+        with_probe_ctx(&d, |ctx| {
+            MEASURE_COUNTS.with(|v| v.borrow_mut().clear());
+            let expected = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+            assert!(expected.1 < 2000.0);
+            assert!(ctx.boxes.enter(root));
+            let total = ctx.boxes.total();
+            ctx.eq_count = 7;
+            assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), (240.0, 2000.0), "an active owner must still reject its cycle");
+            assert_eq!(ctx.boxes.total(), total);
+            assert_eq!(ctx.eq_count, 7);
+            assert_eq!(ctx.measure_depth, 0);
+            assert!(ctx.boxes.inside());
+            ctx.boxes.leave();
+            let before = MEASURE_COUNTS.with(|v| v.borrow().clone());
+            assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), expected);
+            assert_eq!(MEASURE_COUNTS.with(|v| v.borrow().clone()), before, "nested rejection must not overwrite the outer cache");
+        });
+    }
+
+    #[test]
+    fn floating_page_stays_fresh() {
+        let (mut d, root, mut obj) = floating_doc("");
+        d.insert_object(
+            &Pos::new(StoryRef::Part(root), Path::top(0), 0),
+            InlineObject::Field { instr: "PAGE".into(), result: "1".into(), locked: false, dirty: false, code: false, form: String::new() },
+            &Default::default(),
+        )
+        .unwrap();
+        if let InlineObject::Shape { w, .. } = &mut obj {
+            *w = 12.0;
+        }
+        with_probe_ctx(&d, |ctx| {
+            ctx.fields.page = 1;
+            let first = fit_size(ctx, &obj, 12.0, 2000.0, 0);
+            ctx.fields.page = 1234567890;
+            let later = fit_size(ctx, &obj, 12.0, 2000.0, 0);
+            let cold = with_probe_ctx_result(&d, |fresh| {
+                fresh.fields.page = 1234567890;
+                fit_size(fresh, &obj, 12.0, 2000.0, 0)
+            });
+            let shown: Vec<_> = ctx.cache.paras.values().flat_map(|p| p.shown.iter().map(|v| v.1.as_str())).collect();
+            assert!(shown.contains(&"1") && shown.contains(&"1234567890"), "both page contexts were measured: {shown:?}");
+            assert!(first.1 > 0.0);
+            assert_eq!(later, cold, "the static scalar key must not reuse a different page's extent");
+        });
+    }
+
+    fn with_probe_ctx_result<T>(d: &Document, f: impl FnOnce(&mut Ctx) -> T) -> T {
+        let mut result = None;
+        with_probe_ctx(d, |ctx| result = Some(f(ctx)));
+        result.unwrap()
+    }
+
+    #[test]
+    fn floating_outline_is_caller() {
+        use wordcraft_doc::props::Rgb;
+        let (d, _, obj) = floating_doc("Original outline");
+        with_probe_ctx(&d, |ctx| {
+            let mut narrow = obj.clone();
+            let mut wide = obj.clone();
+            for (o, width) in [(&mut narrow, 1.0), (&mut wide, 7.0)] {
+                if let InlineObject::Shape { stroke, stroke_width, .. } = o {
+                    *stroke = Some(Rgb(20, 60, 100));
+                    *stroke_width = width;
+                }
+            }
+            let a = fit_size(ctx, &narrow, 240.0, 2000.0, 0);
+            let b = fit_size(ctx, &wide, 240.0, 2000.0, 0);
+            assert!((b.1 - a.1 - 6.0).abs() < 0.001, "cache content extent, not caller outline");
+            assert_eq!(fit_size(ctx, &narrow, 240.0, 2000.0, 0), a);
+        });
+    }
+
+    #[test]
+    fn floating_direct_is_separate() {
+        use wordcraft_doc::para::Anchor;
+        use wordcraft_doc::props::Rgb;
+        let (mut d, root, direct) = floating_doc("Original ownership");
+        let child = InlineObject::Shape {
+            kind: ShapeKind::Rectangle,
+            w: 20.0,
+            h: 20.0,
+            fill: Some(Rgb(25, 73, 137)),
+            stroke: None,
+            stroke_width: 0.0,
+            float: Float { wrap: Wrap::InFrontOfText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, y: 500.0, ..Default::default() },
+            story: None,
+            effects: Default::default(),
+            freeform: None,
+            extra: Default::default(),
+        };
+        d.insert_object(&Pos::new(StoryRef::Part(root), Path::top(0), 0), child, &Default::default()).unwrap();
+        let mut turned = direct.clone();
+        turned.float_mut().unwrap().rot = 90.0;
+        let a = with_probe_ctx_result(&d, |ctx| fit_size(ctx, &direct, 240.0, 2000.0, 0));
+        let b = with_probe_ctx_result(&d, |ctx| fit_size(ctx, &turned, 240.0, 2000.0, 0));
+        assert!(a.1 < 500.0 && b.1 >= 520.0);
+        for order in [[(&direct, a), (&turned, b)], [(&turned, b), (&direct, a)]] {
+            with_probe_ctx(&d, |ctx| {
+                for (obj, expected) in order.into_iter().cycle().take(4) {
+                    assert_eq!(fit_size(ctx, obj, 240.0, 2000.0, 0), expected);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn floating_widths_stay_distinct() {
+        let text = "Original width-sensitive content ".repeat(8);
+        let (d, _, obj) = floating_doc(&text);
+        let a = with_probe_ctx_result(&d, |ctx| fit_size(ctx, &obj, 24.0, 2000.0, 0));
+        let b = with_probe_ctx_result(&d, |ctx| fit_size(ctx, &obj, 240.0, 2000.0, 0));
+        assert!(a.1 > b.1);
+        with_probe_ctx(&d, |ctx| {
+            for (width, expected) in [(24.0, a), (240.0, b), (24.0, a), (240.0, b)] {
+                assert_eq!(fit_size(ctx, &obj, width, 2000.0, 0), expected);
+            }
+        });
+    }
+
+    #[test]
+    fn floating_grid_keeps_context() {
+        let (d, _, obj) = floating_doc("Original grid context");
+        with_probe_ctx(&d, |ctx| {
+            MEASURE_COUNTS.with(|v| v.borrow_mut().clear());
+            let plain = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+            assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), plain);
+            assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 1), plain);
+            assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 1), plain);
+            ctx.grid = crate::para::Grid { line: Some(40.0), ..Default::default() };
+            let snapped = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+            assert!(snapped.1 > plain.1);
+            assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), snapped);
+            ctx.grid = Default::default();
+            assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), plain);
+            assert_eq!(MEASURE_COUNTS.with(|v| v.borrow().clone()), [1, 1, 1], "separate depth/grid contexts each measure once");
+        });
+    }
+
+    #[test]
+    fn floating_nested_keeps_budget() {
+        let (mut d, root, obj) = floating_doc("Original outer");
+        let leaf = d.add_part(PartKind::TextBox, Document::from_text("Original inline leaf").body);
+        d.parts.get_mut(&leaf).unwrap().body = TextBody { auto_fit: true, inset: Some([0; 4]), ..Default::default() };
+        d.insert_object(&Pos::new(StoryRef::Part(root), Path::top(0), 0), inline_shape(leaf, 180.0), &Default::default()).unwrap();
+        let parent = d.add_part(PartKind::TextBox, vec![]);
+        let expected = with_probe_ctx_result(&d, |ctx| fit_size(ctx, &obj, 240.0, 2000.0, 0));
+        for nest in [Nest::ActualBox, Nest::Probe] {
+            with_probe_ctx(&d, |ctx| {
+                match nest {
+                    Nest::ActualBox => assert!(ctx.boxes.enter(parent)),
+                    Nest::Probe => ctx.measure_depth = 1,
+                }
+                let before = (ctx.boxes.total(), ctx.measure_depth);
+                ctx.eq_count = 7;
+                ctx.measure_left = 1;
+                MEASURE_COUNTS.with(|v| *v.borrow_mut() = vec![0]);
+                assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), (240.0, 2000.0));
+                assert!(ctx.measure_exhausted);
+                assert_eq!((ctx.boxes.total(), ctx.measure_depth), before);
+                assert_eq!(ctx.eq_count, 7);
+                assert!(ctx.fitted.is_empty() && ctx.fitted_order.is_empty());
+                match nest {
+                    Nest::ActualBox => ctx.boxes.leave(),
+                    Nest::Probe => ctx.measure_depth = 0,
+                }
+                assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), expected, "exhausted nested work must not poison a fresh outer result");
+                let counts = MEASURE_COUNTS.with(|v| v.borrow().clone());
+                assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), expected);
+                assert_eq!(MEASURE_COUNTS.with(|v| v.borrow().clone()), counts);
+            });
+        }
+    }
+
+    #[test]
+    fn floating_nested_is_not_memoed() {
+        let (mut d, _, obj) = floating_doc("Original nested context");
+        let parent = d.add_part(PartKind::TextBox, vec![]);
+        with_probe_ctx(&d, |ctx| {
+            MEASURE_COUNTS.with(|v| *v.borrow_mut() = vec![0]);
+            assert!(ctx.boxes.enter(parent));
+            ctx.measure_left = MAX_MEASURE_BOXES;
+            ctx.eq_count = 7;
+            let nested = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+            assert!(!ctx.measure_exhausted);
+            assert_eq!(ctx.boxes.total(), 1);
+            assert_eq!(ctx.eq_count, 7);
+            ctx.boxes.leave();
+            assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), nested);
+            let before = MEASURE_COUNTS.with(|v| v.borrow().clone());
+            assert_eq!(before, [1, 1], "a successful nested result must not seed the outer cache");
+            assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), nested);
+            assert_eq!(MEASURE_COUNTS.with(|v| v.borrow().clone()), before);
+        });
+    }
+
+    #[test]
+    fn floating_inline_state_changes() {
+        let (mut d, root, obj) = floating_doc("");
+        let leaf = d.add_part(PartKind::TextBox, Document::from_text("Original inline state").body);
+        d.parts.get_mut(&leaf).unwrap().body = TextBody { auto_fit: true, inset: Some([0; 4]), ..Default::default() };
+        for owner in [Pos::new(StoryRef::Part(root), Path::top(0), 0), Pos::body(0, 0)] {
+            d.insert_object(&owner, inline_shape(leaf, 180.0), &Default::default()).unwrap();
+        }
+        let carrier = d.para(StoryRef::Body, &Path::top(0)).unwrap();
+        for seed_first in [false, true] {
+            with_probe_ctx(&d, |ctx| {
+                let first = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+                let before = ctx.fitted_order.clone();
+                ctx.grid = crate::para::Grid { line: Some(40.0), ..Default::default() };
+                assert_eq!(ctx.fitted_boxes(carrier).len(), 1);
+                assert!(ctx.fitted_order.starts_with(&before));
+                let seeded = ctx.fitted_order.clone();
+                let wide = if seed_first { Some(fit_size(ctx, &obj, 240.0, 2000.0, 0)) } else { None };
+                ctx.grid = Default::default();
+                let later = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+                let cold = with_probe_ctx_result(&d, |fresh| {
+                    fresh.grid = crate::para::Grid { line: Some(40.0), ..Default::default() };
+                    assert_eq!(fresh.fitted_boxes(carrier).len(), 1);
+                    fresh.grid = Default::default();
+                    fit_size(fresh, &obj, 240.0, 2000.0, 0)
+                });
+                assert!(cold.1 > first.1, "the inline cache is a measurement input: {first:?} {cold:?}");
+                assert_eq!(later, cold, "outer memoization must retain existing inline-cache context");
+                ctx.grid = crate::para::Grid { line: Some(40.0), ..Default::default() };
+                let after = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+                if let Some(wide) = wide {
+                    assert_eq!(after, wide);
+                }
+                ctx.grid = Default::default();
+                assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), cold);
+                assert_eq!(ctx.fitted_order, seeded, "probes retain the persistent prefix");
+            });
+        }
+    }
+    #[test]
+    fn floating_linked_keeps_context() {
+        let (mut d, root, obj) = floating_doc("");
+        let head = d.add_part(PartKind::TextBox, Document::from_text("Original linked context").body);
+        let tail = d.add_part(PartKind::TextBox, Document::from_text("").body);
+        d.parts.get_mut(&head).unwrap().body.next = Some(tail);
+        d.insert_object(&Pos::new(StoryRef::Part(root), Path::top(0), 0), inline_shape(head, 180.0), &Default::default()).unwrap();
+        d.insert_object(&Pos::body(0, 0), shape(tail, 180.0), &Default::default()).unwrap();
+        for seed_first in [false, true] {
+            with_probe_ctx(&d, |ctx| {
+                if seed_first {
+                    assert!(chain_share(ctx, head, 0).is_some());
+                }
+                let first = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+                let saved = std::mem::take(&mut ctx.chains);
+                ctx.grid = crate::para::Grid { line: Some(40.0), ..Default::default() };
+                assert!(chain_share(ctx, head, 0).is_some());
+                ctx.grid = Default::default();
+                MEASURE_COUNTS.with(|v| v.borrow_mut().clear());
+                let temporary = fit_size(ctx, &obj, 240.0, 2000.0, 0);
+                let cold = with_probe_ctx_result(&d, |fresh| {
+                    fresh.grid = crate::para::Grid { line: Some(40.0), ..Default::default() };
+                    assert!(chain_share(fresh, head, 0).is_some());
+                    fresh.grid = Default::default();
+                    fit_size(fresh, &obj, 240.0, 2000.0, 0)
+                });
+                assert_eq!(temporary, cold);
+                ctx.chains = saved;
+                MEASURE_COUNTS.with(|v| v.borrow_mut().clear());
+                assert_eq!(fit_size(ctx, &obj, 240.0, 2000.0, 0), first);
+                assert!(!MEASURE_COUNTS.with(|v| v.borrow().is_empty()), "replaced flow maps cannot reuse a floating extent");
+            });
+        }
     }
 }
 
