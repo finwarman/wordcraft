@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use wordcraft_doc::numbering::{Counters, Level};
 use wordcraft_doc::para::{Anchor, Float, FloatAlign, InlineObject, Wrap, WrapText};
-use wordcraft_doc::props::{Border, CharProps, HeightRule, Rgb, TableFloat, TextDirection};
+use wordcraft_doc::props::{Border, BorderStyle, CharProps, HeightRule, Rgb, TableFloat, TextDirection};
 use wordcraft_doc::section::{HeaderSet, SectionProps, SectionStart};
 use wordcraft_doc::{Block, Blocks, Document, Paragraph, Path, StoryRef};
 use wordcraft_geom::{Point, Rect, Spin};
@@ -3978,6 +3978,44 @@ fn next_first_line(ctx: &mut Ctx, block: usize, width: f32, depth: usize) -> f32
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct RuleBorderKey {
+    style: BorderStyle,
+    width: u32,
+    color: Option<Rgb>,
+    space: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct RuleEdgeKey {
+    geometry: (u32, u32, u32),
+    border: RuleBorderKey,
+}
+
+fn border_float_bits(value: f32) -> Option<u32> {
+    if value.is_nan() {
+        return None;
+    }
+    Some(if value == 0.0 { 0 } else { value.to_bits() })
+}
+
+fn rule_edge_key(geometry: (u32, u32, u32), border: Border) -> Option<RuleEdgeKey> {
+    Some(RuleEdgeKey {
+        geometry,
+        border: RuleBorderKey {
+            style: border.style,
+            width: border_float_bits(border.width)?,
+            color: border.color,
+            space: border_float_bits(border.space)?,
+        },
+    })
+}
+
+fn keep_rule_edge(edges: &mut HashSet<RuleEdgeKey>, geometry: (u32, u32, u32), border: Border) -> bool {
+    // NaN-bearing Borders are not equal under PartialEq, including to themselves.
+    rule_edge_key(geometry, border).is_none_or(|key| edges.insert(key))
+}
+
 struct MergeBand {
     edge: table::MergeEdge,
     bottom: f32,
@@ -3996,14 +4034,14 @@ fn close_merge_bands(pb: &mut PageBuilder, bands: &mut HashMap<(usize, usize), M
         .items
         .iter()
         .filter_map(|it| match it {
-            Placed::Rule { x0, x1, y0, y1, .. } if (y0 - y1).abs() < 0.01 => Some((x0.to_bits(), x1.to_bits(), y0.to_bits())),
+            Placed::Rule { x0, x1, y0, y1, border } if (y0 - y1).abs() < 0.01 => rule_edge_key((x0.to_bits(), x1.to_bits(), y0.to_bits()), *border),
             _ => None,
         })
         .collect();
     for (_, band) in bands.drain() {
         let edge = band.edge;
         if let Some(border) = edge.bottom
-            && edges.insert((edge.x0.to_bits(), edge.x1.to_bits(), band.bottom.to_bits()))
+            && keep_rule_edge(&mut edges, (edge.x0.to_bits(), edge.x1.to_bits(), band.bottom.to_bits()), border)
         {
             pg.items.push(Placed::Rule { x0: edge.x0, x1: edge.x1, y0: band.bottom, y1: band.bottom, border });
         }
@@ -4108,8 +4146,8 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
                     .items
                     .iter()
                     .filter_map(|it| match it {
-                        Placed::Rule { x0, x1, y0, y1, .. } if (y0 - y1).abs() < 0.01 => {
-                            Some(((x0 + x).to_bits(), (x1 + x).to_bits(), (y0 + y).to_bits()))
+                        Placed::Rule { x0, x1, y0, y1, border } if (y0 - y1).abs() < 0.01 => {
+                            rule_edge_key(((x0 + x).to_bits(), (x1 + x).to_bits(), (y0 + y).to_bits()), *border)
                         }
                         _ => None,
                     })
@@ -4125,7 +4163,7 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
                     }
                     if seen.contains(&edge.key)
                         && let Some(border) = edge.top
-                        && edges.insert((edge.x0.to_bits(), edge.x1.to_bits(), y.to_bits()))
+                        && keep_rule_edge(&mut edges, (edge.x0.to_bits(), edge.x1.to_bits(), y.to_bits()), border)
                     {
                         pg.items.push(Placed::Rule { x0: edge.x0, x1: edge.x1, y0: y, y1: y, border });
                     }
@@ -4677,3 +4715,9 @@ mod tests_styleref;
 mod tests_textbox;
 #[cfg(test)]
 mod tests_vertical;
+
+#[cfg(test)]
+mod tests_border_dedup;
+
+#[cfg(test)]
+mod tests_border_key;
