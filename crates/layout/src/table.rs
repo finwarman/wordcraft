@@ -1349,7 +1349,7 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                             b.push(Placed::Rule { x0: *x0, y0: 0.0, x1: *x1, y1: 0.0, border: *border });
                         } else if *y0 >= row.height - 0.01 {
                             a.push(Placed::Rule { x0: *x0, y0: first_height, x1: *x1, y1: first_height, border: *border });
-                            b.push(Placed::Rule { x0: *x0, y0: y0 - rest, x1: *x1, y1: y1 - rest, border: *border });
+                            b.push(Placed::Rule { x0: *x0, y0: height, x1: *x1, y1: height, border: *border });
                         } else if *y0 <= cut {
                             a.push(it.clone());
                         } else {
