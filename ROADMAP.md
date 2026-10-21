@@ -134,7 +134,7 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 ## Progress log
 
-Fitting centered picture groups can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison.
+Fitting picture groups with centered alignment can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison.
 
 - 2026-10-21: Split merged-cell continuations use the exact bottom-edge coordinate, preventing duplicate strokes after f32 rounding (#2498). Original synthetic split/place controls; no new native comparison.
 
@@ -510,7 +510,7 @@ Footer page-table height and body wrapping are corrected. Other pagination gaps 
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-21 | trivial | Fitting centered picture groups can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison. |
+| 2026-10-21 | trivial | Fitting picture groups with centered alignment can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison. |
 | 2026-10-21 | trivial | Use exact continuation bottom-rule coordinates for bitwise merged-edge deduplication (#2498). Original synthetic split/place proof; no new native comparison. |
 | 2026-10-19 | trivial | Progress log: forms protection keeps its content controls: no inserting, Properties or Remove Content Control |
 | 2026-10-19 | trivial | Progress log: text typed into a content control takes the control's formatting; localized placeholder styles recognised |

@@ -72,7 +72,7 @@ Active footnote and endnote text stays readable while editing (#2545). This fixe
 blocking gaps, and closing them lifts file formats, layout, stability and UI enough to take the
 full number from ~60% to ~75%. Everything else is depth on the way to full parity.
 
-Fitting centered picture groups can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison.
+Fitting picture groups with centered alignment can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison.
 
 ## By kind
 
@@ -110,7 +110,7 @@ Merged-cell continuation bottom strokes no longer duplicate after f32 rounding (
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-21 | trivial | Fitting centered picture groups can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison. |
+| 2026-10-21 | trivial | Fitting picture groups with centered alignment can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison. |
 | 2026-10-21 | trivial | Use exact continuation bottom-rule coordinates for bitwise merged-edge deduplication (#2498). Original synthetic split/place proof; no new native comparison. |
 | 2026-10-19 | trivial | Restrict Editing: with Filling in forms enforced, inserting content controls, their Properties and Remove Content Control are refused, as in Word (it greys them out), so a form's fields stay as they are and only their content is filled in |
 | 2026-10-19 | trivial | Content controls: text typed over a placeholder takes the control's own run properties (`w:sdtPr/w:rPr`, ECMA-376 §17.5.2.27), as in Word, and the placeholder style is recognised by its built-in name "Placeholder Text" whatever its localized id (German Word: `Platzhaltertext`), so entries in forms from localized Word no longer stay grey |

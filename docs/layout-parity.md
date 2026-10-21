@@ -240,8 +240,8 @@ Merged-cell continuation bottom rules use the exact continuation height, so frag
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-21 | trivial | Fitting centered picture groups can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison. |
-| 2026-10-21 | trivial | Enclose finite retained fallback horizontal-rule centerlines in fitted first-fragment bounds. Preserve owner routing, line splits, ink and fitting centered groups. Independent model bounds controls; no new native Word claim. |
+| 2026-10-21 | trivial | Fitting picture groups with centered alignment can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison. |
+| 2026-10-21 | trivial | Enclose finite retained fallback horizontal-rule centerlines in fitted first-fragment bounds. Preserve owner routing, line splits, ink and fitting centered groups. Independent controls for model bounds; no new native Word claim. |
 | 2026-10-21 | trivial | Isolate qualified horizontal paragraph-border ownership, fragment routing and bounded terminal-cell extension from merged-edge closure. Preserve original emitter/spacing/terminal/fallback controls and limits; no new native Word comparison. |
 | 2026-10-20 | trivial | Terminal horizontal paragraph-border prefixes in validated plain top-level body cells share owner routing and top-border spacing. Centered, merged, nested, clipped and ambiguous cases retain fallbacks; original layout controls, no new native Word claim. |
 | 2026-10-19 | trivial | Bounded prototype attributes horizontal paragraph-border prefixes followed by flow content, including recognizable continuation ranges. Terminal, ambiguous and centered runs and crossing-cut bottom rules retain prior behavior; synthetic controls exercise the bounded cases and native Word comparison remains unverified. |
