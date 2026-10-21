@@ -1407,6 +1407,25 @@ fn split_row_inner(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> 
                 }
             }
         }
+        // Generic retained rules bound the frame; metadata-owned rules keep their routes.
+        for (index, it) in items.iter().enumerate() {
+            if let Placed::Rule { x0, y0, x1, y1, .. } = it
+                && [x0, y0, x1, y1].iter().all(|value| value.is_finite())
+                && (y0 - y1).abs() < 0.01
+                && *y0 > 0.01
+                && *y0 < row.height - 0.01
+                && *y0 <= cut
+            {
+                let source = c.items.start.saturating_add(index);
+                if c.bottom_rule == Some(source)
+                    || c.anchored_rules.iter().any(|rule| rule.item == source)
+                    || (c.center.is_none() && split_para_rule(items, splits, index, row.height - row.bottom, limit).is_some())
+                {
+                    continue;
+                }
+                kept_bottom = kept_bottom.max(*y0);
+            }
+        }
         if moved_top == f32::MAX
             && let Some(end) = c.end.filter(|e| fits(*e))
         {
@@ -1580,7 +1599,7 @@ fn split_row_inner(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> 
                         } else if c.bottom_rule == Some(source) {
                             // Keep the entire closing stroke inside each physical fragment's band.
                             let above = first_height - c.bottom_band / 2.0;
-                            let below = if c.bottom_band > 0.0 { height - c.bottom_band / 2.0 } else { y0 - rest };
+                            let below = if c.bottom_band > 0.0 { height - c.bottom_band / 2.0 } else { height };
                             a.push(Placed::Rule { x0: *x0, y0: above, x1: *x1, y1: above, border: *border });
                             bottom_rule = Some(b.len());
                             b.push(Placed::Rule { x0: *x0, y0: below, x1: *x1, y1: below, border: *border });
@@ -2537,7 +2556,7 @@ mod para_rule_controls {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(first.height, 14.0);
+        assert_eq!(first.height, 56.0);
         assert_eq!(rules(&first), vec![52.0]);
         assert_eq!(rules(&rest), vec![30.0]);
         let line_y = rest
@@ -2566,6 +2585,98 @@ mod para_rule_controls {
             })
             .unwrap();
         assert_eq!(line_y, 10.0);
+    }
+
+    fn centered_frame_row() -> RowLayout {
+        let mut items = emitted_rules(3);
+        items.insert(
+            0,
+            Placed::Image {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                media: "synthetic".into(),
+                crop: [0.0; 4],
+                story: StoryRef::Body,
+                path: Path::top(2),
+                off: 0,
+                spin: Default::default(),
+            },
+        );
+        let rect = Rect::new(0.0, 0.0, 100.0, 200.0);
+        items.push(Placed::Fill { rect, color: wordcraft_doc::props::Rgb(220, 220, 220) });
+        items.push(Placed::Cell { rect, covered: false, table: Path::top(0), row: 0, cell: 0, story: StoryRef::Body, clip: false });
+        RowLayout {
+            height: 200.0,
+            min_height: 0.0,
+            foreground: Vec::new(),
+            bottom: 4.0,
+            cells: vec![CellPart {
+                anchored_rules: Vec::new(),
+                bottom_rule: None,
+                bottom_band: 0.0,
+                valign: VAlign::Top,
+                top: 2.0,
+                items: 0..items.len(),
+                end: None,
+                merge: None,
+                center: Some(CellCenter { kind: CenterKind::Merge, offset: 0.0, height: 300.0, content: 0..items.len() }),
+            }],
+            items,
+        }
+    }
+
+    #[test]
+    fn center_rule_frame_bounds() {
+        let row = centered_frame_row();
+        let (first, rest) = split_row(&row, 70.0).unwrap();
+        for item in &first.items {
+            if let Placed::Rule { y0, y1, .. } = item
+                && y0 == y1
+            {
+                assert!(*y0 <= first.height, "retained centerline {y0} outside first frame {}", first.height);
+            }
+        }
+        assert_eq!(first.height, 56.0);
+        let rules = |part: &RowLayout| {
+            part.items
+                .iter()
+                .filter_map(|item| match item {
+                    Placed::Rule { y0, y1, border, .. } if y0 == y1 => Some((*y0, border.width)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rules(&first), [(52.0, 2.0)]);
+        assert_eq!(rules(&rest), [(30.0, 2.0)]);
+        assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 2.0)));
+        let frames: Vec<_> = first
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Cell { rect, .. } | Placed::Fill { rect, .. } => Some(rect.bottom()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames, [56.0, 56.0]);
+    }
+
+    #[test]
+    fn fitting_rule_frame_unchanged() {
+        let mut row = centered_frame_row();
+        row.min_height = 40.0;
+        row.cells[0].center = Some(CellCenter { kind: CenterKind::Merge, offset: 52.0, height: 36.0, content: 1..4 });
+        let (first, rest) = split_row(&row, 70.0).unwrap();
+        assert_eq!(first.height, 40.0);
+        let rules: Vec<_> = first
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Rule { y0, y1, .. } if y0 == y1 => Some(*y0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rules, [2.0, 38.0]);
+        assert!(!rest.items.iter().any(|item| matches!(item, Placed::Rule { .. })));
+        assert!(first.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 10.0)));
     }
 }
 
