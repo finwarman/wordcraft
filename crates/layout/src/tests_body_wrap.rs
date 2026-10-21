@@ -47,6 +47,7 @@ fn with_ctx<T>(d: &Document, f: impl FnOnce(&mut Ctx) -> T) -> T {
         pin: None,
         footer_wraps: HashMap::new(),
         header_tables: HashMap::new(),
+        frames: Default::default(),
         fitted: HashMap::new(),
         fitted_order: Vec::new(),
         measure_left: 0,

@@ -727,6 +727,8 @@ struct Ctx<'a> {
     pin: Option<Pin>,
     footer_wraps: HashMap<(usize, u32, bool), Vec<WrapArea>>,
     header_tables: HashMap<(usize, u32, bool), Vec<Rect>>,
+    /// Extents of source-stable outer floating boxes for this pass.
+    frames: textbox::FrameCache,
     /// Heights of text boxes that resize to fit their text, by (story, width), worked out once
     /// per layout ([`textbox::fitted_height`]).
     fitted: HashMap<(u32, u32), Option<f32>>,
@@ -2272,6 +2274,7 @@ fn layout_pass(
         table_keys: Vec::new(),
         prior_wraps,
         back_wraps,
+        frames: Default::default(),
         fitted: HashMap::new(),
         fitted_order: Vec::new(),
         measure_left: 0,
@@ -3486,7 +3489,8 @@ fn place_objects(
                 _ => text_box.map(|id| (id, rect)).into_iter().collect(),
             };
             for (id, rect) in boxes {
-                let items = textbox::box_items(ctx, id, rect, depth);
+                let parent = if text_box == Some(id) { Some(obj) } else { None };
+                let items = textbox::box_items(ctx, id, rect, depth, parent);
                 let layer = if float.wrap == Wrap::BehindText { &mut behind } else { &mut front };
                 layer.extend(items);
             }
