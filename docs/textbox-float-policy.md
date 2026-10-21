@@ -6,7 +6,7 @@ For direct floating, unlinked autoFit textboxes with horizontal, top-aligned tex
 
 The rule matches source story, paragraph path and byte offset. Both shape paint and hit metadata must identify the eligible source rectangle. Equal rectangles do not establish ownership. Paragraph markers must match the object count.
 
-The bounded class excludes inline parents, linked or turned boxes, center/bottom alignment, groups, nested textbox content, table-contained children, other shape kinds, outlined/effected/turned children and other wrapping modes. Children use column/paragraph anchoring without alignment overrides. Existing behavior remains for those inputs. No saved-frame fallback, shared alignment extent, measurement budget or counter rollback changes.
+The bounded class excludes inline parents, linked or turned boxes, center/bottom alignment, groups, nested textbox content, table-contained children, other shape kinds, outlined/effected/turned children and other wrapping modes. Children use column/paragraph anchoring without alignment overrides. Existing behavior remains for those inputs. Saved-frame fallback, shared alignment extent, measurement budget and counter rollback stay unchanged.
 
 Six original private native controls cover Plain, Front/Behind inside/crossing rectangles and Square wrapping. Plain and Front/Behind frames measure 17 pt; Square measures 57 pt after text displacement. The qualified matched-reader comparison retains these frame and paint distinctions. Eligible rectangles do not paint, including those inside the parent frame.
 
