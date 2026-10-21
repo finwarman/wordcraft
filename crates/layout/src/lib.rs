@@ -4677,3 +4677,6 @@ mod tests_styleref;
 mod tests_textbox;
 #[cfg(test)]
 mod tests_vertical;
+
+#[cfg(test)]
+mod tests_shading;
