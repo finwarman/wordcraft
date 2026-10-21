@@ -9889,3 +9889,88 @@ fn merge_edges_keep_hidden_style() {
     assert_eq!(l.pages.len(), 4);
     assert!(!l.pages.iter().flat_map(|p| &p.items).any(|it| matches!(it, Placed::Rule { .. })));
 }
+
+#[test]
+fn split_merge_dedups_bottom() {
+    use wordcraft_doc::props::{HeightRule, LineSpacing, VMerge};
+    const BORDER_WIDTH: f32 = 0.5;
+    const PAGE_TOP: f32 = 36.0;
+    const LONG_LINES: usize = 55;
+    for minimum in [100.0f32, 100.05] {
+        let mut d = Document::new();
+        d.last_section.page_h = 572.0;
+        d.last_section.margin_top = PAGE_TOP;
+        d.last_section.margin_bottom = PAGE_TOP;
+        let para = |lines: usize| {
+            let mut p = wordcraft_doc::Paragraph::with_text(
+                &vec!["Line"; lines].join("\n"),
+                wordcraft_doc::CharProps { font: Some("Source Sans 3".into()), size: Some(9.0), ..Default::default() },
+            );
+            p.props = ParaProps {
+                line_spacing: Some(LineSpacing::Exactly(10.0)),
+                space_before: Some(0.0),
+                space_after: Some(0.0),
+                widow_control: Some(false),
+                ..Default::default()
+            };
+            wordcraft_doc::para_block(p)
+        };
+        let border = Some(Border { width: BORDER_WIDTH, style: BorderStyle::Single, ..Default::default() });
+        let mut t = Table::new(2, 2, 300.0);
+        t.props.style = None;
+        t.props.cell_margins = Some([0.0; 4]);
+        t.props.borders = Some(Borders { top: border, bottom: border, left: border, right: border, between: border, inside_v: border });
+        t.rows[0].cells[0].props.vmerge = VMerge::Restart;
+        t.rows[0].cells[0].blocks = vec![para(1)];
+        t.rows[1].cells[0].props.vmerge = VMerge::Continue;
+        t.rows[0].cells[1].blocks = vec![para(1)];
+        t.rows[1].cells[1].blocks = vec![para(LONG_LINES)];
+        // The last row's minimum includes both border bands and is reapplied after splitting.
+        t.rows[1].props.height = Some(minimum - 2.0 * BORDER_WIDTH);
+        t.rows[1].props.height_rule = HeightRule::AtLeast;
+        d.body = vec![std::sync::Arc::new(Block::Table(t))];
+        let l = lay(&d);
+        assert_eq!(l.pages.len(), 2, "minimum {minimum}");
+        let pg = &l.pages[1];
+        let cell = pg
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Cell { table, rect, row: 1, cell: 0, .. } if table.0 == [0] => Some(*rect),
+                _ => None,
+            })
+            .unwrap();
+        assert!((cell.y - PAGE_TOP).abs() < 0.001 && (cell.h - minimum).abs() < 0.001, "{cell:?}");
+        let bottom = PAGE_TOP + minimum;
+        let rules: Vec<_> = pg
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Placed::Rule { x0, x1, y0, y1, border }
+                    if (*x0 - (cell.x - BORDER_WIDTH / 2.0)).abs() < 0.001
+                        && (*x1 - (cell.right() + BORDER_WIDTH / 2.0)).abs() < 0.001
+                        && (*y0 - bottom).abs() < 0.001
+                        && (*y1 - bottom).abs() < 0.001 =>
+                {
+                    Some((*y0, *y1, *border))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rules.len(), 1, "one visible merge bottom, minimum {minimum}: {rules:?}");
+        assert_eq!(rules[0].0.to_bits(), bottom.to_bits());
+        assert_eq!(rules[0].1.to_bits(), bottom.to_bits());
+        assert_eq!(rules[0].2.width, BORDER_WIDTH);
+        assert_eq!(rules[0].2.style, BorderStyle::Single);
+        let lines: usize = l
+            .pages
+            .iter()
+            .flat_map(|p| &p.items)
+            .filter_map(|it| match it {
+                Placed::Lines { path, l0, l1, .. } if path.0 == [0, 1, 1, 0] => Some(l1 - l0),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(lines, LONG_LINES, "all original lines survive once");
+    }
+}
