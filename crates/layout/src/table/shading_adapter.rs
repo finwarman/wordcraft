@@ -26,10 +26,13 @@ fn emitted_row() -> RowLayout {
     let mut l = crate::layout(&d, &mut crate::LayoutCache::new(), &crate::LayoutOptions::default());
     assert_eq!(l.pages.len(), 1);
     let mut items = l.pages.remove(0).items;
-    let cells: Vec<_> = items.iter().filter_map(|it| match it {
-        Placed::Cell { rect, .. } => Some(*rect),
-        _ => None,
-    }).collect();
+    let cells: Vec<_> = items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Cell { rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .collect();
     assert_eq!(cells.len(), 1);
     let frame = cells[0];
     for item in &mut items {
@@ -41,10 +44,15 @@ fn emitted_row() -> RowLayout {
 }
 
 fn fill_pair(pair: &(RowLayout, RowLayout)) -> [Vec<Rect>; 2] {
-    [&pair.0, &pair.1].map(|row| row.items.iter().filter_map(|it| match it {
-        Placed::Fill { rect, .. } => Some(*rect),
-        _ => None,
-    }).collect())
+    [&pair.0, &pair.1].map(|row| {
+        row.items
+            .iter()
+            .filter_map(|it| match it {
+                Placed::Fill { rect, .. } => Some(*rect),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 fn assert_same_pair(a: &(RowLayout, RowLayout), b: &(RowLayout, RowLayout)) {

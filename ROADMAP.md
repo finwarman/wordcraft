@@ -136,6 +136,8 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 ## Progress log
 
+- 2026-10-21: Original or adjusted center/merge metadata keeps a cell on prior fill routing. This guard covers the current split input. A prior split clears center/merge metadata. Original synthetic controls only; no new Word comparison.
+
 - 2026-10-21: Merged-edge deduplication retains rules with different Border style, width, color or spacing at the same geometry. Equal Borders still deduplicate using the existing coordinate bits. Original synthetic emitter controls; no new native comparison or border precedence policy.
 
 - 2026-10-21: Matched paragraph shading in direct horizontal body-table cells follows moved or split text; cell backgrounds keep their cell bounds. Source/model checks only; no new Word comparison.
@@ -516,8 +518,8 @@ Footer page-table height and body wrapping are corrected. Other pagination gaps 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | trivial | Preserve per-cell center/merge exclusions during shading adjustment. Current-input metadata scope; original synthetic controls, no new native comparison. |
 | 2026-10-21 | trivial | Preserve distinct Border values during merged-edge deduplication. Original synthetic emitter controls; geometry bit policy unchanged. No new native comparison. |
-
 | 2026-10-21 | minor | Bounded paragraph shading ownership across table-row fragments; source/model coverage only |
 | 2026-10-21 | trivial | Fitting picture groups with centered alignment can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison. |
 | 2026-10-21 | trivial | Use exact continuation bottom-rule coordinates for bitwise merged-edge deduplication (#2498). Original synthetic split/place proof; no new native comparison. |

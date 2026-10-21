@@ -1176,11 +1176,7 @@ fn split_para_fill(rect: Rect, item: &Placed, split: usize, shift: f32) -> Optio
 // Fragment adjustment clears center metadata. Admission still uses the input cell owner.
 fn shade_origin(part: &CellPart, original: Option<&CellPart>) -> bool {
     original.is_some_and(|original| {
-        original.items == part.items
-            && original.center.is_none()
-            && original.merge.is_none()
-            && part.center.is_none()
-            && part.merge.is_none()
+        original.items == part.items && original.center.is_none() && original.merge.is_none() && part.center.is_none() && part.merge.is_none()
     })
 }
 
@@ -1530,11 +1526,8 @@ fn split_row_origin(row: &RowLayout, cut: f32, original: &[CellPart]) -> Option<
     let mut parts = Vec::with_capacity(cells.len());
     for (cell_index, (((c, items), splits), &shift)) in row.cells.iter().zip(&cells).zip(&splits).zip(&shifts).enumerate() {
         let start = b.len();
-        let shade_cell = if original.len() == row.cells.len() && shade_origin(c, original.get(cell_index)) {
-            shade_cell(items, c, row.height)
-        } else {
-            None
-        };
+        let shade_cell =
+            if original.len() == row.cells.len() && shade_origin(c, original.get(cell_index)) { shade_cell(items, c, row.height) } else { None };
         let center = c.center.as_ref().filter(|v| v.height <= plain_height + 0.01);
         for (index, (it, &split)) in items.iter().zip(splits).enumerate() {
             if let Some(center) = center

@@ -4723,4 +4723,5 @@ mod tests_border_dedup;
 mod tests_border_key;
 
 #[cfg(test)]
+#[path = "tests_shading/mod.rs"]
 mod tests_shading;

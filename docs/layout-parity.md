@@ -26,6 +26,8 @@ Matched paragraph shading in direct horizontal body-table cells follows moved or
 
 Recognition requires the paragraph shading color and emitted line geometry inside one row-contained body-cell frame. Nested, turned, clipped, foreign-story, ambiguous and out-of-row frames retain prior geometric routing. This does not establish native Word, corpus or general table parity.
 
+Original or adjusted center/merge metadata keeps a cell on prior fill routing. This guard covers the current split input. A prior split clears center/merge metadata. Original synthetic controls only; no new Word comparison.
+
 ✅ matches Word as far as our tests show · 🟡 implemented, differs or untested against Word · ❌ missing
 
 | Feature | State | Evidence / gap | Hours |
@@ -250,8 +252,8 @@ Merged-edge deduplication retains rules with different Border style, width, colo
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | trivial | Preserve per-cell center/merge exclusions during shading adjustment. Current-input metadata scope; original synthetic controls, no new native comparison. |
 | 2026-10-21 | trivial | Preserve distinct Border values during merged-edge deduplication. Original synthetic emitter controls; geometry bit policy unchanged. No new native comparison. |
-
 | 2026-10-21 | minor | Bounded paragraph shading ownership across table-row fragments; source/model coverage only |
 | 2026-10-21 | trivial | Fitting picture groups with centered alignment can stay in the first row fragment. Plain paragraphs and unrotated inline pictures require a baseline split and real unselected sibling text on both fragments. Other content retains the prior split path; no new native Word comparison. |
 | 2026-10-21 | trivial | Enclose finite retained fallback horizontal-rule centerlines in fitted first-fragment bounds. Preserve owner routing, line splits, ink and fitting centered groups. Independent controls for model bounds; no new native Word claim. |

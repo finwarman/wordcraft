@@ -272,7 +272,8 @@ fn shade_snapshot(item: &Placed) -> serde_json::Value {
 #[test]
 fn shading_main_fallback_models() {
     for kind in [ShadeFallback::Nested, ShadeFallback::Turned, ShadeFallback::Clipped, ShadeFallback::Merged, ShadeFallback::Header] {
-        let l = shade_layout(&fallback_doc(kind));
+        let d = fallback_doc(kind);
+        let l = shade_layout(&d);
         assert!(!l.pages.is_empty());
         let items: Vec<_> = l.pages.iter().flat_map(|page| page.items.iter().chain(&page.header)).collect();
         match kind {
@@ -293,7 +294,200 @@ fn shading_main_fallback_models() {
             })
             .collect();
         eprintln!("SHADE_FALLBACK {kind:?} {}", serde_json::to_string(&snapshot).unwrap());
+        assert_fallback_route(kind, &d, &l);
     }
 }
 
-mod adapter;
+const MODEL_LINE_COUNT: usize = 20;
+const CELL_TOP_MARGIN: f32 = 4.0;
+const CELL_SIDE_MARGIN: f32 = 6.0;
+const SHADE_EPS: f32 = 0.01;
+
+// Pin source placement and legacy geometric paint, not a new native Word policy.
+fn assert_fallback_route(kind: ShadeFallback, d: &Document, l: &DocLayout) {
+    use wordcraft_doc::props::TextDirection;
+    let (items, story) = if matches!(kind, ShadeFallback::Header) {
+        (&l.pages[0].header, StoryRef::Part(d.last_section.headers.default.unwrap()))
+    } else {
+        (&l.pages[0].items, StoryRef::Body)
+    };
+    let table_path = if matches!(kind, ShadeFallback::Nested) { vec![0, 0, 0, 0] } else { vec![0] };
+    let mut para_path = table_path.clone();
+    para_path.extend([0, 0, 0]);
+    let cells: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            Placed::Cell { rect, table, row: 0, cell: 0, story: actual, covered, clip } if table.0 == table_path && *actual == story => {
+                Some((*rect, *covered, *clip))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cells.len(), 1, "one source cell for {kind:?}");
+    let (cell, covered, clip) = cells[0];
+    assert!(!covered);
+    assert_eq!(clip, matches!(kind, ShadeFallback::Clipped));
+    let owners: Vec<_> = items
+        .iter()
+        .filter(|item| {
+            matches!(item,
+                Placed::Lines { story: actual, path, para, .. }
+                if *actual == story && path.0 == para_path && para.rp.shading == Some(SHADE)
+            )
+        })
+        .collect();
+    assert_eq!(owners.len(), 1, "one source paragraph for {kind:?}");
+    let Placed::Lines { l0, l1, x, y, turn, .. } = owners[0] else { panic!("expected source lines") };
+    assert_eq!(*l0, 0);
+    assert!((*y - cell.y - CELL_TOP_MARGIN).abs() < SHADE_EPS);
+    let expected = match kind {
+        ShadeFallback::Nested => {
+            assert_eq!((*l0, *l1), (0, 7));
+            assert_eq!(*turn, TextDirection::Horizontal);
+            assert!((cell.y - PAGE_MARGIN).abs() < SHADE_EPS);
+            assert!((cell.h - (PAGE_HEIGHT - 2.0 * PAGE_MARGIN)).abs() < SHADE_EPS);
+            assert!((*x - cell.x - CELL_SIDE_MARGIN).abs() < SHADE_EPS);
+            // The generic rectangle reaches the cut, beyond the retained line ink.
+            let h = cell.bottom() - y;
+            assert!(h > LINE_HEIGHT * *l1 as f32);
+            Rect::new(*x, *y, TEXT_WIDTH, h)
+        }
+        ShadeFallback::Turned => {
+            assert_eq!((*l0, *l1), (0, MODEL_LINE_COUNT));
+            assert_eq!(*turn, TextDirection::Down);
+            assert!((*x - (cell.right() - CELL_SIDE_MARGIN)).abs() < SHADE_EPS);
+            assert_eq!(l.pages.len(), 1);
+            let bounds = owners[0].turned_bounds().unwrap();
+            assert!((bounds.w - LINE_HEIGHT * MODEL_LINE_COUNT as f32).abs() < SHADE_EPS);
+            bounds
+        }
+        ShadeFallback::Clipped | ShadeFallback::Merged | ShadeFallback::Header => {
+            assert_eq!((*l0, *l1), (0, MODEL_LINE_COUNT));
+            assert_eq!(*turn, TextDirection::Horizontal);
+            assert!((*x - cell.x - CELL_SIDE_MARGIN).abs() < SHADE_EPS);
+            match kind {
+                ShadeFallback::Clipped => {
+                    assert_eq!(l.pages.len(), 1);
+                    assert!((cell.h - 60.0).abs() < SHADE_EPS);
+                    assert!(y + LINE_HEIGHT * MODEL_LINE_COUNT as f32 > cell.bottom());
+                }
+                ShadeFallback::Merged => {
+                    assert_eq!(l.pages.len(), 2);
+                    assert!((cell.h - (CELL_TOP_MARGIN + LINE_HEIGHT * MODEL_LINE_COUNT as f32)).abs() < SHADE_EPS);
+                    assert!(l.pages[1].items.iter().any(|item| matches!(item,
+                        Placed::Cell { story: StoryRef::Body, table, row: 1, cell: 0, covered: true, clip: false, rect }
+                        if table.0 == [0] && (rect.y - PAGE_MARGIN).abs() < SHADE_EPS
+                            && (rect.h - LINE_HEIGHT * MODEL_LINE_COUNT as f32).abs() < SHADE_EPS
+                    )));
+                    assert!(!l.pages[1].items.iter().any(|item| matches!(item, Placed::Lines { .. } | Placed::Fill { .. })));
+                }
+                ShadeFallback::Header => {
+                    assert_eq!(l.pages.len(), 1);
+                    assert!((cell.y - d.last_section.header).abs() < SHADE_EPS);
+                    assert!((cell.h - (CELL_TOP_MARGIN + LINE_HEIGHT * MODEL_LINE_COUNT as f32)).abs() < SHADE_EPS);
+                    assert!(!l.pages[0].items.iter().any(|item| matches!(item,
+                        Placed::Lines { story: actual, path, .. } if *actual == story && path.0 == para_path
+                    )));
+                }
+                _ => panic!("expected horizontal fallback"),
+            }
+            Rect::new(*x, *y, TEXT_WIDTH, LINE_HEIGHT * MODEL_LINE_COUNT as f32)
+        }
+    };
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(item,
+                Placed::Fill { rect, color } if *color == SHADE && same_rect(*rect, expected)
+            ))
+            .count(),
+        1,
+        "exact fallback paragraph paint for {kind:?}: {expected:?}"
+    );
+}
+
+#[test]
+fn shade_continues_above_rule() {
+    const BOTTOM_MARGIN: f32 = 6.0;
+    const BOTTOM_WIDTH: f32 = 2.0;
+    for page_height in [PAGE_HEIGHT, 1000.0] {
+        let mut d = shade_doc(ShadeFlow::Partial, ShadeKind::Paragraph);
+        d.last_section.page_h = page_height;
+        let Block::Table(t) = std::sync::Arc::make_mut(&mut d.body[0]) else { panic!("expected original table") };
+        assert_eq!(t.rows.len(), 1, "the split row is the table's last row");
+        t.props.cell_margins = Some([CELL_TOP_MARGIN, CELL_SIDE_MARGIN, BOTTOM_MARGIN, CELL_SIDE_MARGIN]);
+        t.props.borders.as_mut().unwrap().bottom = Some(Border::single(BOTTOM_WIDTH));
+        let l = shade_layout(&d);
+        if page_height == PAGE_HEIGHT {
+            assert!(l.pages.len() > 1);
+        } else {
+            assert_eq!(l.pages.len(), 1);
+        }
+        assert_paragraph_fill(&l);
+        let mut next = 0;
+        for (page_index, page) in l.pages.iter().enumerate() {
+            let owners: Vec<_> = page
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Placed::Lines { story: StoryRef::Body, path, l0, l1, x, y, .. } if path.0 == [0, 0, 0, 0] => Some((*l0, *l1, *x, *y)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(owners.len(), 1);
+            let (l0, l1, x, y) = owners[0];
+            assert_eq!(l0, next);
+            assert!(l1 > l0);
+            if page_index > 0 {
+                assert!(l0 > 0, "real paragraph continuation");
+            }
+            next = l1;
+            let cells: Vec<_> = page
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Placed::Cell { story: StoryRef::Body, table, row: 0, cell: 0, covered: false, clip: false, rect } if table.0 == [0] => {
+                        Some(*rect)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cells.len(), 1);
+            let cell = cells[0];
+            assert!((y - cell.y - CELL_TOP_MARGIN).abs() < SHADE_EPS);
+            let fills: Vec<_> = page
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Placed::Fill { rect, color } if *color == SHADE => Some(*rect),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(fills.len(), 1);
+            let fill = fills[0];
+            assert!(same_rect(fill, Rect::new(x, y, TEXT_WIDTH, LINE_HEIGHT * (l1 - l0) as f32)));
+            assert!(fill.x >= cell.x && fill.right() <= cell.right() + SHADE_EPS);
+            assert!(fill.y >= cell.y && fill.bottom() + BOTTOM_MARGIN <= cell.bottom() + SHADE_EPS);
+            let closing: Vec<_> = page
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Placed::Rule { x0, y0, x1, y1, border }
+                        if (x0 - cell.x).abs() < SHADE_EPS
+                            && (x1 - cell.right()).abs() < SHADE_EPS
+                            && (y0 - y1).abs() < SHADE_EPS
+                            && (y0 - cell.bottom()).abs() < SHADE_EPS
+                            && (border.width - BOTTOM_WIDTH).abs() < SHADE_EPS
+                            && border.is_visible() =>
+                    {
+                        Some(*y0)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(closing.len(), 1, "closing rule on every physical fragment");
+            assert!(fill.bottom() < closing[0]);
+        }
+        assert_eq!(next, MODEL_LINE_COUNT);
+    }
+}

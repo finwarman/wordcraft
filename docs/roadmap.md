@@ -10,6 +10,8 @@ Opus 5.5 agent wall-clock.
 
 ## Current focus (toward beta, ~150–230 h)
 
+Original or adjusted center/merge metadata keeps a cell on prior fill routing. This guard covers the current split input. A prior split clears center/merge metadata. Original synthetic controls only; no new Word comparison.
+
 Matched paragraph shading in direct horizontal body-table cells follows moved or split text; cell backgrounds keep their cell bounds. Source/model checks only; no new Word comparison. The pagination gap remains open.
 
 1. **Merge or close the ~45 open PRs** before starting overlapping work: many close catalog gaps
@@ -78,6 +80,7 @@ languages, screen-reader access, ecosystem decisions (VBA, add-ins, cloud), an i
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | trivial | Preserve per-cell center/merge exclusions during shading adjustment. Current-input metadata scope; original synthetic controls, no new native comparison. |
 | 2026-10-21 | minor | Bounded paragraph shading ownership across table-row fragments; source/model coverage only |
 | 2026-10-18 | trivial | M6: Manage Sources imports Word's `Sources.xml` (#2640) |
 | 2026-10-12 | minor | Czech proofing review: short-word splits rank after deletion, NOSUGGEST excludes suggestions while accepting typed forms, affix comments apply only to headers, ratios keep spaces and repeated-word messages use Czech quotes; synthetic engine end-to-end and latency checks |
