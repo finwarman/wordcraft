@@ -115,7 +115,8 @@ fn continuation_reindexes_policy() {
     assert_eq!(rel.split, [0, 2]);
     let ordinary = (Rect::new(120.0, 0.0, 20.0, 1000.0), false, None, WrapText::BothSides);
     let filtered = (Rect::new(900.0, 0.0, 20.0, 1000.0), false, None, WrapText::BothSides);
-    let next = continued_exclusions(&rel, &[ordinary, filtered], 0.0, 0.0, 30.0, TEST_WIDTH);
+    let here = BodyExclusions::wait(rel_exclusions(&[ordinary, filtered], 0.0, -30.0));
+    let next = continued_exclusions(&rel, &here, 30.0, TEST_WIDTH);
     assert_eq!(next.areas.len(), 3);
     assert_eq!(next.split, [1], "retained Split is reindexed; even a tall new area starts Wait");
     assert_eq!((next.areas[0].bottom, next.areas[1].bottom, next.areas[2].top), (30.0, 30.0, 30.0));
@@ -382,4 +383,194 @@ fn replay_counts_and_state_hold() {
             assert!(cold.pages.iter().all(|p| p.footer.iter().any(|it| matches!(it, Placed::Cell { .. }))));
         }
     }
+}
+
+// A later anchor must wrap text already continued onto its page during backward replay.
+fn relay_later_doc(anchor: Anchor, wrap: Wrap) -> (Document, u32) {
+    let mut d = Document::from_text(&format!("{}\nLater anchor", "original words ".repeat(80)));
+    d.settings.compat_mode = 15;
+    d.styles.default_chr.font = Some("Source Sans 3".into());
+    d.styles.default_chr.size = Some(12.0);
+    d.last_section.page_w = 300.0;
+    d.last_section.page_h = 300.0;
+    d.last_section.margin_left = 30.0;
+    d.last_section.margin_right = 30.0;
+    d.last_section.margin_top = 30.0;
+    d.last_section.margin_bottom = 30.0;
+    for i in 0..2 {
+        let p = d.para_mut(StoryRef::Body, &Path::top(i)).unwrap();
+        p.props.space_before = Some(0.0);
+        p.props.space_after = Some(0.0);
+        p.props.line_spacing = Some(LineSpacing::Exactly(12.0));
+    }
+    let id = d.add_part(PartKind::TextBox, vec![para_block(Paragraph::with_text("Frame", Default::default()))]);
+    d.parts.get_mut(&id).unwrap().body.inset = Some([0; 4]);
+    let mut o = shape(Some(id), wrap, 100.0, 60.0);
+    let float = o.float_mut().unwrap();
+    float.v_rel = anchor;
+    float.y = -500.0;
+    d.insert_object(&Pos::body(1, 0), o, &Default::default()).unwrap();
+    (d, id)
+}
+
+fn relay_ranges(d: &Document, laid: &DocLayout) {
+    for index in 0..2 {
+        let p = d.para(StoryRef::Body, &Path::top(index)).unwrap();
+        let mut coverage = vec![0; p.len()];
+        for item in laid.pages.iter().flat_map(|p| &p.items) {
+            let Placed::Lines { story: StoryRef::Body, path, para, l0, l1, .. } = item else { continue };
+            if *path != Path::top(index) {
+                continue;
+            }
+            for line in &para.lines[*l0..*l1] {
+                for n in &mut coverage[line.start..line.stop] {
+                    *n += 1;
+                }
+            }
+        }
+        assert!(coverage.iter().all(|n| *n == 1), "body {index}: ranges conserved");
+    }
+}
+
+fn relay_page_rows(laid: &DocLayout, page: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for it in &laid.pages[page].items {
+        let Placed::Lines { story: StoryRef::Body, path, para, l0, l1, x, y, .. } = it else { continue };
+        for line in &para.lines[*l0..*l1] {
+            out.push(format!(
+                "{path:?}:{}:{}:{:?}:{:?}:{:?}",
+                line.start,
+                line.stop,
+                x.to_bits(),
+                (y + line.top - para.lines[*l0].top).to_bits(),
+                line.xs.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+            ));
+        }
+    }
+    out
+}
+
+fn assert_later_wrap(anchor: Anchor) {
+    let (d, id) = relay_later_doc(anchor, Wrap::Square);
+    let mut cache = LayoutCache::new();
+    let (laid, stats) = counted_layout(&d, &mut cache);
+    let object = laid.find_object(0, |o| o.text_box == Some(id)).unwrap();
+    let r = object.rect;
+    eprintln!("RELAY_LATER {anchor:?} page={} rect={r:?} stats={stats:?}", object.page);
+    assert!(object.page > 0, "the anchor follows a cross-page paragraph");
+    assert_eq!((r.y, r.w, r.h), (30.0, 100.0, 60.0));
+    assert!(stats.back_retries > 0, "actual backward replay is exercised");
+    let mut touched = 0;
+    for item in &laid.pages[object.page].items {
+        let Placed::Lines { story: StoryRef::Body, path, para, l0, l1, x, y, .. } = item else { continue };
+        if *path != Path::top(0) {
+            continue;
+        }
+        assert!(*l0 > 0, "this is a continuation fragment");
+        for line in &para.lines[*l0..*l1] {
+            let top = y + line.top - para.lines[*l0].top;
+            if top >= r.bottom() || top + line.height <= r.y {
+                continue;
+            }
+            touched += 1;
+            for (offset, c) in para.clusters[line.c0..line.c1].iter().enumerate() {
+                if c.kind != para::ClKind::Text {
+                    continue;
+                }
+                let left = x + line.xs[offset];
+                assert!(
+                    left + c.adv <= r.x + 0.01 || left >= r.right() - 0.01,
+                    "{anchor:?}: continuation text overlaps later frame: byte={} x={left} adv={} frame={r:?}",
+                    c.start,
+                    c.adv
+                );
+            }
+        }
+    }
+    assert!(touched > 0, "continuation rows beside the frame are exercised");
+    let mut unwrapped = d.clone();
+    unwrapped.para_mut(StoryRef::Body, &Path::top(1)).unwrap().objects[0].float_mut().unwrap().wrap = Wrap::InFrontOfText;
+    let (plain, _) = counted_layout(&unwrapped, &mut LayoutCache::new());
+    assert_eq!(relay_page_rows(&laid, 0), relay_page_rows(&plain, 0), "page-one prefix remains exact");
+    relay_ranges(&d, &laid);
+    let (warm, _) = counted_layout(&d, &mut cache);
+    assert_eq!(body_signature(&laid), body_signature(&warm));
+    assert_eq!(warm.find_object(0, |o| o.text_box == Some(id)).unwrap().rect, r);
+    assert_eq!(relay_page_rows(&laid, object.page), relay_page_rows(&warm, object.page));
+    relay_ranges(&d, &warm);
+}
+
+#[test]
+fn continued_paragraph_wraps() {
+    assert_later_wrap(Anchor::Paragraph);
+}
+
+#[test]
+fn continued_line_wraps() {
+    assert_later_wrap(Anchor::Line);
+}
+
+#[test]
+fn continued_unsupported_stays() {
+    for (anchor, wrap) in [(Anchor::Page, Wrap::Square), (Anchor::Paragraph, Wrap::BehindText), (Anchor::Line, Wrap::InFrontOfText)] {
+        let (d, id) = relay_later_doc(anchor, wrap);
+        let mut cache = LayoutCache::new();
+        let (cold, stats) = counted_layout(&d, &mut cache);
+        assert!(cold.find_object(0, |o| o.text_box == Some(id)).unwrap().page > 0);
+        assert_eq!(stats.back_retries, 0, "{anchor:?} {wrap:?}: no backward policy");
+        relay_ranges(&d, &cold);
+        let (warm, _) = counted_layout(&d, &mut cache);
+        assert_eq!(body_signature(&cold), body_signature(&warm));
+        relay_ranges(&d, &warm);
+    }
+}
+
+#[test]
+fn continued_tall_keeps_split() {
+    let mut here = BodyExclusions::default();
+    let mut tall = area(40.0, 80.0);
+    tall.top = 10.0;
+    tall.bottom = 1000.0;
+    here.append_split([area(900.0, 1000.0), tall]);
+    here.append_wait([area(90.0, 120.0)]);
+    let next = continued_exclusions(&BodyExclusions::default(), &here, 30.0, TEST_WIDTH);
+    assert_eq!(next.areas.len(), 2);
+    assert_eq!(next.split, [0], "filtered Split indices do not change Wait");
+    assert!(next.areas.iter().all(|a| a.top == 30.0));
+}
+
+#[test]
+fn relay_boundary_cache_is_exact() {
+    let (d, _) = relay_later_doc(Anchor::Paragraph, Wrap::Square);
+    let p = d.para(StoryRef::Body, &Path::top(0)).unwrap();
+    with_ctx(&d, |ctx| {
+        let plain = ctx.para_labelled(p, 240.0, None, &[], None);
+        let index = 20;
+        let (resume, top) = (plain.lines[index].start, plain.lines[index].top);
+        let areas =
+            [para::Exclusion { top, bottom: top + 60.0, left: 0.0, right: 100.0, top_bottom: false, contour: None, side: WrapText::BothSides }];
+        let ordinary = ctx.para_with_wrap(p, 240.0, None, &areas, None, &[]);
+        let relaid = ctx.para_relay(p, 240.0, None, &areas, None, &[], Some(top));
+        eprintln!(
+            "RELAY_PREFIX plain={:?} ordinary={:?} relay={:?}",
+            line_signature(&plain)[index - 1..index + 1].to_vec(),
+            line_signature(&ordinary)[index - 1..index + 1].to_vec(),
+            line_signature(&relaid)[index - 1..index + 1].to_vec()
+        );
+        assert_ne!(line_signature(&plain)[..index], line_signature(&ordinary)[..index], "estimated row height reaches across the boundary");
+        assert_eq!(line_signature(&plain)[..index], line_signature(&relaid)[..index]);
+        assert_eq!((relaid.lines[index].start, relaid.lines[index].top), (resume, top));
+        assert!(!Arc::ptr_eq(&ordinary, &relaid));
+        let other = ctx.para_relay(p, 240.0, None, &areas, None, &[], Some(top + 12.0));
+        assert!(!Arc::ptr_eq(&other, &relaid), "boundary bits belong to the cache identity");
+        let warm = ctx.para_relay(p, 240.0, None, &areas, None, &[], Some(top));
+        assert!(Arc::ptr_eq(&warm, &relaid));
+        let normal_warm = ctx.para_with_wrap(p, 240.0, None, &areas, None, &[]);
+        assert!(Arc::ptr_eq(&normal_warm, &ordinary));
+        let mut held = plain.clone();
+        let mut rel = BodyExclusions::default();
+        assert!(accept_wrap_relay(&mut held, &mut rel, ordinary, BodyExclusions::wait(areas.to_vec()), resume, top).is_none());
+        assert!(Arc::ptr_eq(&held, &plain));
+        assert_eq!(accept_wrap_relay(&mut held, &mut rel, relaid, BodyExclusions::wait(areas.to_vec()), resume, top), Some(index));
+    });
 }

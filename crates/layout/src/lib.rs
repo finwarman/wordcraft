@@ -510,6 +510,8 @@ struct Key {
     notes: u64,
     excl: u64,
     split: Vec<usize>,
+    /// Continuation areas cannot change rows before this paragraph-relative top.
+    relay: Option<u32>,
     eq: u32,
     read_spacing: Option<u32>,
     grid: (u32, u32, u32, bool),
@@ -880,8 +882,22 @@ impl Ctx<'_> {
         label: Option<(String, Level)>,
         split: &[usize],
     ) -> Arc<ParaLayout> {
+        self.para_relay(p, width, table, exclusions, label, split, None)
+    }
+
+    fn para_relay(
+        &mut self,
+        p: &Paragraph,
+        width: f32,
+        table: Option<&para::CellText>,
+        exclusions: &[para::Exclusion],
+        label: Option<(String, Level)>,
+        split: &[usize],
+        relay: Option<f32>,
+    ) -> Arc<ParaLayout> {
         let fitted = self.fitted_boxes(p);
-        let (key, eq_number) = self.para_key(p, width, table, exclusions, label.as_ref(), &fitted, split);
+        let (mut key, eq_number) = self.para_key(p, width, table, exclusions, label.as_ref(), &fitted, split);
+        key.relay = relay.map(f32::to_bits);
         self.cache.used.insert(key.clone());
         if let Some(pl) = self.cache.paras.get(&key) {
             self.cache.hits += 1;
@@ -889,7 +905,7 @@ impl Ctx<'_> {
         }
         self.cache.misses += 1;
         let typing = key.typing;
-        let pl = Arc::new(para::layout_para_with_wrap(p, &self.para_env(width, label, table, exclusions, eq_number, typing, &fitted), split));
+        let pl = Arc::new(para::layout_para_relay(p, &self.para_env(width, label, table, exclusions, eq_number, typing, &fitted), split, relay));
         self.cache.paras.insert(key, pl.clone());
         pl
     }
@@ -985,6 +1001,7 @@ impl Ctx<'_> {
             notes: if p.objects.iter().any(|o| matches!(o, InlineObject::NoteRef { .. })) { self.notes_hash } else { 0 },
             excl: if exclusions.is_empty() { 0 } else { hash_of(&format!("{exclusions:?}")) },
             split: split.to_vec(),
+            relay: None,
             eq: if eq_here > 0 { eq_number } else { 0 },
             read_spacing: if self.opts.view == ViewMode::Read { self.opts.read_line_spacing.map(f32::to_bits) } else { None },
             grid: self.grid.key(),
@@ -3294,6 +3311,14 @@ fn anchor_floats(
             }
         }
     }
+    let rel = body_exclusions(ctx, pb, block, y0);
+    let pl = ctx.para_with_wrap(p, width, None, &rel.areas, label.clone(), &rel.split);
+    (rects, pl, rel)
+}
+
+/// Page areas include later anchors discovered by the bounded backward replay.
+fn body_exclusions(ctx: &mut Ctx, pb: &PageBuilder, block: usize, y0: f32) -> BodyExclusions {
+    let col_x = pb.col_x();
     let mut rel = BodyExclusions::wait(rel_exclusions(&body_wraps(ctx, pb), col_x, y0));
     if let Some(areas) = ctx.prior_wraps.get(&pb.pages.len().saturating_sub(1)) {
         for (_, area) in areas.iter().filter(|(owner, _)| *owner > block) {
@@ -3305,8 +3330,7 @@ fn anchor_floats(
             }
         }
     }
-    let pl = ctx.para_with_wrap(p, width, None, &rel.areas, label.clone(), &rel.split);
-    (rects, pl, rel)
+    rel
 }
 
 /// Footer page tables wrap only the intersecting body lines, which resume below them.
@@ -3585,13 +3609,13 @@ thread_local! {
 }
 
 /// The wrap areas for a paragraph laid out against `rel` (relative to its top) whose lines from the
-/// one at `t` (relative to its top) on go into the column starting at `x0`, that line at `y` on
-/// the page, which has the wrap areas `excl` (#1374). The areas the lines before were broken
+/// one at `t` (relative to its top) on go into a new column, with `here` already relative to
+/// the paragraph (#1374). The areas the lines before were broken
 /// around end at `t`; the column's start there (one reaching above `t` with an outline keeps its
 /// whole outline, so it may change a line before, and the paragraph is then not broken again).
 /// Areas well clear of the column (outside `-width..2 * width`, room for negative indents) can't
 /// touch its lines and are left out.
-fn continued_exclusions(rel: &BodyExclusions, excl: &[WrapArea], x0: f32, y: f32, t: f32, width: f32) -> BodyExclusions {
+fn continued_exclusions(rel: &BodyExclusions, here: &BodyExclusions, t: f32, width: f32) -> BodyExclusions {
     let mut out = BodyExclusions::default();
     for (index, area) in rel.areas.iter().enumerate().filter(|(_, e)| e.top < t) {
         let clipped = para::Exclusion { bottom: area.bottom.min(t), ..area.clone() };
@@ -3601,11 +3625,17 @@ fn continued_exclusions(rel: &BodyExclusions, excl: &[WrapArea], x0: f32, y: f32
             out.append_wait(std::iter::once(clipped));
         }
     }
-    let here = rel_exclusions(excl, x0, y - t)
-        .into_iter()
-        .filter(|e| e.bottom > t && e.right > -width && e.left < 2.0 * width)
-        .map(|e| if e.top < t && e.contour.is_none() { para::Exclusion { top: t, ..e } } else { e });
-    out.append_wait(here);
+    for (index, area) in here.areas.iter().enumerate() {
+        if !(area.bottom > t && area.right > -width && area.left < 2.0 * width) {
+            continue;
+        }
+        let area = if area.top < t && area.contour.is_none() { para::Exclusion { top: t, ..area.clone() } } else { area.clone() };
+        if here.split.binary_search(&index).is_ok() {
+            out.append_split(std::iter::once(area));
+        } else {
+            out.append_wait(std::iter::once(area));
+        }
+    }
     out
 }
 
@@ -3761,7 +3791,8 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
             && wrap_relays < MAX_WRAP_RELAYS
             && let Some((resume, t)) = pl.lines.get(l0).map(|l| (l.start, l.top))
         {
-            let here = continued_exclusions(&rel, &body_wraps(ctx, pb), pb.col_x(), pb.y, t, laid_width);
+            let areas = body_exclusions(ctx, pb, block, pb.y - t);
+            let here = continued_exclusions(&rel, &areas, t, laid_width);
             if here != rel {
                 wrap_relays += 1;
                 ctx.fields.page = laid_page;
@@ -3770,7 +3801,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
                 #[cfg(test)]
                 REPLAY_STATS.with(|c| c.borrow_mut().wrap_attempts += 1);
                 let relaid = with_page_map(ctx, &mut page_map, |ctx| {
-                    again(ctx, eq_start, |ctx| ctx.para_with_wrap(p, laid_width, None, &here.areas, label.clone(), &here.split))
+                    again(ctx, eq_start, |ctx| ctx.para_relay(p, laid_width, None, &here.areas, label.clone(), &here.split, Some(t)))
                 });
                 // Only if the rest still starts at the same line, at the same height (an outline
                 // reaching above it could move the lines before down, and the column's areas with them).
