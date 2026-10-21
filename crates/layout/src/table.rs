@@ -1193,6 +1193,19 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                 }
             }
         }
+        // Enclose retained fallback rule centerlines without changing ownership or routing.
+        for (index, it) in items.iter().enumerate() {
+            if let Placed::Rule { x0, y0, x1, y1, .. } = it
+                && [x0, y0, x1, y1].iter().all(|n| n.is_finite())
+                && (y0 - y1).abs() < 0.01
+                && *y0 > 0.01
+                && *y0 < row.height - 0.01
+                && *y0 <= cut
+                && (c.center.is_some() || split_para_rule(items, splits, index, c, row.height - row.bottom, limit).is_none())
+            {
+                kept_bottom = kept_bottom.max(*y0);
+            }
+        }
         if moved_top == f32::MAX
             && let Some(end) = c.end.filter(|e| fits(*e))
         {
@@ -2159,7 +2172,7 @@ mod para_rule_controls {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(first.height, 14.0);
+        assert_eq!(first.height, 56.0);
         assert_eq!(rules(&first), vec![52.0]);
         assert_eq!(rules(&rest), vec![30.0]);
         let line_y = rest
@@ -2188,5 +2201,92 @@ mod para_rule_controls {
             })
             .unwrap();
         assert_eq!(line_y, 10.0);
+    }
+
+    fn centered_frame_row() -> RowLayout {
+        let mut items = emitted_rules(3);
+        items.insert(
+            0,
+            Placed::Image {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                media: "synthetic".into(),
+                crop: [0.0; 4],
+                story: StoryRef::Body,
+                path: Path::top(2),
+                off: 0,
+                spin: Default::default(),
+            },
+        );
+        let rect = Rect::new(0.0, 0.0, 100.0, 200.0);
+        items.push(Placed::Fill { rect, color: wordcraft_doc::props::Rgb(220, 220, 220) });
+        items.push(Placed::Cell { rect, covered: false, table: Path::top(0), row: 0, cell: 0, story: StoryRef::Body, clip: false });
+        RowLayout {
+            height: 200.0,
+            min_height: 0.0,
+            bottom: 4.0,
+            cells: vec![CellPart {
+                top: 2.0,
+                items: 0..items.len(),
+                end: None,
+                merge: None,
+                center: Some(CellCenter { offset: 0.0, height: 300.0, content: 0..items.len() }),
+            }],
+            items,
+        }
+    }
+
+    #[test]
+    fn center_rule_frame_bounds() {
+        let row = centered_frame_row();
+        let (first, rest) = split_row(&row, 70.0).unwrap();
+        for item in &first.items {
+            if let Placed::Rule { y0, y1, .. } = item
+                && y0 == y1
+            {
+                assert!(*y0 <= first.height, "retained centerline {y0} outside first frame {}", first.height);
+            }
+        }
+        assert_eq!(first.height, 56.0);
+        let rules = |part: &RowLayout| {
+            part.items
+                .iter()
+                .filter_map(|item| match item {
+                    Placed::Rule { y0, y1, border, .. } if y0 == y1 => Some((*y0, border.width)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rules(&first), [(52.0, 2.0)]);
+        assert_eq!(rules(&rest), [(30.0, 2.0)]);
+        assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 2.0)));
+        let frames: Vec<_> = first
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Cell { rect, .. } | Placed::Fill { rect, .. } => Some(rect.bottom()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames, [56.0, 56.0]);
+    }
+
+    #[test]
+    fn fitting_rule_frame_unchanged() {
+        let mut row = centered_frame_row();
+        row.min_height = 40.0;
+        row.cells[0].center = Some(CellCenter { offset: 52.0, height: 36.0, content: 1..4 });
+        let (first, rest) = split_row(&row, 70.0).unwrap();
+        assert_eq!(first.height, 40.0);
+        let rules: Vec<_> = first
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Rule { y0, y1, .. } if y0 == y1 => Some(*y0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rules, [2.0, 38.0]);
+        assert!(!rest.items.iter().any(|item| matches!(item, Placed::Rule { .. })));
+        assert!(first.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 10.0)));
     }
 }

@@ -10045,7 +10045,7 @@ fn split_para_border_fallbacks() {
     for space in [56.0, 57.0] {
         let row = para_border_row(space, 8.0);
         let (first, rest) = split_row(&row, 80.0).unwrap();
-        assert_eq!(first.height, if space == 56.0 { 80.0 } else { 24.0 });
+        assert_eq!(first.height, 80.0);
         assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + space]);
         assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
     }
@@ -10081,7 +10081,120 @@ fn split_para_border_fallbacks() {
     row.items.insert(index, Placed::Fill { rect: Rect::new(0.0, 0.0, 1.0, 1.0), color: Rgb(1, 2, 3) });
     row.cells[0].items.end += 1;
     let (first, rest) = split_row(&row, 80.0).unwrap();
-    assert_eq!(first.height, 24.0);
+    assert_eq!(first.height, 56.0);
     assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0]);
     assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
+}
+
+const RULE_FRAME_WIDTH: f32 = 100.0;
+const RULE_FRAME_CUT: f32 = 80.0;
+
+fn add_rule_frame(row: &mut crate::table::RowLayout) {
+    row.items.push(Placed::Fill { rect: Rect::new(0.0, 0.0, RULE_FRAME_WIDTH, row.height), color: wordcraft_doc::props::Rgb(220, 220, 220) });
+    row.cells[0].items.end += 1;
+}
+
+fn assert_frame_bounds(part: &crate::table::RowLayout, expected: f32) {
+    for item in &part.items {
+        if let Placed::Rule { x0, y0, x1, y1, .. } = item
+            && [x0, y0, x1, y1].iter().all(|n| n.is_finite())
+            && y0 == y1
+        {
+            assert!(*y0 >= 0.0 && *y0 <= part.height, "retained centerline {y0} outside first frame {}", part.height);
+        }
+    }
+    assert_eq!(part.height, expected);
+    let frames: Vec<_> = part
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Placed::Cell { rect, .. } => Some(*rect),
+            Placed::Fill { rect, .. } if rect.w > 0.0 && rect.h > 0.0 => Some(*rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(frames.len(), 2);
+    for rect in frames {
+        assert_eq!(rect.y, 0.0);
+        assert_eq!(rect.bottom(), expected);
+    }
+}
+
+#[test]
+fn fallback_rule_frame_bounds() {
+    use wordcraft_doc::props::Rgb;
+    let mut row = para_border_row(57.0, 8.0);
+    add_rule_frame(&mut row);
+    let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
+    assert_frame_bounds(&first, 80.0);
+    assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [77.0]);
+    assert!(para_border_rules(&first, Rgb(0, 0, 200)).is_empty());
+    assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
+    assert_eq!(para_border_rules(&rest, Rgb(0, 0, 200)), [2.0]);
+    assert_eq!(first.items.iter().filter(|item| matches!(item, Placed::Rule { .. })).count(), 3);
+    assert!(first.items.iter().any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 77.0 && y0 == y1 && border.width == 1.5)));
+    assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0)));
+}
+
+#[test]
+fn interrupted_rule_frame_bounds() {
+    use wordcraft_doc::props::Rgb;
+    let mut row = para_border_row(0.0, 8.0);
+    let index = row.items.iter().position(|item| matches!(item, Placed::Rule { border, .. } if border.color == Some(Rgb(0, 0, 200)))).unwrap();
+    row.items.insert(index, Placed::Fill { rect: Rect::new(0.0, 0.0, 0.0, 0.0), color: Rgb(1, 2, 3) });
+    row.cells[0].items.end += 1;
+    add_rule_frame(&mut row);
+    let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
+    assert_frame_bounds(&first, 56.0);
+    assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [20.0]);
+    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), [52.0]);
+    assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
+    assert_eq!(first.items.iter().filter(|item| matches!(item, Placed::Rule { .. })).count(), 4);
+    assert!(first.items.iter().any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 52.0 && y0 == y1 && border.width == 2.5)));
+    assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 2.0)));
+}
+
+#[test]
+fn owned_rule_frame_unchanged() {
+    use wordcraft_doc::props::Rgb;
+    let mut row = para_border_row(0.0, 8.0);
+    add_rule_frame(&mut row);
+    let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
+    assert_frame_bounds(&first, 24.0);
+    assert!(para_border_rules(&first, Rgb(0, 0, 200)).is_empty());
+    assert_eq!(para_border_rules(&rest, Rgb(0, 0, 200)), [2.0]);
+    assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0)));
+}
+
+#[test]
+fn rule_frame_boundary_limits() {
+    #[derive(Clone, Copy, Debug)]
+    enum Case {
+        Interior,
+        AtCut,
+        Top,
+        Bottom,
+        BeyondCut,
+        Vertical,
+        NonfiniteX,
+        NonfiniteY,
+    }
+    for case in [Case::Interior, Case::AtCut, Case::Top, Case::Bottom, Case::BeyondCut, Case::Vertical, Case::NonfiniteX, Case::NonfiniteY] {
+        let (x0, y0, x1, y1, height) = match case {
+            Case::Interior => (0.0, 64.0, RULE_FRAME_WIDTH, 64.0, 68.0),
+            Case::AtCut => (0.0, 80.0, RULE_FRAME_WIDTH, 80.0, 80.0),
+            Case::Top => (0.0, 0.0, RULE_FRAME_WIDTH, 0.0, 24.0),
+            Case::Bottom => (0.0, 200.0, RULE_FRAME_WIDTH, 200.0, 24.0),
+            Case::BeyondCut => (0.0, 81.0, RULE_FRAME_WIDTH, 81.0, 24.0),
+            Case::Vertical => (10.0, 60.0, 10.0, 70.0, 24.0),
+            Case::NonfiniteX => (f32::NAN, 64.0, RULE_FRAME_WIDTH, 64.0, 24.0),
+            Case::NonfiniteY => (0.0, f32::NAN, RULE_FRAME_WIDTH, f32::NAN, 24.0),
+        };
+        let mut row = para_border_row(0.0, 8.0);
+        add_rule_frame(&mut row);
+        row.items.push(Placed::Rule { x0, y0, x1, y1, border: Border::single(3.0) });
+        row.cells[0].items.end += 1;
+        let (first, _) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
+        assert_frame_bounds(&first, height);
+    }
 }
