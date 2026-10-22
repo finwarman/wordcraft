@@ -193,6 +193,60 @@ fn exact_row_keeps_physical_clip() {
     assert!(!draws.iter().any(|draw| matches!(draw, crate::display::Draw::Glyphs { .. })), "exact-row glyphs stay inside the physical clip");
 }
 
+fn tabbed_table() -> Table {
+    let mut doc = Document::new();
+    doc.body = vec![para_block(paragraph(":"))];
+    let layout = lay(&doc);
+    let colon_width: f32 = layout.pages[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Placed::Lines { para, .. } => Some(para.clusters.iter().map(|c| c.adv).sum()),
+            _ => None,
+        })
+        .unwrap();
+    let width = probe_width() + colon_width + HALF_RULE;
+    let mut table = control_table(PROBE);
+    table.grid[0] = width;
+    table.props.width = Some(width);
+    let mut p = paragraph(&format!("{PROBE}\t:"));
+    p.props.tabs = Some(vec![wordcraft_doc::props::TabStop {
+        pos: width - colon_width / 2.0,
+        align: wordcraft_doc::props::TabAlign::Center,
+        leader: Default::default(),
+    }]);
+    table.rows[0].cells[0].blocks = vec![para_block(p)];
+    table
+}
+
+#[test]
+fn tabbed_exact_keeps_frame() {
+    let mut table = tabbed_table();
+    table.rows[0].props.height = Some(LINE_HEIGHT + 2.0 * RULE_WIDTH);
+    table.rows[0].props.height_rule = HeightRule::Exact;
+    let doc = document(table);
+    let laid = lay(&doc);
+    assert_eq!(first_lines(&laid).1, 1, "side clearance must not wrap a tabbed label into a clipped line");
+    assert!((first_lines(&laid).0 - first_cell(&laid).x).abs() < EPS);
+    assert!(!laid.pages[0].items.iter().any(|item| matches!(item, Placed::Cell { clip: true, .. })));
+    let draws = crate::display::page_display(&doc, &laid.pages[0], &Default::default());
+    let glyphs: usize = draws
+        .iter()
+        .filter_map(|draw| match draw {
+            crate::display::Draw::Glyphs { glyphs, .. } => Some(glyphs.len()),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(glyphs, PROBE.len() + 1, "the label and its delimiter must remain painted");
+}
+
+#[test]
+fn tabbed_auto_clears_rules() {
+    let laid = lay(&document(tabbed_table()));
+    assert_eq!(first_lines(&laid).1, 2);
+    assert!((first_lines(&laid).0 - first_cell(&laid).x - HALF_RULE).abs() < EPS);
+}
+
 #[test]
 fn continued_row_keeps_all_ink() {
     const WORDS: usize = 12;

@@ -633,7 +633,10 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 std::mem::swap(&mut borders.left, &mut borders.right);
             }
             // A zero-margin fixed cell still clears the inward half of each side rule.
-            if t.props.fixed && !rtl && !cell.props.text_direction.is_turned() {
+            // Tabbed exact rows keep their text frame: another line would be clipped.
+            let tabbed_exact = row.props.height_rule == HeightRule::Exact
+                && cell.blocks.iter().any(|block| matches!(&**block, Block::Para(p) if p.text.contains('\t')));
+            if t.props.fixed && !rtl && !cell.props.text_direction.is_turned() && !tabbed_exact {
                 for (side, border) in [(1, borders.left), (3, borders.right)] {
                     if margins[side] == 0.0 {
                         margins[side] = border.filter(Border::is_visible).map_or(0.0, |b| b.width.clamp(0.0, 12.0) / 2.0);
