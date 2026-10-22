@@ -1657,6 +1657,21 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
                                 }
                             }
                         }
+                        Some(InlineObject::NestedPageTotal { field }) => {
+                            if env.field_codes != field.code {
+                                let mut shaded = (*rc).clone();
+                                if shaded.highlight.is_none() && shaded.shading.is_none() {
+                                    shaded.shading = Some(FIELD_SHADING);
+                                }
+                                let text = field.instruction().map(|instr| field_code_text(&instr));
+                                b.shape_atomic(text.as_deref().unwrap_or(&field.result), start, end, &Arc::new(shaded));
+                            } else if let Some(text) = field.evaluate(env.fields.pages) {
+                                has_page_fields = true;
+                                b.shape_atomic(&text, start, end, &rc);
+                            } else {
+                                b.shape_atomic(&field.result, start, end, &rc);
+                            }
+                        }
                         Some(InlineObject::NoteRef { kind, id, custom }) => {
                             let num = if custom.is_empty() {
                                 let fmt = match kind {

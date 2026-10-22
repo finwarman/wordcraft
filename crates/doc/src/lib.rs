@@ -33,6 +33,7 @@ pub mod math_latex;
 pub mod math_linear;
 pub mod math_symbols;
 pub mod numbering;
+pub mod page_total;
 pub mod para;
 pub mod pattern;
 pub mod props;

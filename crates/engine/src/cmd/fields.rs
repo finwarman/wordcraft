@@ -74,8 +74,13 @@ pub fn story_fields(s: &Session, story: StoryRef) -> Vec<FieldAt> {
     for path in s.doc.para_paths(story) {
         let Some(para) = s.doc.para(story, &path) else { continue };
         for off in para.object_offsets() {
-            if let Some(InlineObject::Field { instr, locked, code, .. }) = para.object_at(off) {
-                out.push(FieldAt { at: Pos::new(story, path.clone(), off), end: None, instr: instr.clone(), locked: *locked, code: *code });
+            let field = match para.object_at(off) {
+                Some(InlineObject::Field { instr, locked, code, .. }) => Some((instr.clone(), *locked, *code)),
+                Some(InlineObject::NestedPageTotal { field }) => field.instruction().map(|instr| (instr, field.locked, field.code)),
+                _ => None,
+            };
+            if let Some((instr, locked, code)) = field {
+                out.push(FieldAt { at: Pos::new(story, path.clone(), off), end: None, instr, locked, code });
             }
         }
     }
@@ -128,10 +133,10 @@ fn toggle_code(s: &mut Session, _: &Value) -> CmdResult {
         return Err(none_selected());
     }
     for f in &fields {
-        with_field(s, &f.at, |o| {
-            if let InlineObject::Field { code, .. } = o {
-                *code = !*code;
-            }
+        with_field(s, &f.at, |o| match o {
+            InlineObject::Field { code, .. } => *code = !*code,
+            InlineObject::NestedPageTotal { field } => field.code = !field.code,
+            _ => {}
         })?;
     }
     Ok(json!({"fields": fields.len()}))
@@ -140,10 +145,10 @@ fn toggle_code(s: &mut Session, _: &Value) -> CmdResult {
 /// Selected simple fields show their results again (after F9).
 pub fn show_results(s: &mut Session) -> Result<(), CmdError> {
     for f in selected(s).into_iter().filter(|f| f.code) {
-        with_field(s, &f.at, |o| {
-            if let InlineObject::Field { code, .. } = o {
-                *code = false;
-            }
+        with_field(s, &f.at, |o| match o {
+            InlineObject::Field { code, .. } => *code = false,
+            InlineObject::NestedPageTotal { field } => field.code = false,
+            _ => {}
         })?;
     }
     Ok(())
@@ -159,6 +164,16 @@ fn set_code(s: &mut Session, v: &Value) -> CmdResult {
     let Some(f) = selected(s).into_iter().next() else { return Err(none_selected()) };
     with_field(s, &f.at, |o| match o {
         InlineObject::Field { instr, .. } | InlineObject::FieldStart { instr, .. } => *instr = code.clone(),
+        InlineObject::NestedPageTotal { field } => {
+            *o = InlineObject::Field {
+                instr: code.clone(),
+                result: field.result.clone(),
+                locked: field.locked,
+                dirty: field.dirty,
+                code: field.code,
+                form: String::new(),
+            };
+        }
         _ => {}
     })?;
     super::references::update_fields(s)?;
@@ -175,6 +190,7 @@ fn set_locked(s: &mut Session, value: bool) -> CmdResult {
     for f in &fields {
         with_field(s, &f.at, |o| match o {
             InlineObject::Field { locked, .. } | InlineObject::FieldStart { locked, .. } => *locked = value,
+            InlineObject::NestedPageTotal { field } => field.locked = value,
             _ => {}
         })?;
     }
@@ -183,8 +199,11 @@ fn set_locked(s: &mut Session, value: bool) -> CmdResult {
 
 /// The text a simple field shows now (page numbers from the current layout).
 fn shown_text(s: &mut Session, f: &FieldAt) -> String {
-    let Some(InlineObject::Field { instr, result, .. }) = s.doc.para_at(&f.at).and_then(|p| p.object_at(f.at.off)).cloned() else {
-        return String::new();
+    let object = s.doc.para_at(&f.at).and_then(|p| p.object_at(f.at.off)).cloned();
+    let (instr, result) = match &object {
+        Some(InlineObject::Field { instr, result, .. }) => (instr.clone(), result.clone()),
+        Some(InlineObject::NestedPageTotal { field }) => (field.instruction().unwrap_or_default(), field.result.clone()),
+        _ => return String::new(),
     };
     let l = s.layout();
     let page = l.caret(&f.at).and_then(|c| l.pages.get(c.page));
@@ -204,6 +223,9 @@ fn shown_text(s: &mut Session, f: &FieldAt) -> String {
         filename: s.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default().into(),
         ..Default::default()
     };
+    if let Some(InlineObject::NestedPageTotal { field }) = object {
+        return field.evaluate(ctx.pages).unwrap_or(field.result);
+    }
     wordcraft_layout::fields::field_text(&instr, &result, &ctx).0
 }
 

@@ -1,6 +1,6 @@
 # WordCraft parity with Microsoft Word
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** trivial (guarded opt-in PDF TOC refresh; previously trivial: East Asian typography: `w:eastAsianLayout` kept on save, not laid out; previously trivial: Ink to Shape recognises arrows; previously trivial: Windows Magnifier follows the caret onto a new line, #1119; previously trivial: table border drags with Ctrl and Alt, from the left edge and of selected cells, #711; previously trivial: table column and row markers on the rulers, #700; previously trivial: table borders and the resize handle drag on the page, #217; previously trivial: all 12 bibliography styles, #383; previously trivial: formatting revisions landed, #41; previously trivial: Draw Table and Eraser landed, #303; previously minor: readiness table with hours per audience; full number back to the additive weighted sum, 60%; mainstream and essentials numbers added; alpha gate checked; previously major: full re-measure against Word for Mac 16.113.4; replaces the parity tables that lived in ROADMAP.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** trivial (nested page totals and later forced page breaks; previously trivial: guarded opt-in PDF TOC refresh; previously trivial: East Asian typography: `w:eastAsianLayout` kept on save, not laid out; previously trivial: Ink to Shape recognises arrows; previously trivial: Windows Magnifier follows the caret onto a new line, #1119; previously trivial: table border drags with Ctrl and Alt, from the left edge and of selected cells, #711; previously trivial: table column and row markers on the rulers, #700; previously trivial: table borders and the resize handle drag on the page, #217; previously trivial: all 12 bibliography styles, #383; previously trivial: formatting revisions landed, #41; previously trivial: Draw Table and Eraser landed, #303; previously minor: readiness table with hours per audience; full number back to the additive weighted sum, 60%; mainstream and essentials numbers added; alpha gate checked; previously major: full re-measure against Word for Mac 16.113.4; replaces the parity tables that lived in ROADMAP.md) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 The authoritative assessment of how close WordCraft is to Microsoft Word. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it; [`gaps.md`](gaps.md) itemizes every shortfall; the deep checklists are
@@ -247,10 +247,15 @@ review of translations, owner decisions (cloud/co-authoring scope, AI provider, 
 licensed or commissioned metric-compatible Aptos substitute, and a real-world DOCX corpus that
 can be used without committing Word output.
 
+## Bounded nested page totals
+
+Nested `NUMPAGES` with one checked integer offset evaluates against print pagination. Locked fields and unsupported expressions retain caches. Synthetic controls cover complex and simple children, round trips, code views and field commands. The serialized document model adds a nested-total variant that older model readers may reject. A later ink-free forced page break no longer adds a blank page after a fitted soft-break line. This does not establish general formula or document-layout parity.
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | trivial | Nested page totals and later forced page breaks (#1070); unsupported formulas remain cached. Readiness unchanged. |
 | 2026-10-22 | trivial | Guarded opt-in PDF TOC refresh; cached conversion remains the default. Readiness unchanged. |
 | 2026-10-16 | trivial | East Asian typography row: `w:eastAsianLayout` kept on save, not laid out; no percentage change |
 | 2026-10-15 | trivial | Equations: a script or limit after `_` or `^` is the whole run of letters and digits (`V_dd`, `x^ab`), as in Word for Mac 16.113.4, and Linear format writes it bare (#1609) |

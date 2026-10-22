@@ -506,6 +506,7 @@ impl Writer<'_> {
                 }
             }
             InlineObject::Field { instr, result, locked, dirty, form, .. } => self.field(w, instr, result, *locked, *dirty, form, props),
+            InlineObject::NestedPageTotal { field } => self.nested_total(w, field, props),
             InlineObject::FieldStart { instr, locked, dirty } => {
                 self.rev_open(w, props);
                 self.field_start(w, instr, *locked, *dirty, "", props);
@@ -831,6 +832,13 @@ impl Writer<'_> {
             self.rev_close(w, props);
             return;
         }
+        self.rev_open(w, props);
+        self.field_start(w, instr, locked, dirty, form, props);
+        self.field_result(w, result, props);
+        self.rev_close(w, props);
+    }
+
+    fn field_result(&self, w: &mut W, result: &str, props: &CharProps) {
         let del = self.is_del(props);
         let run = |w: &mut W, f: &dyn Fn(&mut W)| {
             w.open("w:r", &[]);
@@ -838,8 +846,6 @@ impl Writer<'_> {
             f(w);
             w.close("w:r");
         };
-        self.rev_open(w, props);
-        self.field_start(w, instr, locked, dirty, form, props);
         if !result.is_empty() {
             run(w, &|w| {
                 let mut buf = String::new();
@@ -867,6 +873,37 @@ impl Writer<'_> {
             });
         }
         run(w, &|w| w.empty("w:fldChar", &[("w:fldCharType", "end")]));
+    }
+
+    fn nested_total(&mut self, w: &mut W, field: &wordcraft_doc::page_total::NestedPageTotal, props: &CharProps) {
+        let Some(_) = field.offset() else {
+            self.field(w, "", &field.result, field.locked, field.dirty, "", props);
+            return;
+        };
+        let InlineObject::Field { instr, result, locked, dirty, form, .. } = &*field.child else { return };
+        let run = |w: &mut W, body: &dyn Fn(&mut W)| {
+            w.open("w:r", &[]);
+            rpr(w, props);
+            body(w);
+            w.close("w:r");
+        };
+        let tag = if self.is_del(props) { "w:delInstrText" } else { "w:instrText" };
+        self.rev_open(w, props);
+        run(w, &|w| {
+            let mut attrs = vec![("w:fldCharType", "begin")];
+            if field.locked {
+                attrs.push(("w:fldLock", "1"));
+            }
+            if field.dirty {
+                attrs.push(("w:dirty", "true"));
+            }
+            w.empty("w:fldChar", &attrs);
+        });
+        run(w, &|w| w.leaf(tag, &[("xml:space", "preserve")], &field.before));
+        self.field(w, instr, result, *locked, *dirty, form, &field.child_props);
+        run(w, &|w| w.leaf(tag, &[("xml:space", "preserve")], &field.after));
+        run(w, &|w| w.empty("w:fldChar", &[("w:fldCharType", "separate")]));
+        self.field_result(w, &field.result, props);
         self.rev_close(w, props);
     }
 

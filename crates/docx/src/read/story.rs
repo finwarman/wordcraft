@@ -75,6 +75,10 @@ struct FieldState {
     sizes: Vec<(usize, Option<f32>)>,
     /// A legacy form field's `w:ffData`, as raw XML.
     form: String,
+    instr_result: Option<(String, CharProps)>,
+    instr_result_overflow: bool,
+    nested_count: usize,
+    nested_total: Option<(usize, usize, Box<InlineObject>, CharProps)>,
 }
 
 /// Enclosed characters (`eq \o\ac(○,字)`), with their style from the code's font sizes: Word
@@ -623,6 +627,28 @@ impl Reader<'_> {
                 self.emit_text(sc, pb, &t, props);
             }
             "w:instrText" | "w:delInstrText" => {
+                // Hold this producer quirk separately: unsupported parent codes must not change.
+                let formula = sc
+                    .fields
+                    .len()
+                    .checked_sub(2)
+                    .and_then(|i| sc.fields.get(i))
+                    .is_some_and(|parent| parent.phase == Phase::Instr && !parent.spilled && parent.instr.trim() == "=");
+                if formula
+                    && Self::parent_in_instr(sc)
+                    && let Some(field) = sc.fields.last_mut()
+                    && field.phase == Phase::Result
+                    && field.instr.trim().eq_ignore_ascii_case("NUMPAGES")
+                {
+                    let text = clean_text(&k.text());
+                    let (cache, _) = field.instr_result.get_or_insert_with(|| (String::new(), props.clone()));
+                    if cache.len().checked_add(text.len()).is_some_and(|size| size <= MAX_INSTR) {
+                        cache.push_str(&text);
+                    } else {
+                        field.instr_result_overflow = true;
+                    }
+                    return;
+                }
                 if let Some(f) = sc.fields.last_mut()
                     && f.phase == Phase::Instr
                     && !f.spilled
@@ -825,6 +851,10 @@ impl Reader<'_> {
             range: false,
             sizes: Vec::new(),
             form,
+            instr_result: None,
+            instr_result_overflow: false,
+            nested_count: 0,
+            nested_total: None,
         });
     }
 
@@ -914,12 +944,54 @@ impl Reader<'_> {
             })
             .unwrap_or(&f.props)
             .clone();
-        let obj = InlineObject::Field { instr, result, locked: f.locked, dirty: f.dirty, code: false, form: f.form };
+        let nested = f.nested_total.and_then(|(start, end, child, child_props)| {
+            if f.nested_count != 1
+                || !f.form.is_empty()
+                || f.instr.len() > MAX_INSTR
+                || result.len() > MAX_INSTR
+                || child.plain_text().len() > MAX_INSTR
+                || props.ins.is_some()
+                || props.del.is_some()
+                || child_props.ins.is_some()
+                || child_props.del.is_some()
+            {
+                return None;
+            }
+            let field = wordcraft_doc::page_total::NestedPageTotal {
+                before: f.instr.get(..start)?.to_string(),
+                child,
+                after: f.instr.get(end..)?.to_string(),
+                result: result.clone(),
+                locked: f.locked,
+                dirty: f.dirty,
+                code: false,
+                child_props,
+            };
+            field.offset().map(|_| field)
+        });
+        let obj = match nested {
+            Some(field) => InlineObject::NestedPageTotal { field: Box::new(field) },
+            None => InlineObject::Field { instr, result, locked: f.locked, dirty: f.dirty, code: false, form: f.form },
+        };
         if let Some(parent) = sc.fields.last_mut()
             && !parent.spilled
             && parent.phase == Phase::Instr
         {
+            let start = parent.instr.len();
             parent.instr.push_str(obj.plain_text());
+            parent.nested_count = parent.nested_count.saturating_add(1);
+            if parent.nested_count == 1 && !f.instr_result_overflow {
+                let mut child = obj;
+                let mut child_props = props;
+                if let Some((cache, cache_props)) = f.instr_result
+                    && let InlineObject::Field { result, .. } = &mut child
+                    && result.is_empty()
+                {
+                    *result = cache;
+                    child_props = cache_props;
+                }
+                parent.nested_total = Some((start, parent.instr.len(), Box::new(child), child_props));
+            }
             return;
         }
         self.emit_obj(sc, pb, obj, &props);

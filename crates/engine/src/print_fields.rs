@@ -257,7 +257,7 @@ fn held_ref_targets(doc: &Document, mut budget: usize) -> Result<HashSet<String>
             }
             let instr = match object {
                 InlineObject::Field { instr, locked: false, code: false, .. } => instr,
-                InlineObject::Field { .. } | InlineObject::FieldStart { .. } | InlineObject::FieldEnd => {
+                InlineObject::Field { .. } | InlineObject::NestedPageTotal { .. } | InlineObject::FieldStart { .. } | InlineObject::FieldEnd => {
                     held.insert(name.clone());
                     break;
                 }

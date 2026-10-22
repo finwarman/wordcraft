@@ -641,6 +641,7 @@ fn has_page_fields(p: &Paragraph) -> bool {
         InlineObject::Field { instr, .. } => {
             matches!(fields::field_name(instr).as_str(), "PAGE" | "NUMPAGES" | "SECTIONPAGES" | "SECTION" | "PAGEREF")
         }
+        InlineObject::NestedPageTotal { field } => field.offset().is_some(),
         _ => false,
     })
 }
@@ -654,6 +655,7 @@ fn has_page_number_fields(p: &Paragraph) -> bool {
 fn has_total_fields(p: &Paragraph) -> bool {
     p.objects.iter().any(|o| match o {
         InlineObject::Field { instr, .. } => matches!(fields::field_name(instr).as_str(), "NUMPAGES" | "SECTIONPAGES"),
+        InlineObject::NestedPageTotal { field } => field.offset().is_some(),
         _ => false,
     })
 }
@@ -4155,9 +4157,6 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
                     let sep = pb.seps.sep_h(pb.notes.first().is_some_and(|n| n.cont));
                     pb.body_floor().max(bottom) + sep + before + last.first_piece() + pb.seps.notice_h() <= pb.orig_bottom + 0.01
                 });
-            if over && l1 > l0 && !split {
-                break;
-            }
             // A line holding nothing but a page or column break stays at the bottom of the page
             // even when it doesn't fit: it only ends the page, and moving it would leave a blank
             // page behind it (Word does the same).
@@ -4165,6 +4164,9 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
                 && p.text
                     .get(l.start..l.stop)
                     .is_some_and(|t| t.chars().all(|c| matches!(c, wordcraft_doc::para::PAGE_BREAK | wordcraft_doc::para::COLUMN_BREAK)));
+            if over && l1 > l0 && !split && !(only_break && l.end == LineEnd::PageBreak) {
+                break;
+            }
             // An empty paragraph closing a section before a new page: measured in Word, it stays
             // on a full page instead of starting one of its own.
             let closing_mark = pb.next_starts_page && p.section.is_some() && p.text.is_empty();
@@ -5278,6 +5280,8 @@ pub fn now_ms() -> f64 {
     }
 }
 
+#[cfg(test)]
+mod break_overflow_controls;
 #[cfg(test)]
 mod cell_hit_tests;
 

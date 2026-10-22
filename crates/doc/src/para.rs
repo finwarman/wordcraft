@@ -524,6 +524,10 @@ pub enum InlineObject {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         form: String,
     },
+    /// A structurally nested NUMPAGES plus/minus integer formula, including both fields' caches.
+    NestedPageTotal {
+        field: Box<crate::page_total::NestedPageTotal>,
+    },
     /// The start of a field whose result is ordinary content — formatted, possibly spanning
     /// paragraphs — up to the matching [`InlineObject::FieldEnd`]. Imported TOCs and citation
     /// managers' `ADDIN` fields are kept this way; `instr` is the field code. See
@@ -826,6 +830,7 @@ impl InlineObject {
     pub fn plain_text(&self) -> &str {
         match self {
             InlineObject::Field { result, .. } => result,
+            InlineObject::NestedPageTotal { field } => &field.result,
             InlineObject::Equation { linear, .. } => linear,
             InlineObject::Ruby { base, .. } => base,
             InlineObject::PositionalTab { .. } => "\t",
