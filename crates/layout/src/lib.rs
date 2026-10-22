@@ -4612,6 +4612,35 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
     }
     // A table in the text flow starts below the floating objects in its way.
     below_floats(ctx, pb, pb.col_x() + tl.x, pb.col_x() + tl.x + tl.width, tl.rows.first().map_or(0.0, |r| r.height));
+    let repeated_height: f32 = t.rows.iter().zip(&tl.rows).take_while(|(r, _)| r.props.header).map(|(_, r)| r.height).sum();
+    let capacity = pb.bottom.min(pb.page_bottom(body_top)) - body_top - repeated_height;
+    let height: f32 = tl.rows.iter().map(|r| r.height).sum();
+    let flow = if pb.page_valign == wordcraft_doc::section::PageVAlign::Top && pb.y + height > pb.bottom + 0.01 {
+        table::MergeFlow::new(t, &tl, capacity)
+    } else {
+        table::MergeFlow::disabled()
+    };
+    if flow.is_empty() {
+        place_table_rows(ctx, pb, t, &tl, block, body_top, flow);
+        return;
+    }
+    // A failed physical fit replays the unchanged paginator without detaching any cell ink.
+    let snap = Snap::take(pb, ctx);
+    if !place_table_rows(ctx, pb, t, &tl, block, body_top, flow) {
+        snap.restore(pb, ctx);
+        place_table_rows(ctx, pb, t, &tl, block, body_top, table::MergeFlow::disabled());
+    }
+}
+
+fn place_table_rows(
+    ctx: &mut Ctx,
+    pb: &mut PageBuilder,
+    t: &wordcraft_doc::Table,
+    tl: &table::TableLayout,
+    block: usize,
+    body_top: f32,
+    mut merge_flow: table::MergeFlow,
+) -> bool {
     let header_rows: Vec<usize> = (0..t.rows.len()).take_while(|r| t.rows.get(*r).is_some_and(|row| row.props.header)).collect();
     // Header rows are re-placed on every page a table spills onto, so a table with many header
     // rows that each spill onto their own page is O(header rows × pages) placed items — a few KB
@@ -4636,11 +4665,12 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
     let mut bands = HashMap::new();
     let mut seen = HashSet::new();
     let mut paint_starts = HashMap::new();
-    let mut place = |pb: &mut PageBuilder,
-                     row: &table::RowLayout,
-                     index: usize,
-                     bands: &mut HashMap<(usize, usize), MergeBand>,
-                     seen: &mut HashSet<(usize, usize)>| {
+    let place = |pb: &mut PageBuilder,
+                 row: &table::RowLayout,
+                 index: usize,
+                 bands: &mut HashMap<(usize, usize), MergeBand>,
+                 seen: &mut HashSet<(usize, usize)>,
+                 paint_starts: &mut HashMap<usize, usize>| {
         let (x, y) = (pb.col_x() + tl.x, pb.y);
         let behind = pb.behind.last().copied().unwrap_or(0);
         let page = pb.pages.len();
@@ -4714,7 +4744,8 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
         let mut fresh = false;
         // Each pass places the part of the row that fits, then breaks the page.
         for _ in 0..1000 {
-            let cur = rest.as_ref().unwrap_or(row);
+            let Some(flowed) = merge_flow.row(rest.as_ref().unwrap_or(row), ri) else { return false };
+            let cur = flowed.as_ref();
             // A fitting kept row follows the next row when that row cannot start below it.
             // Move only the prefix's start; an oversized follower cannot separate its kept rows.
             let defer_kept = pb.y + cur.height <= pb.bottom + 0.01
@@ -4741,7 +4772,10 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
             let split = if splittable && !short_of_min && !defer_kept { table::split_row(cur, room) } else { None };
             match split {
                 Some((a, b)) => {
-                    place(pb, &a, ri, &mut bands, &mut seen);
+                    place(pb, &a, ri, &mut bands, &mut seen, &mut paint_starts);
+                    if !merge_flow.placed(ri, pb, pb.col_x() + tl.x, pb.y - a.height, a.height, a.bottom) {
+                        return false;
+                    }
                     table_notes(ctx, pb, &a.items);
                     rest = Some(b);
                 }
@@ -4749,6 +4783,10 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
                 // repeated there, is placed anyway and runs into the bottom margin.
                 None if pb.at_top() || fresh => break,
                 None => {}
+            }
+            let paint_anchor = paint_starts.get(&pb.pages.len()).copied();
+            if !merge_flow.end_page(pb, paint_anchor) {
+                return false;
             }
             close_merge_bands(pb, &mut bands);
             pb.advance(block, body_top);
@@ -4762,18 +4800,23 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
                         break;
                     }
                     if let Some(h) = tl.rows.get(*hr) {
-                        place(pb, h, *hr, &mut bands, &mut seen);
+                        place(pb, h, *hr, &mut bands, &mut seen, &mut paint_starts);
                         header_repeats += 1;
                     }
                 }
             }
             fresh = true;
         }
-        let last = rest.as_ref().unwrap_or(row);
-        place(pb, last, ri, &mut bands, &mut seen);
+        let Some(last) = merge_flow.row(rest.as_ref().unwrap_or(row), ri) else { return false };
+        place(pb, &last, ri, &mut bands, &mut seen, &mut paint_starts);
+        let paint_anchor = paint_starts.get(&pb.pages.len()).copied();
+        if !merge_flow.placed(ri, pb, pb.col_x() + tl.x, pb.y - last.height, last.height, last.bottom) || !merge_flow.end_row(pb, ri, paint_anchor) {
+            return false;
+        }
         table_notes(ctx, pb, &last.items);
     }
     close_merge_bands(pb, &mut bands);
+    true
 }
 
 /// Footnotes referenced in the cell lines of a placed table row (or part of one) go to the

@@ -14,6 +14,9 @@ use crate::{
     remap_foreground,
 };
 
+mod merge_flow;
+pub(super) use merge_flow::MergeFlow;
+
 /// Largest preferred table width, as a share of the text column, that a file can ask for.
 const MAX_WIDTH_SHARE: f32 = 10.0;
 
@@ -1898,9 +1901,95 @@ fn point_row_total(t: &Table, columns: usize) -> Option<f32> {
     (total.is_finite() && total > 0.0).then_some(total)
 }
 
+// Complete point rows constrain internal boundaries. A full-grid header adds no interior edge.
+fn title_point_widths(t: &Table, grid: &[f32]) -> Option<Vec<f32>> {
+    const WIDTH_EPSILON: f32 = 0.01;
+    const MIN_COMPLETE_ROWS: usize = 2;
+    if t.props.fixed || t.props.width_pct.is_some() || grid.is_empty() {
+        return None;
+    }
+    let target = t.props.width.filter(|w| w.is_finite() && *w > 0.0)?;
+    if grid.iter().any(|w| !w.is_finite() || *w <= 0.0) {
+        return None;
+    }
+    let grid_total: f32 = grid.iter().sum();
+    if !grid_total.is_finite() || (target - grid_total).abs() > WIDTH_EPSILON {
+        return None;
+    }
+    let headers = t.rows.iter().take_while(|row| row.props.header).count();
+    if headers == 0 {
+        return None;
+    }
+    let mut widths: Option<Vec<f32>> = None;
+    let mut complete = 0usize;
+    for row in &t.rows {
+        if row.first_grid() != 0 || row.props.grid_after != 0 {
+            return None;
+        }
+        let mut covered = 0usize;
+        for cell in &row.cells {
+            if cell.props.width_pct.is_some() || !cell.props.width.is_some_and(|w| w.is_finite() && w > 0.0) {
+                return None;
+            }
+            covered = covered.checked_add(cell.span())?;
+        }
+        if covered != grid.len() {
+            return None;
+        }
+        if row.cells.len() != grid.len() || row.cells.iter().any(|cell| cell.span() != 1) {
+            continue;
+        }
+        let candidate: Vec<_> = row.cells.iter().filter_map(|cell| cell.props.width).collect();
+        if let Some(previous) = &widths {
+            if previous.iter().zip(&candidate).any(|(a, b)| (a - b).abs() > WIDTH_EPSILON) {
+                return None;
+            }
+        } else {
+            widths = Some(candidate);
+        }
+        complete += 1;
+    }
+    if complete < MIN_COMPLETE_ROWS {
+        return None;
+    }
+    let widths = widths?;
+    let total: f32 = widths.iter().sum();
+    if !total.is_finite() || total <= 0.0 {
+        return None;
+    }
+    let mut undersized_title = false;
+    for (index, row) in t.rows.iter().enumerate() {
+        let mut start = 0usize;
+        let mut declared = 0.0f32;
+        for cell in &row.cells {
+            let end = start.checked_add(cell.span())?;
+            let expected: f32 = widths.get(start..end)?.iter().sum();
+            let width = cell.props.width?;
+            if index < headers && row.cells.len() == 1 && cell.span() == grid.len() {
+                if width > total + WIDTH_EPSILON {
+                    return None;
+                }
+                undersized_title |= width + WIDTH_EPSILON < total;
+            } else {
+                declared += width;
+                let boundary: f32 = widths.get(..end)?.iter().sum();
+                if !declared.is_finite() || (width - expected).abs() > WIDTH_EPSILON || (declared - boundary).abs() > WIDTH_EPSILON {
+                    return None;
+                }
+            }
+            start = end;
+        }
+    }
+    undersized_title.then_some(widths)
+}
+
 /// Consistent cell boundaries replace a stale grid before the table width is applied.
 /// Every boundary must be declared; missing or conflicting preferences keep the grid.
 fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
+    if let Some(widths) = title_point_widths(t, grid) {
+        grid.copy_from_slice(&widths);
+        return;
+    }
     const WIDTH_EPSILON: f32 = 0.01;
     let total: f32 = grid.iter().sum();
     if grid.is_empty() || !total.is_finite() {
@@ -2682,3 +2771,7 @@ mod para_rule_controls {
 
 #[cfg(test)]
 mod fragment_controls;
+
+#[cfg(test)]
+#[path = "table/title_width_controls.rs"]
+mod title_width_controls;

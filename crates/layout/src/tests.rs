@@ -13209,3 +13209,6 @@ fn split_merge_dedups_bottom() {
         assert_eq!(lines, LONG_LINES, "all original lines survive once");
     }
 }
+
+#[path = "merge_flow_controls.rs"]
+mod merge_flow_controls;
