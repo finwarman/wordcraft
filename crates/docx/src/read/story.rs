@@ -248,7 +248,7 @@ impl Reader<'_> {
         // A table of contents' control belongs to the TOC: the writer puts it back around the
         // TOC field and its entries, which References › Update Table rebuilds.
         let toc = matches!(&ctl.kind, ControlKind::Gallery { list: false, gallery, .. } if gallery == "Table of Contents");
-        if inner.is_empty() || toc {
+        if inner.is_empty() || (toc && ctl.lock.can_edit()) {
             out.extend(inner);
             return;
         }
