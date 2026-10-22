@@ -14,7 +14,9 @@ use crate::{
     remap_foreground,
 };
 
+mod exact_width;
 mod merge_flow;
+mod rounded_width;
 pub(super) use merge_flow::MergeFlow;
 
 /// Largest preferred table width, as a share of the text column, that a file can ask for.
@@ -423,6 +425,8 @@ fn region_borders(parts: &[(TablePart, Borders)], (ri, nrows): (usize, usize), (
 
 pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], avail: f32, depth: usize) -> TableLayout {
     let style = table_style(ctx, t);
+    let prepared = exact_width::prepare(t, style.as_ref());
+    let t = prepared.as_ref();
     // Cell text formatting and looks per set of style parts, built once per table.
     let mut cell_text: Vec<(Region, CellText)> = Vec::new();
     let mut looks: Vec<(Region, RegionLook)> = Vec::new();
@@ -574,8 +578,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             // is on the cell's right.
             let (x0, x1) = if rtl { ((acc - x1).max(0.0), (acc - x0).max(0.0)) } else { (x0, x1) };
             let m = cell.props.resolved_margins(margins_def);
-            let margins = if rtl { [row_top, m[3], row_bottom, m[1]] } else { [row_top, m[1], row_bottom, m[3]] };
-            let cw = (x1 - x0 - margins[1] - margins[3]).max(4.0);
+            let mut margins = if rtl { [row_top, m[3], row_bottom, m[1]] } else { [row_top, m[1], row_bottom, m[3]] };
             let region = region_of(t, style.as_ref(), ri, g, span, ncols);
             // Conditional formatting, later parts winning (ECMA-376 §17.7.6): whole table, column
             // bands, row bands, first/last column, header/total row, corner cells.
@@ -629,6 +632,15 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             if rtl {
                 std::mem::swap(&mut borders.left, &mut borders.right);
             }
+            // A zero-margin fixed cell still clears the inward half of each side rule.
+            if t.props.fixed && !rtl && !cell.props.text_direction.is_turned() {
+                for (side, border) in [(1, borders.left), (3, borders.right)] {
+                    if margins[side] == 0.0 {
+                        margins[side] = border.filter(Border::is_visible).map_or(0.0, |b| b.width.clamp(0.0, 12.0) / 2.0);
+                    }
+                }
+            }
+            let cw = (x1 - x0 - margins[1] - margins[3]).max(4.0);
             // Word keeps the cell's text clear of its top border (and the last row's of its bottom
             // border): the border's width sits on top of the cell margin.
             let band = |b: Option<Border>| b.filter(Border::is_visible).map_or(0.0, |b| b.width.clamp(0.0, 12.0));
@@ -1815,12 +1827,14 @@ fn blocks_content(ctx: &mut Ctx, blocks: &Blocks, text: Option<&CellText>, depth
             // A nested table: its fixed width, else its columns' but at least its preferred width
             // (its own, else its grid's when it has preferred widths at all).
             Block::Table(nt) if depth < 8 => {
+                let style = table_style(ctx, nt);
+                let prepared = exact_width::prepare(nt, style.as_ref());
+                let nt = prepared.as_ref();
                 let grid = if is_automatic(nt) { 0.0 } else { nt.grid.iter().filter(|w| w.is_finite()).map(|w| w.max(0.0)).sum() };
                 let width = nt.props.width.filter(|w| w.is_finite()).unwrap_or(grid).clamp(0.0, UNBOUNDED);
                 if nt.props.fixed && width > 0.0 {
                     (width, width)
                 } else {
-                    let style = table_style(ctx, nt);
                     let cols = column_content(ctx, nt, style.as_ref(), depth + 1, &nt.grid).unwrap_or_default();
                     let (l, h) = cols.iter().fold((0.0, 0.0), |(l, h), c| (l + c.0, h + c.1));
                     (width.max(l), width.max(h))
@@ -2775,3 +2789,11 @@ mod fragment_controls;
 #[cfg(test)]
 #[path = "table/title_width_controls.rs"]
 mod title_width_controls;
+
+#[cfg(test)]
+#[path = "table/exact_width_controls.rs"]
+mod exact_width_controls;
+
+#[cfg(test)]
+#[path = "table/side_border_controls.rs"]
+mod side_border_controls;
