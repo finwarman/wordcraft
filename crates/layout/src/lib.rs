@@ -2577,6 +2577,16 @@ fn layout_pass(
     if pb.pages.is_empty() {
         pb.new_page(0, sect_ref.margin_top);
     }
+    // A final standalone break ends the content page without adding an unused sheet.
+    // Text with an attached break and an explicit following paragraph retain their pages.
+    if !web
+        && doc.body.len() > 1
+        && pb.carry.is_empty()
+        && endnotes.is_empty()
+        && doc.body.last().and_then(|b| b.as_para()).is_some_and(standalone_page_break)
+    {
+        pb.take_back_break_page();
+    }
     // The rest of the endnotes after the last paragraph.
     let rest: Vec<u32> = endnotes.into_iter().map(|(id, _)| id).collect();
     place_endnotes(&mut ctx, &mut pb, rest, block);
@@ -4380,6 +4390,11 @@ fn only_bookmarks(p: &Paragraph) -> bool {
     objects.next().is_none()
 }
 
+fn standalone_page_break(p: &Paragraph) -> bool {
+    let Some(at) = p.text.find(wordcraft_doc::para::PAGE_BREAK) else { return false };
+    only_markers(p, 0..at) && only_markers(p, at + wordcraft_doc::para::PAGE_BREAK.len_utf8()..p.text.len())
+}
+
 /// Whether `range` of `p`'s text holds nothing but zero-width markers (bookmarks, field and
 /// control boundaries…), or nothing at all: a line of them takes no room after a page break.
 fn only_markers(p: &Paragraph, range: std::ops::Range<usize>) -> bool {
@@ -4963,6 +4978,10 @@ fn place_floating_table(ctx: &mut Ctx, pb: &mut PageBuilder, tl: &table::TableLa
         };
         let x = float_table_x(pb, w, f, legacy, ctx.mirror);
         let mut obstacles = if f.overlap { Vec::new() } else { header_table_areas(ctx, pb) };
+        if !f.overlap {
+            // Earlier wrapped drawings also constrain a table that forbids overlap.
+            obstacles.extend(pb.excl.iter().map(|(rect, ..)| *rect));
+        }
         obstacles.extend_from_slice(&pb.float_tables);
         let r = clear_of_float_tables(Rect::new(x, align_in(v_area, f.y, h, f.v_align), w, h), f, legacy, h_area.0, &obstacles);
         // Like Word, a table that doesn't fit below the text before it moves to the next page with
@@ -5306,6 +5325,8 @@ mod tests;
 mod tests_autospace;
 #[cfg(test)]
 mod tests_bidi;
+#[cfg(test)]
+mod tests_blank_pages;
 #[cfg(test)]
 mod tests_complex;
 #[cfg(test)]

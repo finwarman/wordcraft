@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod exact_width;
+mod incomplete_grid;
 mod merge_flow;
 mod rounded_width;
 pub(super) use merge_flow::MergeFlow;
@@ -432,7 +433,9 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
     let mut looks: Vec<(Region, RegionLook)> = Vec::new();
     let ncols = t.cols().max(1);
     // Column widths.
-    let mut grid: Vec<f32> = if t.grid.len() == ncols {
+    let mut grid: Vec<f32> = if let Some(grid) = incomplete_grid::recover(t) {
+        grid
+    } else if t.grid.len() == ncols {
         // Grid units can be narrower than a text box, including omitted row-end columns.
         t.grid
             .iter()

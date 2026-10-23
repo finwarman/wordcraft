@@ -50,6 +50,40 @@ fn frame_of(l: &DocLayout, id: u32) -> Rect {
 }
 
 #[test]
+fn float_table_clears_shape() {
+    use wordcraft_doc::para::Anchor;
+    use wordcraft_doc::table::Table;
+
+    for wrap in [Wrap::Square, Wrap::Tight, Wrap::BehindText, Wrap::InFrontOfText] {
+        for overlap in [false, true] {
+            for x in [72.0, 400.0] {
+                let mut d = Document::from_text("");
+                let id = text_box(&mut d, 0, "Requirements", 200.0, 150.0, TextBody::default());
+                let p = d.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+                *p.objects[0].float_mut().unwrap() = Float { wrap, h_rel: Anchor::Page, v_rel: Anchor::Paragraph, x, y: 10.0, ..Default::default() };
+                let mut table = Table::new(1, 1, 200.0);
+                table.props.float = Some(TableFloat { h_rel: Anchor::Margin, v_rel: Anchor::Paragraph, overlap, ..Default::default() });
+                table.rows[0].cells[0].blocks = vec![para_block(Paragraph::with_text("Intervals", Default::default()))];
+                d.body.push(wordcraft_doc::Block::Table(table).into());
+
+                let l = lay(&d);
+                let shape = frame_of(&l, id);
+                let top = l.pages[0]
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        Placed::Cell { rect, .. } => Some(rect.y),
+                        _ => None,
+                    })
+                    .unwrap();
+                let clears = !overlap && x == 72.0 && matches!(wrap, Wrap::Square | Wrap::Tight);
+                assert_eq!(top >= shape.bottom(), clears, "{wrap:?}, overlap={overlap}, x={x}: table {top}, shape {shape:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn align_text_and_text_direction_place_the_text_in_the_box() {
     let at = |body: TextBody| {
         let mut d = Document::from_text("x");
