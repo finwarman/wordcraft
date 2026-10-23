@@ -7627,6 +7627,36 @@ fn section_mark_hidden_styles() {
 }
 
 #[test]
+fn continuous_paper_changes() {
+    use wordcraft_doc::section::{SectionProps, SectionStart};
+
+    let portrait = SectionProps::default();
+    let landscape = SectionProps { page_w: portrait.page_h, page_h: portrait.page_w, landscape: true, ..portrait.clone() };
+    let wider = SectionProps { page_w: portrait.page_w + 72.0, ..portrait.clone() };
+    let taller = SectionProps { page_h: portrait.page_h + 72.0, ..portrait.clone() };
+    for (first, last, count) in [
+        (landscape.clone(), portrait.clone(), 2),
+        (portrait.clone(), landscape, 2),
+        (portrait.clone(), wider, 2),
+        (portrait.clone(), taller, 2),
+        (portrait.clone(), portrait.clone(), 1),
+        (portrait.clone(), SectionProps { margin_top: portrait.margin_top + 12.0, ..portrait }, 1),
+    ] {
+        for direction in [TextDirection::Horizontal, TextDirection::Down, TextDirection::Up] {
+            let mut doc = Document::from_text("Before section\n\nCertification details");
+            doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().section =
+                Some(Box::new(SectionProps { text_direction: direction, ..first.clone() }));
+            doc.last_section = SectionProps { start: SectionStart::Continuous, text_direction: direction, ..last.clone() };
+            let laid = lay(&doc);
+            assert_eq!(laid.pages.len(), count, "{direction:?}: {first:?} -> {last:?}");
+            let after = laid.caret(&Pos::body(2, 0)).unwrap();
+            assert_eq!(after.page, count - 1);
+            assert_eq!((laid.pages[after.page].w, laid.pages[after.page].h), (last.page_w, last.page_h));
+        }
+    }
+}
+
+#[test]
 fn empty_page_section_keeps_line() {
     use wordcraft_doc::section::{SectionProps, SectionStart};
     let mut doc = Document::from_text("\nAfter empty section\n\nReference prefix\n\nAfter middle mark");

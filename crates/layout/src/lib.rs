@@ -2333,7 +2333,7 @@ fn layout_pass(
     ctx.mirror = doc.settings.mirror_margins && !reflow;
     ctx.quiet_marks = sections
         .windows(2)
-        .filter(|w| w[1].1.start == SectionStart::Continuous)
+        .filter(|w| w[1].1.start == SectionStart::Continuous && (reflow || continues_on_page(w[0].1, w[1].1)))
         .map(|w| w[0].0)
         .filter(|end| doc.body.get(*end).and_then(|b| b.as_para()).is_some_and(|p| p.text.is_empty()))
         .collect();
@@ -2439,12 +2439,12 @@ fn layout_pass(
         })
         .collect();
     let mut prev_turn = TextDirection::Horizontal;
-    for (si, (end, sect)) in sections.iter().enumerate() {
-        let turn = if reflow { TextDirection::Horizontal } else { sect.text_direction };
+    for (si, (end, physical_sect)) in sections.iter().enumerate() {
+        let turn = if reflow { TextDirection::Horizontal } else { physical_sect.text_direction };
         let sect: &SectionProps = match turned.get(si) {
             Some(Some(t)) => t,
             _ if reflow => sect_ref,
-            _ => sect,
+            _ => physical_sect,
         };
         pb.sect = sect;
         pb.sect_idx = si;
@@ -2482,7 +2482,17 @@ fn layout_pass(
         if sect.line_numbers.as_ref().is_some_and(|l| l.restart == wordcraft_doc::section::LineNumberRestart::Section) {
             pb.line_no = 0;
         }
-        let start = if si == 0 { SectionStart::NextPage } else { sect.start };
+        let start = if si == 0 {
+            SectionStart::NextPage
+        } else if !reflow
+            && sect.start == SectionStart::Continuous
+            && sections.get(si - 1).is_some_and(|(_, prev)| !continues_on_page(prev, physical_sect))
+        {
+            // Word starts a new sheet when a continuous section changes the paper size.
+            SectionStart::NextPage
+        } else {
+            sect.start
+        };
         if web && si > 0 {
             // one long page
         } else if pb.pages.is_empty() || start != SectionStart::Continuous || turn != prev_turn {
@@ -2529,9 +2539,10 @@ fn layout_pass(
         let balance = !web
             && pb.cols.len() > 1
             && sect.valign == wordcraft_doc::section::PageVAlign::Top
-            && sections.get(si + 1).is_some_and(|(_, s)| s.start == SectionStart::Continuous);
+            && sections.get(si + 1).is_some_and(|(_, s)| s.start == SectionStart::Continuous && (reflow || continues_on_page(physical_sect, s)));
         pb.col_break_page = None;
-        pb.next_starts_page = !web && sections.get(si + 1).is_some_and(|(_, s)| s.start != SectionStart::Continuous);
+        pb.next_starts_page = !web
+            && sections.get(si + 1).is_some_and(|(_, s)| s.start != SectionStart::Continuous || (!reflow && !continues_on_page(physical_sect, s)));
         let mut from = balance.then(|| (block, Snap::take(&mut pb, &ctx)));
         while block <= last {
             let Some(b) = doc.body.get(block) else { break };
@@ -2893,6 +2904,10 @@ fn item_bottom(y: f32, para: &ParaLayout, l0: usize, l1: usize) -> Option<f32> {
     let f = para.lines.get(l0)?;
     let l = para.lines.get(l1.checked_sub(1)?)?;
     Some(y + l.top + l.height - f.top)
+}
+
+fn continues_on_page(current: &SectionProps, next: &SectionProps) -> bool {
+    next.start == SectionStart::Continuous && current.page_w == next.page_w && current.page_h == next.page_h
 }
 
 /// Whether a section that starts on a new page needs a blank page first so it lands on the right
