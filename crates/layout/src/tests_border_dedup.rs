@@ -266,3 +266,80 @@ fn unframed_rules_stay_separate() {
         }
     }
 }
+
+#[test]
+fn merged_rules_are_ordered() {
+    const MERGED_COLUMNS: usize = 12;
+    let columns = MERGED_COLUMNS + 1;
+    let width = columns as f32 * CELL_WIDTH;
+    let border = cell_border(EdgeRoute::CloseBottom);
+    let mut d = Document::new();
+    d.settings.compat_mode = 15;
+    d.last_section.page_w = width + 2.0 * PAGE_MARGIN;
+    d.last_section.page_h = PAGE_BODY + 2.0 * PAGE_MARGIN;
+    d.last_section.margin_top = PAGE_MARGIN;
+    d.last_section.margin_bottom = PAGE_MARGIN;
+    d.last_section.margin_left = PAGE_MARGIN;
+    d.last_section.margin_right = PAGE_MARGIN;
+    let mut table = Table::new(2, columns, width);
+    table.props.style = None;
+    table.props.fixed = true;
+    table.props.cell_margins = Some([0.0; 4]);
+    let none = Some(Border::default());
+    table.props.borders = Some(Borders { top: none, bottom: Some(border), left: none, right: none, between: Some(border), inside_v: none });
+    for (index, row) in table.rows.iter_mut().enumerate() {
+        row.props.cant_split = true;
+        for (column, cell) in row.cells.iter_mut().enumerate() {
+            cell.blocks = vec![para_block(paragraph("Row"))];
+            if column < MERGED_COLUMNS {
+                cell.props.vmerge = if index == 0 { VMerge::Restart } else { VMerge::Continue };
+            }
+        }
+    }
+    d.body = vec![std::sync::Arc::new(Block::Table(table))];
+    for _ in 0..3 {
+        let l = model_layout(&d);
+        assert_eq!(l.pages.len(), 2);
+        let page = &l.pages[0];
+        let cells: Vec<_> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Cell { table, row: 0, cell, rect, .. } if table.0 == [0] && *cell < MERGED_COLUMNS => Some((*cell, *rect)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cells.len(), MERGED_COLUMNS);
+        let close = page
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Cell { table, row: 0, cell: MERGED_COLUMNS, rect, .. } if table.0 == [0] => Some(rect.bottom()),
+                _ => None,
+            })
+            .unwrap();
+        let expected: Vec<_> = cells
+            .iter()
+            .map(|(column, rect)| {
+                assert_eq!(rect.x, PAGE_MARGIN + *column as f32 * CELL_WIDTH);
+                (rect.x, rect.right(), close, close, border)
+            })
+            .collect();
+        let actual: Vec<_> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Rule { x0, x1, y0, y1, border: actual }
+                    if *actual == border && y0 == y1 && *y0 == close && *x0 < PAGE_MARGIN + MERGED_COLUMNS as f32 * CELL_WIDTH =>
+                {
+                    Some((*x0, *x1, *y0, *y1, *actual))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut by_column = actual.clone();
+        by_column.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(by_column, expected, "all closures keep their exact physical-fragment geometry and style");
+        assert_eq!(actual, expected, "merged closures retain source-column order");
+    }
+}
