@@ -11062,6 +11062,16 @@ mod continuous_picture_fit {
     }
 
     #[test]
+    fn text_before_anchor_uses_fresh() {
+        for (case, page, top) in [(Case::Fits, 0, BODY_TOP + BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT), (Case::Overflow, 1, BODY_TOP)] {
+            let mut d = document(case, Flow::Continuous, 1);
+            let section = d.para_mut(StoryRef::Body, &Path::top(BEFORE_LINES - 1)).unwrap().section.take();
+            d.para_mut(StoryRef::Body, &Path::top(BEFORE_LINES - 2)).unwrap().section = section;
+            assert_native_doc(&d, case, page, top);
+        }
+    }
+
+    #[test]
     fn first_header_keeps_owned_page() {
         let sample = |start| {
             let mut d = document(Case::Overflow, Flow::Unbroken, 1);

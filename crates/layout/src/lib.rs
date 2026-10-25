@@ -3826,17 +3826,17 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     let picture_paragraph = p.objects.iter().filter(|o| !matches!(o, InlineObject::BookmarkStart { .. } | InlineObject::BookmarkEnd { .. })).count()
         == 1
         && p.text.chars().all(|c| c == wordcraft_doc::para::OBJ || c.is_whitespace());
-    // One column at a continuous section's partial top advances straight to a fresh page.
+    // A shared continuous section uses the fresh page's capacity, also after its own text.
     // Pending notes can change that page's capacity; keep their existing route.
-    let partial_page_start = !pb.web
+    let shared_page = !pb.web
         && pb.sect.start == SectionStart::Continuous
         && pb.pages.last().is_some_and(|p| p.section != pb.sect_idx && pb.content_bottom > p.body.y + 0.01)
         && pb.cols.len() == 1
-        && pb.at_top()
         && pb.top > body_top + 0.01
         && pb.notes.is_empty()
         && pb.carry.is_empty();
-    let float_capacity = if partial_page_start { pb.page_bottom(body_top) - body_top } else { pb.uncapped_bottom() - pb.top };
+    let partial_page_start = shared_page && pb.at_top();
+    let float_capacity = if shared_page { pb.page_bottom(body_top) - body_top } else { pb.uncapped_bottom() - pb.top };
     let float_overflows = picture_paragraph
         && p.objects.iter().enumerate().any(|(i, o)| {
             let picture = match o {
