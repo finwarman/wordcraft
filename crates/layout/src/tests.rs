@@ -11706,3 +11706,172 @@ fn a_row_leaves_room_for_the_border_below_it() {
         }
     }
 }
+
+#[test]
+fn clipped_caret_can_navigate() {
+    use wordcraft_doc::props::{HeightRule, LineSpacing};
+    let mut d = Document::from_text("After");
+    let mut table = Table::new(1, 1, 200.0);
+    table.props.style = None;
+    table.props.cell_margins = Some([0.0; 4]);
+    table.rows[0].props.height = Some(12.0);
+    table.rows[0].props.height_rule = HeightRule::Exact;
+    let mut p = Paragraph::with_text("One\nTwo\nThree\nFour", Default::default());
+    p.props.line_spacing = Some(LineSpacing::Exactly(10.0));
+    p.props.space_after = Some(0.0);
+    table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+    d.insert_block(StoryRef::Body, &Path::top(0), Block::Table(table)).unwrap();
+    let l = lay(&d);
+    let pos = Pos { story: StoryRef::Body, path: Path(vec![0, 0, 0, 0]), off: 8 };
+    assert!(l.caret(&pos).is_none(), "hidden caret stays unpainted");
+    assert!(l.caret_anchor_on(&pos, 0).is_some(), "scrolling retains the intrinsic anchor");
+    assert_eq!(l.page_of(&pos), Some(0), "hidden content retains its page");
+    let (up, _) = l.vertical(&pos, None, -1, 0).unwrap();
+    assert_eq!(up.path, pos.path);
+    assert_eq!(up.off, 4, "move to the adjacent hidden line");
+    let (down, _) = l.vertical(&up, None, 1, 0).unwrap();
+    assert_eq!(down, pos);
+}
+
+#[test]
+fn cell_float_draws_are_clipped() {
+    use wordcraft_doc::graphic::{Graphic, GraphicItem};
+    use wordcraft_doc::para::{Anchor, CanvasStyle, Float, GroupChild, Wrap};
+    use wordcraft_doc::props::{HeightRule, LineSpacing};
+    for turn in [TextDirection::Horizontal] {
+        let float = Float { wrap: Wrap::InFrontOfText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, ..Default::default() };
+        let mut shape = picture(100.0, 100.0, float.clone());
+        if let InlineObject::Shape { fill, .. } = &mut shape {
+            *fill = Some(Fill::solid(Rgb(17, 33, 49)));
+        }
+        let canvas = InlineObject::Group {
+            w: 100.0,
+            h: 100.0,
+            float: float.clone(),
+            ch_w: 100.0,
+            ch_h: 100.0,
+            children: vec![GroupChild { x: 0.0, y: 0.0, obj: shape.clone() }],
+            canvas: Some(CanvasStyle { fill: None, stroke: None, stroke_width: 0.0 }),
+        };
+        let objects = vec![
+            canvas,
+            shape,
+            InlineObject::Image {
+                media: "synthetic".into(),
+                w: 100.0,
+                h: 100.0,
+                alt: String::new(),
+                float: float.clone(),
+                crop: [0.0; 4],
+                ole: None,
+            },
+            InlineObject::Graphic {
+                w: 100.0,
+                h: 100.0,
+                alt: String::new(),
+                float,
+                graphic: Arc::new(Graphic {
+                    w: 100.0,
+                    h: 100.0,
+                    items: vec![GraphicItem::Image { rect: [0.0, 0.0, 100.0, 100.0], media: "synthetic".into() }],
+                    ..Default::default()
+                }),
+            },
+        ];
+        for object in objects {
+            let mut d = Document::new();
+            let mut table = Table::new(1, 1, 40.0);
+            table.props.style = None;
+            table.props.fixed = true;
+            table.props.cell_margins = Some([0.0; 4]);
+            table.props.borders = Some(Borders::all(Border::single(1.0)));
+            table.rows[0].props.height = Some(20.0);
+            table.rows[0].props.height_rule = HeightRule::Exact;
+            table.rows[0].cells[0].props.text_direction = turn;
+            let mut p = Paragraph::with_text("One\nTwo\nThree\nFour", Default::default());
+            p.props.line_spacing = Some(LineSpacing::Exactly(10.0));
+            p.props.space_after = Some(0.0);
+            p.insert_object(0, object, &Default::default()).unwrap();
+            table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+            d.body = vec![Arc::new(Block::Table(table))];
+            let l = lay(&d);
+            let page = &l.pages[0];
+            let cell = page
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    Placed::Cell { rect, clip: true, .. } => Some(*rect),
+                    _ => None,
+                })
+                .unwrap();
+            let draws = display::page_display(&d, page, &Default::default());
+            let mut count = 0;
+            fn check(draws: &[display::Draw], clip: Option<wordcraft_geom::Rect>, cell: wordcraft_geom::Rect, count: &mut usize) {
+                for draw in draws {
+                    match draw {
+                        display::Draw::Clip { rect, items } => check(items, clip.or(Some(*rect)), cell, count),
+                        display::Draw::Turned { items, .. } | display::Draw::Rotated { items, .. } => check(items, clip, cell, count),
+                        display::Draw::Image { .. } | display::Draw::Shape { .. } => {
+                            assert_eq!(clip, Some(cell), "floating drawable escapes its physical cell");
+                            *count += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            check(&draws, None, cell, &mut count);
+            assert!(count > 0);
+            assert!(draws.iter().any(|d| matches!(d, display::Draw::Line { .. })), "cell borders stay outside the content clip");
+            let object = l.object(&Pos { story: StoryRef::Body, path: Path(vec![0, 0, 0, 0]), off: 0 }, 0).unwrap();
+            let x = object.rect.x + 2.0;
+            let y = cell.bottom() + 5.0;
+            assert!(object.rect.contains(wordcraft_geom::Point::new(x, y)));
+            assert!(l.object_at(0, x, y, 0.0).is_none(), "overflow must not receive hits");
+            assert!(l.object_at(0, x, cell.y + 5.0, 0.0).is_some());
+        }
+    }
+}
+
+#[test]
+fn float_clip_instances() {
+    use wordcraft_doc::para::Wrap;
+    use wordcraft_geom::{Point, Rect, Spin};
+    let mut items = Vec::new();
+    for (x, clip) in [(20.0, true), (200.0, false)] {
+        let rect = Rect::new(x, 20.0, 60.0, 80.0);
+        items.push(Placed::Image {
+            rect,
+            media: "synthetic".into(),
+            crop: [0.0; 4],
+            story: StoryRef::Body,
+            path: Path(vec![0, 0, 0, 0]),
+            off: 0,
+            spin: Spin::default(),
+        });
+        items.push(Placed::Object {
+            rect,
+            spin: Spin::default(),
+            story: StoryRef::Body,
+            path: Path(vec![0, 0, 0, 0]),
+            off: 0,
+            text_box: None,
+            wrap: Wrap::InFrontOfText,
+            origin: Point::new(x, 20.0),
+        });
+        items.push(Placed::Cell {
+            rect: Rect::new(x, 20.0, 60.0, 30.0),
+            covered: false,
+            table: Path::top(0),
+            row: 0,
+            cell: 0,
+            story: StoryRef::Body,
+            clip,
+        });
+    }
+    let l = DocLayout { pages: vec![Page { w: 400.0, h: 400.0, items, ..Default::default() }], ..Default::default() };
+    assert!(l.object_at(0, 25.0, 70.0, 0.0).is_none());
+    assert!(l.object_at(0, 205.0, 70.0, 0.0).is_some(), "another physical copy stays interactive");
+    let draws = display::page_display(&Document::new(), &l.pages[0], &Default::default());
+    assert!(matches!(&draws[0], display::Draw::Clip { rect, .. } if rect.h == 30.0));
+    assert!(matches!(&draws[1], display::Draw::Image { rect, .. } if rect.x == 200.0));
+}

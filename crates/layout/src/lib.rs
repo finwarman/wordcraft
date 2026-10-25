@@ -338,6 +338,22 @@ pub enum Placed {
 }
 
 impl Placed {
+    /// Source ownership survives group and canvas placement; borders have no source.
+    fn source(&self) -> Option<(StoryRef, &Path)> {
+        let mut pending = vec![self];
+        while let Some(item) = pending.pop() {
+            match item {
+                Placed::Lines { story, path, .. } | Placed::Image { story, path, .. } | Placed::Graphic { story, path, .. } => {
+                    return Some((*story, path));
+                }
+                Placed::Shape { object: Some(pos), .. } => return Some((pos.story, &pos.path)),
+                Placed::Clip { items, .. } => pending.extend(items.iter().rev()),
+                _ => {}
+            }
+        }
+        None
+    }
+
     fn translate(&mut self, dx: f32, dy: f32) {
         match self {
             Placed::Lines { x, y, .. } => {
@@ -1596,11 +1612,11 @@ fn fit_lines(items: Vec<Placed>, height: f32, fit: LineFit) -> Vec<Placed> {
                     out.push(it);
                     continue;
                 }
-                Placed::Lines { .. } => {}
-                _ => {
+                Placed::Cell { .. } => {
                     out.push(it);
                     continue;
                 }
+                _ => {}
             }
         }
         if let Some(r) = it.turned_bounds() {

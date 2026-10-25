@@ -743,7 +743,6 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 VAlign::Bottom => (span_h - align_h).max(0.0),
             };
             let end = (c.vmerge != VMerge::Continue && c.turned.is_none()).then_some(c.end + dy);
-            let bound_decoration = exact && c.vmerge != VMerge::Continue && c.turned.is_none() && c.h > span_h + 0.01;
             let mut cell_items = c.items;
             if let Some(tn) = c.turned {
                 dy = 0.0;
@@ -780,23 +779,6 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 }
             } else if exact {
                 cell_items = fit_cell_box(cell_items, span_h - c.margins[2], story);
-            }
-            if bound_decoration {
-                // Bound nested decoration without discarding owning-story lines or cell markers.
-                let limit = span_h - c.margins[2] + 0.5;
-                cell_items.retain_mut(|item| match item {
-                    Placed::Fill { rect, .. } if rect.y < limit => {
-                        rect.h = rect.h.min(limit - rect.y);
-                        true
-                    }
-                    Placed::Rule { y0, y1, .. } if (*y0).min(*y1) < limit => {
-                        *y0 = (*y0).min(limit);
-                        *y1 = (*y1).min(limit);
-                        true
-                    }
-                    Placed::Fill { .. } | Placed::Rule { .. } => false,
-                    _ => true,
-                });
             }
             for mut it in cell_items {
                 it.translate(0.0, dy);

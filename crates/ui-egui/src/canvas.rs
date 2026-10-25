@@ -647,7 +647,7 @@ fn reading_page_start(layout: &DocLayout, page: usize) -> Option<Pos> {
 /// Resolve a reading anchor after page breaks change. Preserves the first visible text instead
 /// of jumping to the editing caret (which may be thousands of columns away).
 fn reading_anchor_page(layout: &DocLayout, anchor: &Pos) -> Option<usize> {
-    layout.caret_on(anchor, 0).map(|c| c.page)
+    layout.page_of(anchor)
 }
 
 /// Turn one reading column left/right. Multiple ticks during an animation queue additional
@@ -1156,7 +1156,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         }
     }
     // Where the selection really ends, also when it took whole table cells.
-    let caret = layout.caret_on(&preview_sel(app).unwrap_or(app.session.sel_ends()).focus, app.session.page_hint);
+    let caret = layout.caret_anchor_on(&preview_sel(app).unwrap_or(app.session.sel_ends()).focus, app.session.page_hint);
     // Editing a header/footer (or a note) dims the body; once per frame, for every page.
     let dim_body = dims_body(app, &layout);
     if let Some(c) = caret

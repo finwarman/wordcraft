@@ -111,20 +111,32 @@ fn all_objects(page: &Page, index: usize) -> impl Iterator<Item = ObjectHit> + '
 }
 
 fn objects_in(items: &[Placed], index: usize) -> impl Iterator<Item = ObjectHit> + '_ {
-    items.iter().rev().filter_map(move |it| match it {
-        Placed::Object { rect, spin, story, path, off, text_box, wrap, origin } => Some(ObjectHit {
-            page: index,
-            rect: *rect,
-            spin: *spin,
-            story: *story,
-            path: path.clone(),
-            off: *off,
-            text_box: *text_box,
-            wrap: *wrap,
-            origin: *origin,
-        }),
+    object_items(items, index).map(|(object, _)| object)
+}
+
+fn object_items(items: &[Placed], index: usize) -> impl Iterator<Item = (ObjectHit, Option<Rect>)> + '_ {
+    let clips = clipped_cells(items);
+    items.iter().enumerate().rev().filter_map(move |(ii, it)| match it {
+        Placed::Object { rect, spin, story, path, off, text_box, wrap, origin } => Some((
+            ObjectHit {
+                page: index,
+                rect: *rect,
+                spin: *spin,
+                story: *story,
+                path: path.clone(),
+                off: *off,
+                text_box: *text_box,
+                wrap: *wrap,
+                origin: *origin,
+            },
+            cell_clip(&clips, *story, &path.0, ii),
+        )),
         _ => None,
     })
+}
+
+fn objects_at(items: &[Placed], page: usize, x: f32, y: f32) -> impl Iterator<Item = ObjectHit> + '_ {
+    object_items(items, page).filter(move |(_, clip)| point_in_clip(*clip, x, y)).map(|(object, _)| object)
 }
 
 /// The story of the text (not a text box's) near (x, y): body, footnotes, endnotes.
@@ -240,9 +252,23 @@ pub fn page_lines(page: &Page, story: StoryRef) -> Vec<LineHit<'_>> {
     hit_lines(page, story).into_iter().map(|(line, _)| line).collect()
 }
 
+#[derive(Clone, Copy)]
+enum Geometry {
+    Visible,
+    Intrinsic,
+}
+
 fn hit_lines(page: &Page, story: StoryRef) -> Vec<(LineHit<'_>, Option<Rect>)> {
+    collect_lines(page, story, Geometry::Visible)
+}
+
+fn collect_lines(page: &Page, story: StoryRef, geometry: Geometry) -> Vec<(LineHit<'_>, Option<Rect>)> {
     let mut v = Vec::new();
     for (it, clip) in line_items(page, story) {
+        let clip = match geometry {
+            Geometry::Visible => clip,
+            Geometry::Intrinsic => None,
+        };
         if let Placed::Lines { story: s, path, para, l0, l1, x, y, turn } = it {
             if turn.is_turned() {
                 continue;
@@ -412,7 +438,9 @@ impl DocLayout {
     pub fn story_at(&self, page: usize, x: f32, y: f32) -> Option<StoryRef> {
         let p = self.pages.get(page)?;
         let text_box = |behind: bool| {
-            objects(p, page).find(|o| o.behind() == behind && o.text_box.is_some() && o.rect.contains(Point::new(x, y))).and_then(|o| o.text_box)
+            objects_at(&p.items, page, x, y)
+                .find(|o| o.behind() == behind && o.text_box.is_some() && o.rect.contains(Point::new(x, y)))
+                .and_then(|o| o.text_box)
         };
         text_box(false).map(StoryRef::Part).or_else(|| text_at(p, page, x, y)).or_else(|| text_box(true).map(StoryRef::Part))
     }
@@ -435,8 +463,10 @@ impl DocLayout {
             o.rect.expand(edge).contains(pt) && (o.text_box.is_none() || !o.rect.expand(-edge).contains(pt) || o.rect.w.min(o.rect.h) <= edge * 3.0)
         };
         let cands: Vec<ObjectHit> = match story {
-            StoryRef::Body => objects(p, page).collect(),
-            StoryRef::Part(_) => all_objects(p, page).filter(|o| o.story == story).collect(),
+            StoryRef::Body => objects_at(&p.items, page, x, y).collect(),
+            StoryRef::Part(_) => {
+                [&p.items, &p.header, &p.footer].into_iter().flat_map(|items| objects_at(items, page, x, y)).filter(|o| o.story == story).collect()
+            }
         };
         let text_here = match story {
             StoryRef::Body => text_at(p, page, x, y).is_some(),
@@ -452,8 +482,8 @@ impl DocLayout {
     /// The text box in the header or footer at (x, y) on `page`.
     pub fn header_footer_text_box_at(&self, page: usize, x: f32, y: f32) -> Option<u32> {
         let p = self.pages.get(page)?;
-        objects_in(&p.header, page)
-            .chain(objects_in(&p.footer, page))
+        objects_at(&p.header, page, x, y)
+            .chain(objects_at(&p.footer, page, x, y))
             .find(|o| o.text_box.is_some() && o.rect.contains(Point::new(x, y)))
             .and_then(|o| o.text_box)
     }
@@ -577,7 +607,21 @@ impl DocLayout {
     }
 
     pub fn caret_on(&self, pos: &Pos, page_hint: usize) -> Option<Caret> {
+        self.caret_for(pos, page_hint, Geometry::Visible)
+    }
+
+    /// Intrinsic caret anchor for navigation and scrolling, including fully clipped text.
+    /// Painting and input-method overlays must use `caret_on` instead.
+    pub fn caret_anchor_on(&self, pos: &Pos, page_hint: usize) -> Option<Caret> {
+        self.caret_for(pos, page_hint, Geometry::Intrinsic)
+    }
+
+    fn caret_for(&self, pos: &Pos, page_hint: usize, geometry: Geometry) -> Option<Caret> {
         for (pi, it, clip) in self.pieces(pos.story, &pos.path, page_hint) {
+            let clip = match geometry {
+                Geometry::Visible => clip,
+                Geometry::Intrinsic => None,
+            };
             let Placed::Lines { para, l0, l1, x, y, turn, .. } = it else { continue };
             let li = para.line_of(pos.off);
             if li < *l0 || li >= *l1 {
@@ -608,10 +652,10 @@ impl DocLayout {
 
     /// The position one line up (`dir < 0`) or down from `pos`, keeping `goal_x` (page x).
     pub fn vertical(&self, pos: &Pos, goal_x: Option<f32>, dir: i32, page_hint: usize) -> Option<(Pos, f32)> {
-        let c = self.caret_on(pos, page_hint)?;
+        let c = self.caret_anchor_on(pos, page_hint)?;
         let gx = goal_x.unwrap_or(c.x);
         let page = self.pages.get(c.page)?;
-        let lines = page_lines(page, pos.story);
+        let lines = collect_lines(page, pos.story, Geometry::Intrinsic).into_iter().map(|(line, _)| line).collect::<Vec<_>>();
         let cur_mid = c.top + c.height / 2.0;
         let cands: Vec<&LineHit> = lines
             .iter()
@@ -647,7 +691,7 @@ impl DocLayout {
         // Next/previous page.
         let np = if dir < 0 { c.page.checked_sub(1)? } else { c.page + 1 };
         let p = self.pages.get(np)?;
-        let lines = page_lines(p, pos.story);
+        let lines = collect_lines(p, pos.story, Geometry::Intrinsic).into_iter().map(|(line, _)| line).collect::<Vec<_>>();
         let l = if dir < 0 { lines.iter().max_by(|a, b| a.top.total_cmp(&b.top))? } else { lines.iter().min_by(|a, b| a.top.total_cmp(&b.top))? };
         let off = l.para.off_at_x(l.li, gx - l.x);
         Some((Pos { story: l.story, path: l.path.clone(), off }, gx))
@@ -933,7 +977,7 @@ impl DocLayout {
 
     /// Page index for a body position (first page showing its line).
     pub fn page_of(&self, pos: &Pos) -> Option<usize> {
-        self.caret(pos).map(|c| c.page)
+        self.caret_anchor_on(pos, 0).map(|c| c.page)
     }
 
     /// Table cell under a point: (story, table path, row, cell).
