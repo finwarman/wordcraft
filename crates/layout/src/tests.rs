@@ -622,7 +622,26 @@ fn a_megabyte_long_word_lays_out_quickly() {
 
 /// A cluster with the given advance and kind, for the tests that measure a word by hand.
 fn word_cluster(kind: para::ClKind, adv: f32, break_after: bool) -> para::Cluster {
-    para::Cluster { start: 0, end: 1, adv, kind, style: 0, g0: 0, g1: 1, break_after, obj_h: 0.0, obj_d: 0.0, dot: false }
+    // Seed once through layout so private shaping metadata stays valid in the synthetic controls.
+    static SEED: std::sync::OnceLock<para::Cluster> = std::sync::OnceLock::new();
+    let mut cluster = SEED
+        .get_or_init(|| {
+            lay(&Document::from_text("a"))
+                .pages
+                .iter()
+                .flat_map(|page| &page.items)
+                .find_map(|item| match item {
+                    Placed::Lines { para, .. } => para.clusters.first().cloned(),
+                    _ => None,
+                })
+                .unwrap()
+        })
+        .clone();
+    assert_eq!((cluster.start, cluster.end, cluster.g0, cluster.g1), (0, 1, 0, 1));
+    cluster.adv = adv;
+    cluster.kind = kind;
+    cluster.break_after = break_after;
+    cluster
 }
 
 /// A word that a negative advance makes narrower still fits beside a float: the width of a word
