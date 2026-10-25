@@ -10823,15 +10823,7 @@ fn foreground_respects_stories() {
         freeform: None,
         effects: Default::default(),
         extra: Default::default(),
-        float: Float {
-            wrap: Wrap::InFrontOfText,
-            z: u32::MAX,
-            h_rel: Anchor::Page,
-            v_rel: Anchor::Page,
-            x: 72.0,
-            y: 72.0,
-            ..Default::default()
-        },
+        float: Float { wrap: Wrap::InFrontOfText, z: u32::MAX, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 72.0, ..Default::default() },
     };
     d.insert_object(&Pos { story: StoryRef::Part(header), path: Path::top(0), off: 0 }, logo, &Default::default()).unwrap();
     let mask = InlineObject::Image {
@@ -10846,7 +10838,10 @@ fn foreground_respects_stories() {
     d.insert_object(&Pos::body(0, 0), mask, &Default::default()).unwrap();
     let l = lay(&d);
     let draws = display::page_display(&d, &l.pages[0], &display::DisplayOptions::default());
-    let logo = draws.iter().position(|it| matches!(it, display::Draw::Shape { fill: Some(wordcraft_doc::fill::Fill::solid(Rgb(200, 30, 30))), .. })).unwrap();
+    let logo = draws
+        .iter()
+        .position(|it| matches!(it, display::Draw::Shape { fill: Some(wordcraft_doc::fill::Fill::solid(Rgb(200, 30, 30))), .. }))
+        .unwrap();
     let mask = draws.iter().position(|it| matches!(it, display::Draw::Image { media, .. } if media == "original-body-mask")).unwrap();
     assert!(logo < mask, "header foreground remains below body masks, even at maximum relativeHeight");
 }
@@ -11436,10 +11431,14 @@ fn unranked_follows_known_rank() {
     let unknown = text_box_at(&mut d, &Pos::body(1, 0), "Unranked", 80.0, 40.0, float(0));
     let low = text_box_at(&mut d, &Pos::body(2, 0), "Low", 80.0, 40.0, float(2));
     let layout = lay(&d);
-    let order: Vec<_> = layout.pages[0].items.iter().filter_map(|it| match it {
-        Placed::Object { text_box: Some(id), .. } => Some(*id),
-        _ => None,
-    }).collect();
+    let order: Vec<_> = layout.pages[0]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Object { text_box: Some(id), .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
     assert_eq!(order, [low, high, unknown]);
 }
 
@@ -11453,9 +11452,13 @@ fn behind_rank_sets_fallback() {
     let unknown = text_box(&mut d, 0, "Unranked", 80.0, 40.0, float(0, Wrap::InFrontOfText));
     let back = text_box(&mut d, 0, "Behind", 80.0, 40.0, float(7, Wrap::BehindText));
     let layout = lay(&d);
-    let order: Vec<_> = layout.pages[0].items.iter().filter_map(|it| match it {
-        Placed::Object { text_box: Some(id), .. } => Some(*id),
-        _ => None,
-    }).collect();
+    let order: Vec<_> = layout.pages[0]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Object { text_box: Some(id), .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
     assert_eq!(order, [back, low, unknown]);
 }

@@ -3682,7 +3682,11 @@ fn append_foreground(items: &mut Vec<Placed>, ranges: &mut Vec<Foreground>, behi
 
 /// Carry table-cell groups into their owning story without changing item order.
 fn extend_foreground(out: &mut Vec<Foreground>, groups: &[Foreground], offset: usize) {
-    out.extend(groups.iter().map(|g| Foreground { range: g.range.start.saturating_add(offset)..g.range.end.saturating_add(offset), z: g.z, floor: g.floor }));
+    out.extend(groups.iter().map(|g| Foreground {
+        range: g.range.start.saturating_add(offset)..g.range.end.saturating_add(offset),
+        z: g.z,
+        floor: g.floor,
+    }));
 }
 
 fn remap_foreground(groups: &[Foreground], map: &[std::ops::Range<usize>]) -> Vec<Foreground> {
@@ -3712,10 +3716,13 @@ fn order_foreground(items: &mut Vec<Placed>, ranges: &[Foreground], behind: usiz
     }
     // Unknown ranks keep document order above ranks already encountered, as on main.
     let mut z_top = 0;
-    let mut front: Vec<_> = ranges.iter().map(|g| {
-        z_top = z_top.max(g.z).max(g.floor);
-        (if g.z == 0 { z_top } else { g.z }, Vec::new())
-    }).collect();
+    let mut front: Vec<_> = ranges
+        .iter()
+        .map(|g| {
+            z_top = z_top.max(g.z).max(g.floor);
+            (if g.z == 0 { z_top } else { g.z }, Vec::new())
+        })
+        .collect();
     for (item, group) in std::mem::take(items).into_iter().zip(marked) {
         if let Some((_, group)) = group.and_then(|i| front.get_mut(i)) {
             group.push(item);
