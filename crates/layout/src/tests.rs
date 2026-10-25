@@ -11335,3 +11335,66 @@ fn a_row_leaves_room_for_the_border_below_it() {
         }
     }
 }
+
+#[test]
+fn background_numbering_isolated() {
+    for turn in [TextDirection::Horizontal, TextDirection::Down, TextDirection::Up] {
+        for explicit in [false, true] {
+            let mut d = background_doc();
+            let num = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+            d.styles.styles.iter_mut().find(|s| s.id == "Header").unwrap().para.numbering = Some(wordcraft_doc::props::NumRef { num, level: 0 });
+            d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.numbering = Some(wordcraft_doc::props::NumRef { num, level: 0 });
+            d.last_section.text_direction = turn;
+            if explicit {
+                d.last_section.headers.default = Some(exact_header(&mut d, 10.0));
+            }
+            d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().section = Some(Box::new(d.last_section.clone()));
+            let mut next = Paragraph::with_text("Next", Default::default());
+            next.props.numbering = Some(wordcraft_doc::props::NumRef { num, level: 0 });
+            d.body.push(wordcraft_doc::para_block(next));
+            let l = lay(&d);
+            let labels: Vec<_> = l
+                .pages
+                .iter()
+                .flat_map(|page| &page.items)
+                .filter_map(|it| match it {
+                    Placed::Lines { story: StoryRef::Body, para, .. } => para.label.as_ref().map(|label| label.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(labels, ["1.", "2."], "{turn:?}, explicit={explicit}");
+        }
+    }
+}
+
+#[test]
+fn background_inherited_pct() {
+    for turn in [TextDirection::Down, TextDirection::Up] {
+        let mut d = background_doc();
+        let mut table = Table::new(1, 1, 120.0);
+        table.props.style = None;
+        table.props.width_pct = Some(100.0);
+        table.props.cell_margins = Some([0.0; 4]);
+        table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text(&"Width probe ".repeat(12), Default::default()))];
+        let id = d.add_part(wordcraft_doc::PartKind::Header, vec![Arc::new(Block::Table(table))]);
+        let mut initial = d.last_section.clone();
+        initial.page_w = initial.margin_left + initial.margin_right + 120.0;
+        initial.headers.default = Some(id);
+        initial.text_direction = turn;
+        let mut p = Paragraph::with_text("Initial", Default::default());
+        p.section = Some(Box::new(initial));
+        d.last_section.text_direction = turn;
+        d.body = vec![wordcraft_doc::para_block(p), wordcraft_doc::para_block(Paragraph::with_text("Inherited", Default::default()))];
+        let l = lay(&d);
+        assert_eq!(l.pages.len(), 2);
+        assert!(
+            (l.pages[0].body.y - l.pages[1].body.y).abs() < 0.01,
+            "{turn:?}: same defining table width must reserve the same header clearance: {:?}, {:?}",
+            l.pages[0].body,
+            l.pages[1].body
+        );
+        d.last_section.headers.default = Some(id);
+        let own = lay(&d);
+        assert!(own.pages[1].body.y < l.pages[1].body.y - 10.0, "explicit header uses its own wider section");
+    }
+}

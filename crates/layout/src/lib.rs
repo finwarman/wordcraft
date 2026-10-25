@@ -2456,7 +2456,8 @@ fn layout_pass(
             (!web && s.text_direction.is_turned()).then(|| {
                 // Page-colour ownership follows the resolved story, including inherited IDs.
                 let header = if doc.settings.page_color.is_some() { linked(&sections, si, |s| s.headers).default } else { s.headers.default };
-                let top = body_top_for(&mut ctx, s, header, si);
+                let base = defining_width(&sections, si, |s| s.headers, header);
+                let top = with_pct_base(&mut ctx, base, |ctx| body_top_for(ctx, s, header, si));
                 vertical::unturned_sect(s, top)
             })
         })
@@ -2983,10 +2984,12 @@ fn body_top_for(ctx: &mut Ctx, sect: &SectionProps, header: Option<u32>, section
     let frame = PageFrame { sect, origin: (sect.margin_left + sect.gutter, sect.header), number: 1, mirror: ctx.mirror };
     let track = std::mem::replace(&mut ctx.track_totals, false);
     let measure = |ctx: &mut Ctx| layout_box(ctx, story, &blocks, &[], sect.text_width(), BoxContext::Other, 0, Some(frame)).height;
+    let counters = std::mem::take(&mut ctx.counters);
     let h = match header {
         Some(id) => with_pin(ctx, id, sect, 1, measure).0,
         None => measure(ctx),
     };
+    ctx.counters = counters;
     ctx.track_totals = track;
     // Word starts the body right below a header that reaches past the top margin, no gap.
     sect.margin_top.max(sect.header + h)
