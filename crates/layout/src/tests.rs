@@ -10782,24 +10782,27 @@ fn auto_turned_height_is_natural() {
 
 #[test]
 fn narrow_turned_cell_grows() {
-    let mut d = Document::from_text("After");
-    let mut t = Table::new(1, 1, 20.0);
-    t.props.style = None;
-    t.props.fixed = true;
-    t.rows[0].props.height = Some(20.0);
-    t.rows[0].cells[0].props.text_direction = TextDirection::Up;
-    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Compensation pad type", Default::default()))];
-    d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
-    let l = lay(&d);
-    let h = l.pages[0]
-        .items
-        .iter()
-        .find_map(|it| match it {
-            Placed::Cell { rect, .. } => Some(rect.h),
-            _ => None,
-        })
-        .unwrap();
-    assert!(h > 80.0, "the text must fit across the narrow cell: {h}");
+    for height_rule in [wordcraft_doc::props::HeightRule::Auto, wordcraft_doc::props::HeightRule::AtLeast] {
+        let mut d = Document::from_text("After");
+        let mut t = Table::new(1, 1, 20.0);
+        t.props.style = None;
+        t.props.fixed = true;
+        t.rows[0].props.height = Some(20.0);
+        t.rows[0].props.height_rule = height_rule;
+        t.rows[0].cells[0].props.text_direction = TextDirection::Up;
+        t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Compensation pad type", Default::default()))];
+        d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
+        let l = lay(&d);
+        let h = l.pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Cell { rect, .. } => Some(rect.h),
+                _ => None,
+            })
+            .unwrap();
+        assert!(h > 80.0, "the text must fit across the narrow cell: {h}");
+    }
 }
 
 #[test]
