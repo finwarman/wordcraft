@@ -11435,3 +11435,25 @@ fn a_row_leaves_room_for_the_border_below_it() {
         }
     }
 }
+
+#[test]
+fn ref_keeps_complete_cjk_face() {
+    let text = "日本語 龘 日本語";
+    let mut doc = ref_wrap_doc(text, RefText::Field);
+    doc.last_section.page_w = 1200.0;
+    let drawn = |doc: &Document| {
+        let layout = lay(doc);
+        display::page_display(doc, &layout.pages[0], &display::DisplayOptions::default())
+            .into_iter()
+            .flat_map(|draw| match draw {
+                display::Draw::Glyphs { face, glyphs, .. } => glyphs.into_iter().map(|glyph| (face.id(), glyph.0)).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let wrapped = drawn(&doc);
+    let paragraph = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    let InlineObject::Field { instr, .. } = &mut paragraph.objects[0] else { panic!("field") };
+    *instr = "CACHED".into();
+    assert_eq!(wrapped, drawn(&doc), "space-separated REF pieces retain whole-result font selection");
+}

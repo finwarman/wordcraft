@@ -1051,6 +1051,40 @@ mod tests {
         assert_eq!(serde_json::to_value(&session.doc).unwrap(), before);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn print_keeps_session_options() {
+        let mut doc = Document::from_text("123 ");
+        for instr in ["FILENAME", r"FILENAME \p"] {
+            let p = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+            p.insert_object(p.len(), field(instr, "", FieldFlags::Clean), &Default::default()).unwrap();
+        }
+        let mut session = crate::Session::new(doc);
+        session.path = Some(std::path::PathBuf::from("/reports/Control123.docx"));
+        session.view.numeral = wordcraft_layout::NumeralMode::Hindi;
+        let (filename, filepath) = session.resolved_filenames();
+        let opts = wordcraft_layout::LayoutOptions {
+            numeral: wordcraft_layout::NumeralMode::Hindi,
+            filename: Some(filename.into()),
+            filepath: Some(filepath.into()),
+            ..Default::default()
+        };
+        let expected = super::prepare(&session.doc, &opts).unwrap();
+        let expected_pdf = wordcraft_pdf::export_layout(&expected.doc, &expected.layout, &Default::default()).unwrap();
+        let stale = super::prepare(&session.doc, &Default::default()).unwrap();
+        let stale_pdf = wordcraft_pdf::export_layout(&stale.doc, &stale.layout, &Default::default()).unwrap();
+        assert_ne!(pdf_text(&expected_pdf), pdf_text(&stale_pdf), "the fixture distinguishes lost settings");
+        assert_eq!(pdf_text(&session.print_pdf(&serde_json::json!({})).unwrap().0), pdf_text(&expected_pdf));
+        let mut render = wordcraft_render::RenderOptions::default();
+        render.display.dim_header = false;
+        let expected_png = wordcraft_render::render_page(&expected.doc, &expected.layout.pages[0], 1.0, &render).to_png();
+        let path = std::env::temp_dir().join(format!("wordcraft-session-print-options-{}.png", std::process::id()));
+        session.run("file.exportPng", &serde_json::json!({"path": path, "scale": 1.0})).unwrap();
+        let actual = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(actual, expected_png);
+    }
+
     #[test]
     fn print_limits_keep_caches() {
         let doc = control();

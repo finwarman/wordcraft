@@ -243,7 +243,8 @@ attributes inside stories and style or list definitions; a regenerated theme. Te
 
 Engine PDF/PNG exports and PDF print jobs refresh supported unlocked local `REF` and
 `PAGEREF` results in a temporary copy. Page references follow reflow and section numbering.
-Cached TOC entry text remains intact. DOCX read/save and editor caches are unchanged.
+Cached TOC entry text remains intact. Print jobs and PNG commands retain session numeral
+mode and filename/path fallbacks. DOCX read/save and editor caches are unchanged.
 Original controls exported by Word for Mac 16.113.2 build26092012 show this behavior with
 both `updateFields` values, without an explicit field/table update.
 

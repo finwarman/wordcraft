@@ -385,9 +385,13 @@ fn export_png(s: &mut Session, v: &Value) -> CmdResult {
     let page = p::u64(v, "page").unwrap_or(1).max(1) as usize - 1;
     let scale = p::f32(v, "scale").unwrap_or(2.0).clamp(0.1, 8.0);
     let markup = export_options(s, v);
+    let (filename, filepath) = s.resolved_filenames();
     let lo = wordcraft_layout::LayoutOptions {
         view: wordcraft_layout::ViewMode::Print,
         comment_balloons: markup.markup && markup.comments,
+        numeral: markup.numeral,
+        filename: Some(filename.into()),
+        filepath: Some(filepath.into()),
         ..Default::default()
     };
     let output = crate::print_fields::prepare(&s.doc, &lo).map_err(CmdError::Failed)?;
