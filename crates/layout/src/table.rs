@@ -14,6 +14,7 @@ use crate::{BoxContext, BoxLayout, Ctx, Placed, layout_box};
 /// Largest preferred table width, as a share of the text column, that a file can ask for.
 const MAX_WIDTH_SHARE: f32 = 10.0;
 
+#[derive(Clone)]
 pub struct RowLayout {
     pub height: f32,
     /// Minimum retained on continuation fragments that can hold it.
@@ -31,6 +32,13 @@ pub struct RowLayout {
     pub cells: Vec<CellPart>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum CenterKind {
+    Merge,
+    Fragment,
+}
+
+/// A vertical merge's border span and source key.
 #[derive(Clone)]
 pub(crate) struct MergeEdge {
     pub(crate) key: (usize, usize),
@@ -40,13 +48,16 @@ pub(crate) struct MergeEdge {
     pub(crate) bottom: Option<Border>,
 }
 
+#[derive(Clone)]
 pub(crate) struct CellCenter {
+    kind: CenterKind,
     offset: f32,
     height: f32,
     content: std::ops::Range<usize>,
 }
 
 /// A cell of a [`RowLayout`].
+#[derive(Clone)]
 pub struct CellPart {
     pub(crate) merge: Option<MergeEdge>,
     pub(crate) center: Option<CellCenter>,
@@ -801,11 +812,27 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 it.translate(0.0, dy);
                 items.push(it);
             }
-            let center = (c.vmerge == VMerge::Restart && c.valign == VAlign::Center && !exact && dy > 0.0).then_some(CellCenter {
-                offset: dy,
-                height: align_h,
-                content: content_start..items.len(),
+            // Only plain paragraphs and inline pictures can move as one unmerged group.
+            let fragment_flow = t.rows.get(ri).and_then(|r| r.cells.get(ci)).is_some_and(|cell| {
+                !cell.props.hide_mark
+                    && cell.blocks.iter().all(|block| {
+                        block.as_para().is_some_and(|p| {
+                            p.objects.iter().all(|object| {
+                                matches!(object,
+                        wordcraft_doc::para::InlineObject::Image { float, .. }
+                        if float.wrap == wordcraft_doc::para::Wrap::Inline && float.spin().is_identity())
+                            })
+                        })
+                    })
             });
+            let center =
+                (c.vmerge != VMerge::Continue && c.valign == VAlign::Center && !exact && dy > 0.0 && (c.vmerge == VMerge::Restart || fragment_flow))
+                    .then_some(CellCenter {
+                        kind: if c.vmerge == VMerge::Restart { CenterKind::Merge } else { CenterKind::Fragment },
+                        offset: dy,
+                        height: align_h,
+                        content: content_start..items.len(),
+                    });
             let b = c.borders;
             let (x0, x1, y0, y1) = (c.x, c.x + c.w, 0.0, rh);
             // Horizontal edges run on over half of each visible vertical edge, so the corners
@@ -1162,6 +1189,13 @@ fn split_para_fill(rect: Rect, item: &Placed, split: usize, shift: f32) -> Optio
     Some((above, below))
 }
 
+// Fragment adjustment clears center metadata. Admission still uses the input cell owner.
+fn shade_origin(part: &CellPart, original: Option<&CellPart>) -> bool {
+    original.is_some_and(|original| {
+        original.items == part.items && original.center.is_none() && original.merge.is_none() && part.center.is_none() && part.merge.is_none()
+    })
+}
+
 // Floating ink and its Object marker share this identity, including group members.
 fn draw_owner(item: &Placed) -> Option<(StoryRef, &wordcraft_doc::Path, usize)> {
     match item {
@@ -1182,6 +1216,143 @@ fn draw_owner(item: &Placed) -> Option<(StoryRef, &wordcraft_doc::Path, usize)> 
 /// continuation is as tall as the cell needing the most room, and at least the rest of the row
 /// (a minimum height holds over the pages).
 pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
+    if !row.cells.iter().any(|c| c.center.as_ref().is_some_and(|v| v.kind == CenterKind::Fragment)) {
+        return split_row_inner(row, cut);
+    }
+    // Ordinary centered cells use normal paragraph ownership unless their whole group fits.
+    let mut adjusted = row.clone();
+    for cell in &mut adjusted.cells {
+        if cell.center.as_ref().is_some_and(|v| v.kind == CenterKind::Fragment) {
+            cell.center = None;
+        }
+    }
+    let baseline = split_row_origin(&adjusted, cut, &row.cells)?;
+    if row.cells.iter().any(|c| c.center.as_ref().is_some_and(|v| v.kind == CenterKind::Merge)) {
+        return Some(baseline);
+    }
+    let first_height = baseline.0.height;
+    let selected: Vec<bool> = row
+        .cells
+        .iter()
+        .map(|cell| {
+            cell.center.as_ref().is_some_and(|center| {
+                center.kind == CenterKind::Fragment
+                    && center.height <= first_height + 0.01
+                    && row.items.get(center.content.clone()).is_some_and(|items| {
+                        !items.is_empty()
+                            && items.iter().all(|item| match item {
+                                Placed::Lines { para, .. } => item.turned_bounds().is_none() && para.rp.borders.is_none(),
+                                Placed::Object { story, path, off, wrap: wordcraft_doc::para::Wrap::Inline, text_box: None, spin, .. } => {
+                                    spin.is_identity()
+                                        && items.iter().any(|owner| match owner {
+                                            Placed::Lines { story: s, path: p, para, l0, l1, .. } if s == story && p == path => {
+                                                para.lines.get(*l0..*l1).is_some_and(|lines| {
+                                                    lines.iter().any(|line| {
+                                                        para.clusters.get(line.c0..line.c1).is_some_and(|clusters| {
+                                                            clusters.iter().any(|c| c.start == *off && matches!(c.kind, ClKind::Object(_)))
+                                                        })
+                                                    })
+                                                })
+                                            }
+                                            _ => false,
+                                        })
+                                }
+                                Placed::Image { spin, .. } => spin.is_identity(),
+                                _ => false,
+                            })
+                    })
+            })
+        })
+        .collect();
+    let picture = row.cells.iter().zip(&selected).any(|(cell, selected)| {
+        *selected
+            && cell
+                .center
+                .as_ref()
+                .and_then(|v| row.items.get(v.content.clone()))
+                .is_some_and(|items| items.iter().any(|item| matches!(item, Placed::Image { .. } | Placed::Object { .. })))
+    });
+    if !picture {
+        return Some(baseline);
+    }
+    // A sibling must establish both the first fragment and a real continuation.
+    // This leaves ambiguous empty or structural-only splits on the existing path.
+    let real_text = |item: &Placed| text_lines(item).is_some_and(|(p, l0, l1, _)| l1 > l0 && (p.text_len > 0 || p.label.is_some()));
+    let same_para = |source: &Placed, placed: &Placed| match (source, placed) {
+        (Placed::Lines { story, path, para, .. }, Placed::Lines { story: s, path: p, para: q, .. }) => {
+            story == s && path == p && std::sync::Arc::ptr_eq(para, q)
+        }
+        _ => false,
+    };
+    let retained = row.cells.iter().zip(&selected).any(|(cell, selected)| {
+        !selected
+            && row
+                .items
+                .get(cell.items.clone())
+                .is_some_and(|items| items.iter().any(|source| baseline.0.items.iter().any(|placed| real_text(placed) && same_para(source, placed))))
+    });
+    let remainder = baseline
+        .1
+        .cells
+        .iter()
+        .zip(&selected)
+        .any(|(cell, selected)| !selected && baseline.1.items.get(cell.items.clone()).is_some_and(|items| items.iter().any(real_text)));
+    if !retained || !remainder {
+        return Some(baseline);
+    }
+    for (cell, selected) in row.cells.iter().zip(&selected) {
+        if !selected {
+            continue;
+        }
+        let Some(center) = &cell.center else { continue };
+        let shift = ((first_height - center.height) / 2.0).max(0.0) - center.offset;
+        if let Some(items) = adjusted.items.get_mut(center.content.clone()) {
+            for item in items {
+                item.translate(0.0, shift);
+            }
+        }
+    }
+    for ((cell, source), selected) in adjusted.cells.iter_mut().zip(&row.cells).zip(&selected) {
+        if *selected && let Some(center) = &source.center {
+            let shift = ((first_height - center.height) / 2.0).max(0.0) - center.offset;
+            cell.end = cell.end.map(|end| end + shift);
+        }
+    }
+    // Recompute line ownership, border routing and continuation sizing after translation.
+    let Some(candidate) = split_row_origin(&adjusted, cut, &row.cells) else { return Some(baseline) };
+    if (candidate.0.height - first_height).abs() > 0.01 {
+        return Some(baseline);
+    }
+    // Every selected line must remain whole, with its inline hit area on the same page.
+    for (cell, selected) in row.cells.iter().zip(&selected) {
+        if !selected {
+            continue;
+        }
+        let Some(center) = &cell.center else { continue };
+        for source in row.items.get(center.content.clone()).unwrap_or(&[]) {
+            let present = candidate.0.items.iter().any(|placed| match (source, placed) {
+                (Placed::Lines { l0, l1, .. }, Placed::Lines { l0: a, l1: b, .. }) => same_para(source, placed) && l0 == a && l1 == b,
+                (Placed::Object { story, path, off, .. }, Placed::Object { story: s, path: p, off: o, rect, .. }) => {
+                    story == s && path == p && off == o && rect.y >= 0.0 && rect.bottom() <= first_height - row.bottom + 0.01
+                }
+                (Placed::Image { media, story, path, off, .. }, Placed::Image { media: m, story: s, path: p, off: o, .. }) => {
+                    media == m && story == s && path == p && off == o
+                }
+                _ => false,
+            });
+            if !present || candidate.1.items.iter().any(|placed| same_para(source, placed)) {
+                return Some(baseline);
+            }
+        }
+    }
+    Some(candidate)
+}
+
+fn split_row_inner(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
+    split_row_origin(row, cut, &row.cells)
+}
+
+fn split_row_origin(row: &RowLayout, cut: f32, original: &[CellPart]) -> Option<(RowLayout, RowLayout)> {
     // Also rejects a NaN cut.
     if !(cut > 0.0 && cut < row.height) {
         return None;
@@ -1404,10 +1575,11 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
     let geo_shift = |bottom: f32, shift: f32| if bottom >= row.height - 0.01 { rest } else { shift };
     let (mut a, mut b) = (Vec::new(), Vec::new());
     let mut parts = Vec::with_capacity(cells.len());
-    for (((c, items), splits), &shift) in row.cells.iter().zip(&cells).zip(&splits).zip(&shifts) {
+    for (cell_index, (((c, items), splits), &shift)) in row.cells.iter().zip(&cells).zip(&splits).zip(&shifts).enumerate() {
         let shift = shift.unwrap_or(0.0);
         let start = b.len();
-        let shade_cell = if c.center.is_none() && c.merge.is_none() { shade_cell(items, c, row.height) } else { None };
+        let shade_cell =
+            if original.len() == row.cells.len() && shade_origin(c, original.get(cell_index)) { shade_cell(items, c, row.height) } else { None };
         let center = c.center.as_ref().filter(|v| v.height <= plain_height + 0.01);
         for (index, (it, &split)) in items.iter().zip(splits).enumerate() {
             if let Some(center) = center
@@ -1850,7 +2022,7 @@ mod split_accounting_tests {
             cells: vec![
                 CellPart {
                     merge: None,
-                    center: Some(CellCenter { offset: 80.0, height: 80.0, content: 0..1 }),
+                    center: Some(CellCenter { kind: CenterKind::Merge, offset: 80.0, height: 80.0, content: 0..1 }),
                     top: 2.0,
                     items: 0..1,
                     end: Some(160.0),
@@ -1906,7 +2078,7 @@ mod split_accounting_tests {
         row.cells.truncate(1);
         row.cells[0].items = 0..2;
         row.cells[0].end = Some(150.0);
-        row.cells[0].center = Some(CellCenter { offset: 70.0, height: 80.0, content: 0..2 });
+        row.cells[0].center = Some(CellCenter { kind: CenterKind::Merge, offset: 70.0, height: 80.0, content: 0..2 });
         let (first, rest) = split_row(&row, 100.0).unwrap();
         assert_eq!((first.height, rest.height), (100.0, 100.0));
         assert!(rest.height.is_finite());
@@ -1972,6 +2144,8 @@ mod width_tests {
     }
 }
 
+#[cfg(test)]
+mod fragment_controls;
 #[cfg(test)]
 mod para_rule_controls {
     use super::*;
@@ -2381,7 +2555,7 @@ mod para_rule_controls {
                     row.cells[0].merge = Some(MergeEdge { key: (0, 0), x0: 0.0, x1: 100.0, top: None, bottom: None });
                 }
                 Excluded::Centered => {
-                    row.cells[0].center = Some(CellCenter { offset: 0.0, height: 300.0, content: 0..row.items.len() });
+                    row.cells[0].center = Some(CellCenter { kind: CenterKind::Merge, offset: 0.0, height: 300.0, content: 0..row.items.len() });
                 }
                 Excluded::MissingEnd => row.cells[0].end = None,
                 Excluded::MissingRule => {
@@ -2469,7 +2643,7 @@ mod para_rule_controls {
                 items: 0..items.len(),
                 end: None,
                 merge: None,
-                center: Some(CellCenter { offset: 0.0, height: 300.0, content: 0..items.len() }),
+                center: Some(CellCenter { kind: CenterKind::Merge, offset: 0.0, height: 300.0, content: 0..items.len() }),
             }],
             items,
         };
@@ -2514,7 +2688,7 @@ mod para_rule_controls {
 
         // A genuinely fitting grouped paragraph keeps the existing center override.
         row.min_height = 40.0;
-        row.cells[0].center = Some(CellCenter { offset: 52.0, height: 36.0, content: 1..4 });
+        row.cells[0].center = Some(CellCenter { kind: CenterKind::Merge, offset: 52.0, height: 36.0, content: 1..4 });
         let (first, rest) = split_row(&row, 70.0).unwrap();
         assert_eq!(first.height, 40.0);
         assert_eq!(rules(&first), vec![1.0, 39.0]);
@@ -2557,7 +2731,7 @@ mod para_rule_controls {
                 items: 0..items.len(),
                 end: None,
                 merge: None,
-                center: Some(CellCenter { offset: 0.0, height: 300.0, content: 0..items.len() }),
+                center: Some(CellCenter { kind: CenterKind::Merge, offset: 0.0, height: 300.0, content: 0..items.len() }),
             }],
             items,
         }
@@ -2602,7 +2776,7 @@ mod para_rule_controls {
     fn fitting_rule_frame_unchanged() {
         let mut row = centered_frame_row();
         row.min_height = 40.0;
-        row.cells[0].center = Some(CellCenter { offset: 52.0, height: 36.0, content: 1..4 });
+        row.cells[0].center = Some(CellCenter { kind: CenterKind::Merge, offset: 52.0, height: 36.0, content: 1..4 });
         let (first, rest) = split_row(&row, 70.0).unwrap();
         assert_eq!(first.height, 40.0);
         let rules: Vec<_> = first
@@ -2714,3 +2888,6 @@ mod shade_owner_tests {
         assert!(shade_cell(&base, &plain_part(&base), bounds.bottom() - 1.0).is_none());
     }
 }
+
+#[cfg(test)]
+mod shading_adapter;
