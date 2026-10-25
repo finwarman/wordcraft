@@ -10726,7 +10726,8 @@ fn a_translucent_shape_fill_is_drawn_translucent() {
     };
     d.insert_object(&Pos::body(0, 0), wash, &Default::default()).unwrap();
     let draws = flat(display::page_display(&d, &lay(&d).pages[0], &Default::default()));
-    let alpha = draws.iter().find_map(|x| if let display::Draw::Shape { fill: Some(display::Paint::Solid(_, alpha)), .. } = x { Some(*alpha) } else { None });
+    let alpha =
+        draws.iter().find_map(|x| if let display::Draw::Shape { fill: Some(display::Paint::Solid(_, alpha)), .. } = x { Some(*alpha) } else { None });
     assert!(alpha.is_some_and(|a| (a - 0.31).abs() < 0.001), "fill opacity {alpha:?}");
 }
 

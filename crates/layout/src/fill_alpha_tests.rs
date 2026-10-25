@@ -73,5 +73,7 @@ fn other_path_alpha_defaults() {
     let extra = ShapeExtra { arrow_start: true, arrow_end: true, ..Default::default() };
     line_draws(rect, ShapeKind::ElbowConnector, Some(Rgb::BLACK), 2.0, Default::default(), &extra, &mut out);
     assert_eq!(out.len(), 5);
-    assert!(out.iter().all(|item| matches!(item, Draw::Path { fill, .. } if fill.as_ref().is_none_or(|paint| matches!(paint, Paint::Solid(_, alpha) if *alpha == 1.0)))));
+    assert!(out.iter().all(
+        |item| matches!(item, Draw::Path { fill, .. } if fill.as_ref().is_none_or(|paint| matches!(paint, Paint::Solid(_, alpha) if *alpha == 1.0)))
+    ));
 }

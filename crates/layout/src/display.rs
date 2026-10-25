@@ -49,15 +49,9 @@ impl Paint {
         match self {
             Paint::Solid(color, alpha) => {
                 let alpha = if alpha.is_finite() { alpha.clamp(0.0, 1.0) } else { 1.0 };
-                wordcraft_doc::effects::bands(-radius, 0.0, alpha)
-                    .into_iter()
-                    .map(|(grow, band)| (grow, Paint::Solid(*color, band)))
-                    .collect()
+                wordcraft_doc::effects::bands(-radius, 0.0, alpha).into_iter().map(|(grow, band)| (grow, Paint::Solid(*color, band))).collect()
             }
-            _ => wordcraft_doc::effects::bands(-radius, 0.0, 1.0)
-                .into_iter()
-                .map(|(grow, alpha)| (grow, self.faded(alpha)))
-                .collect(),
+            _ => wordcraft_doc::effects::bands(-radius, 0.0, 1.0).into_iter().map(|(grow, alpha)| (grow, self.faded(alpha))).collect(),
         }
     }
     /// The colour and opacity this paint gives the point (`x`, `y`): stops blended, padded past

@@ -48,7 +48,7 @@ fn shape_fill(s: &mut Session, v: &Value) -> CmdResult {
                 InlineObject::Shape { fill, extra, .. } => {
                     extra.pattern = None;
                     fill
-                },
+                }
                 o => match super::canvas::style_mut(o) {
                     Some(style) => &mut style.fill,
                     None => return,

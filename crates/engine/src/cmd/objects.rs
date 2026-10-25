@@ -1982,7 +1982,9 @@ mod tests {
         .unwrap();
         s.run("shape.fill", &json!({"color":"FF0000"})).unwrap();
         let (_, o) = selected(&s).unwrap();
-        assert!(matches!(o,InlineObject::Shape{fill:Some(wordcraft_doc::fill::Fill::Solid { color: Rgb(255,0,0), .. }),extra,..} if extra.pattern.is_none()));
+        assert!(
+            matches!(o,InlineObject::Shape{fill:Some(wordcraft_doc::fill::Fill::Solid { color: Rgb(255,0,0), .. }),extra,..} if extra.pattern.is_none())
+        );
         s.run("edit.undo", &json!({})).unwrap();
         let (_, o) = selected(&s).unwrap();
         assert!(matches!(o,InlineObject::Shape{extra,..} if extra.pattern==Some(pattern)));
@@ -1996,17 +1998,15 @@ mod tests {
             foreground: PatternColor { color: Rgb::BLACK, alpha: 80_000 },
             background: PatternColor { color: Rgb::WHITE, alpha: 40_000 },
         };
-        for params in [
-            json!({"color": null}),
-            json!({"gradient": {"stops": [{"pos": 0, "color": "FF0000"}, {"pos": 100, "color": "0000FF"}]}}),
-        ] {
+        for params in [json!({"color": null}), json!({"gradient": {"stops": [{"pos": 0, "color": "FF0000"}, {"pos": 100, "color": "0000FF"}]}})] {
             let mut s = Session::new(wordcraft_doc::Document::new());
             s.run("insert.shape", &json!({"kind": "rectangle"})).unwrap();
             with_obj(&mut s, |o| {
                 if let InlineObject::Shape { extra, .. } = o {
                     extra.pattern = Some(pattern);
                 }
-            }).unwrap();
+            })
+            .unwrap();
             let before = selected(&s).unwrap().1;
             s.run("shape.fill", &params).unwrap();
             let (_, o) = selected(&s).unwrap();
