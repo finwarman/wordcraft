@@ -84,7 +84,7 @@ fn paragraph_default_presence_survives_repeated_saves() {
 fn zero_frame_keeps_normal_flow() {
     let zero = r#"<w:framePr w:w="0" w:h="0" w:xAlign="left" w:y="0" w:hRule="exact" w:vAnchor="margin"/>"#;
     let sized = r#"<w:framePr w:w="2400" w:h="1200" w:x="1440" w:y="2880" w:hAnchor="page" w:vAnchor="page" w:hRule="exact"/>"#;
-    for (frame, active) in [(zero, false), (sized, true)] {
+    for frame in [zero, sized] {
         let styles = format!(
             r#"<w:styles {W_NS}><w:docDefaults><w:pPrDefault><w:pPr>{frame}<w:spacing w:after="160"/></w:pPr></w:pPrDefault></w:docDefaults>
             <w:style w:type="paragraph" w:styleId="Framed"><w:name w:val="Framed"/><w:pPr>{sized}</w:pPr></w:style></w:styles>"#
@@ -107,9 +107,10 @@ fn zero_frame_keeps_normal_flow() {
         for _ in 0..2 {
             let body = paras(&document);
             let resolved = document.styles.resolve_para(&body[0].props);
-            assert_eq!(resolved.frame.is_some(), active);
-            let stored = document.styles.default_para.frame.as_ref().unwrap();
-            assert_eq!((stored.w, stored.h), if active { (Some(120.0), Some(60.0)) } else { (Some(0.0), Some(0.0)) });
+            assert!(resolved.frame.is_none(), "document defaults never create a frame");
+            assert!(document.styles.default_para.frame.is_none());
+            let reset = body[3].props.frame.as_ref().unwrap();
+            assert_eq!((reset.w, reset.h), (Some(0.0), Some(0.0)), "the direct reset survives saving");
             assert_eq!(resolved.space_after, 8.0);
             assert!(document.styles.resolve_para(&body[1].props).frame.is_some());
             assert!(document.styles.resolve_para(&body[2].props).frame.is_some());
@@ -117,7 +118,7 @@ fn zero_frame_keeps_normal_flow() {
             for id in [document.last_section.headers.default, document.last_section.footers.default] {
                 for block in &document.parts.get(&id.unwrap()).unwrap().blocks {
                     let paragraph = block.as_para().unwrap();
-                    assert_eq!(document.styles.resolve_para(&paragraph.props).frame.is_some(), active);
+                    assert!(document.styles.resolve_para(&paragraph.props).frame.is_none(), "defaults do not frame headers or footers");
                 }
             }
             document = wordcraft_docx::read(&wordcraft_docx::write(&document).unwrap()).unwrap();
