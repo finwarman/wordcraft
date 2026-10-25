@@ -3490,6 +3490,17 @@ struct ObjFrame<'a> {
     pinned: Option<&'a HashMap<usize, Rect>>,
 }
 
+// Split rows cannot carry independent text turns until their groups split atomically.
+fn outer_text_turn(doc: &Document, story: StoryRef, path: &[u32]) -> bool {
+    path.len() == 1
+        && match story {
+            StoryRef::Body => true,
+            StoryRef::Part(id) => {
+                doc.parts.get(&id).is_some_and(|part| matches!(part.kind, wordcraft_doc::PartKind::Header | wordcraft_doc::PartKind::Footer))
+            }
+        }
+}
+
 /// The pictures, shapes and text boxes in lines `l0..l1` of paragraph `p` (story `story`, at
 /// `path`), whose lines start at (x, y): floating ones drawn, every one's area (hit testing,
 /// selection) and text boxes' text. Floating rects come from `floats` (by object index) or are
@@ -3563,7 +3574,9 @@ fn place_objects(
             // its frame (a floating one's shape) and text are drawn turned between two markers.
             let upright = text_box.and_then(|id| ctx.doc.parts.get(&id)).is_some_and(|part| part.body.upright);
             let turn = Spin::new(float.spin().deg, false, false);
-            let spun = shown.filter(|_| !upright && !turn.is_identity()).map(|part| (Placed::Spun { rect, spin: turn, part, open: true }, part));
+            let spun = shown
+                .filter(|_| outer_text_turn(ctx.doc, story, path) && !upright && !turn.is_identity())
+                .map(|part| (Placed::Spun { rect, spin: turn, part, open: true }, part));
             let layer = if float.wrap == Wrap::BehindText { &mut behind } else { &mut front };
             if let Some((open, _)) = &spun {
                 layer.push(open.clone());

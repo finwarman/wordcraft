@@ -3328,7 +3328,15 @@ pub(crate) fn edited_box(app: &WordApp) -> Option<u32> {
 pub(crate) fn straight_box(app: &WordApp, layout: &DocLayout) -> Option<u32> {
     edited_box(app).filter(|id| {
         !app.session.doc.parts.get(id).is_some_and(|part| part.body.upright)
-            && layout.text_box(*id, app.session.page_hint).is_some_and(|o| turned(&o))
+            && layout.text_box(*id, app.session.page_hint).is_some_and(|o| {
+                layout.pages.get(o.page).is_some_and(|page| {
+                    page.items
+                        .iter()
+                        .chain(&page.header)
+                        .chain(&page.footer)
+                        .any(|item| matches!(item, Placed::Spun { part, rect, open: true, .. } if *part == *id && *rect == o.rect))
+                })
+            })
     })
 }
 

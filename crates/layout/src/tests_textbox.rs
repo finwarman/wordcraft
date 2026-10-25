@@ -575,3 +575,62 @@ fn behind_frame_stays_in_turn() {
     let Placed::Spun { rect, .. } = &items[open] else { panic!("missing turn") };
     assert_eq!(frame_of(&layout, id), *rect, "justification keeps the hit and paint frames together");
 }
+
+#[test]
+fn outer_turn_scope() {
+    let mut doc = Document::new();
+    assert!(outer_text_turn(&doc, StoryRef::Body, &[0]));
+    assert!(!outer_text_turn(&doc, StoryRef::Body, &[0, 0, 0, 0]));
+    for kind in [PartKind::Header, PartKind::Footer, PartKind::TextBox, PartKind::Footnote, PartKind::Endnote, PartKind::Comment] {
+        let id = doc.add_part(kind, Document::new().body);
+        assert_eq!(outer_text_turn(&doc, StoryRef::Part(id), &[0]), matches!(kind, PartKind::Header | PartKind::Footer), "{kind:?}");
+        assert!(!outer_text_turn(&doc, StoryRef::Part(id), &[0, 0, 0, 0]), "{kind:?} cell");
+    }
+}
+
+#[test]
+fn cell_box_keeps_main_turns() {
+    for vert in [TextVert::Horz, TextVert::Vert, TextVert::Vert270] {
+        for long in [false, true] {
+            let mut doc = Document::from_text("Anchor");
+            let id = turned_box(&mut doc, 30.0, false, false);
+            doc.parts.get_mut(&id).unwrap().body.vert = vert;
+            let anchor = doc.body.remove(0);
+            let mut table = wordcraft_doc::Table::new(1, 2, 300.0);
+            table.rows[0].cells[0].blocks = vec![anchor];
+            let text = if long { vec!["Sibling"; 100].join("\n") } else { "Sibling".into() };
+            table.rows[0].cells[1].blocks = Document::from_text(&text).body;
+            doc.body = vec![std::sync::Arc::new(Block::Table(table))];
+            let layout = lay(&doc);
+            assert!(!layout.pages.iter().flat_map(|p| p.items.iter().chain(&p.header).chain(&p.footer)).any(|it| matches!(it, Placed::Spun { .. })));
+            let frame = layout.find_object(0, |o| o.text_box == Some(id)).unwrap();
+            assert_eq!(frame.spin.deg, 30.0, "the saved frame angle still applies");
+            let text: Vec<_> = layout
+                .pages
+                .iter()
+                .flat_map(|p| &p.items)
+                .filter_map(|it| match it {
+                    Placed::Lines { story: StoryRef::Part(part), turn, .. } if *part == id => Some(*turn),
+                    _ => None,
+                })
+                .collect();
+            assert!(!text.is_empty());
+            assert!(text.iter().all(|turn| *turn == vert.turn()), "main text direction remains independent");
+            if long {
+                assert!(layout.pages.len() > 1, "the oversized row still splits");
+            }
+        }
+    }
+}
+
+#[test]
+fn nested_box_has_no_own_turn() {
+    let mut doc = Document::from_text("Anchor");
+    let inner = turned_box(&mut doc, 30.0, false, false);
+    let nested = std::mem::replace(&mut doc.body, Document::from_text("Outer").body);
+    let outer = text_box(&mut doc, 0, "Container", 300.0, 150.0, TextBody::default());
+    doc.parts.get_mut(&outer).unwrap().blocks = nested;
+    let layout = lay(&doc);
+    assert!(layout.find_object(0, |o| o.text_box == Some(inner)).is_some());
+    assert!(!layout.pages.iter().flat_map(|p| &p.items).any(|it| matches!(it, Placed::Spun { part, .. } if *part == inner)));
+}
