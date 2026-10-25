@@ -11216,7 +11216,7 @@ fn para_border_row(kept_space: f32, moved_space: f32) -> crate::table::RowLayout
         assert_eq!(para.text_len, if index == 0 { "Kept".len() } else { "Move\nMove".len() });
         assert_eq!(para.lines.len(), if index == 0 { 1 } else { 2 });
         // Use the production border emitter, including its paragraph item ordering.
-        push_para(&mut items, StoryRef::Body, &[index], &para, 0, para.lines.len(), 0.0, y, 100.0);
+        push_para(&mut items, StoryRef::Body, &[index], &para, 0, para.lines.len(), 0.0, y, 100.0, Edges::own(&para, 0, para.lines.len()));
     }
     items.push(Placed::Image {
         rect: Rect::new(5.0, 150.0, 20.0, 20.0),
@@ -11262,12 +11262,12 @@ fn split_para_border_spacing() {
             for cut in [80.0, 110.0] {
                 let (first, rest) = split_row(&row, cut).unwrap();
                 let moves = cut == 80.0;
-                let expected_height = if moves { 24.0 + kept_space } else { 104.0 };
+                let expected_height = if moves { 24.0 + kept_space + 1.5 / 2.0 } else { 104.0 };
                 assert_eq!(first.height, expected_height);
-                assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + kept_space]);
+                assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + kept_space + 1.5 / 2.0]);
                 assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
-                let shift = (60.0_f32 - moved_space - 2.0).max(0.0);
-                let original_top = 60.0 - moved_space;
+                let shift = (60.0_f32 - moved_space - 2.5 / 2.0 - 2.0).max(0.0);
+                let original_top = 60.0 - moved_space - 2.5 / 2.0;
                 let after_top = original_top - shift;
                 if moves {
                     assert!(para_border_rules(&first, Rgb(0, 0, 200)).is_empty());
@@ -11281,7 +11281,7 @@ fn split_para_border_spacing() {
                         })
                         .unwrap();
                     assert_eq!(text_y, 60.0 - shift);
-                    assert_eq!(text_y - after_top, moved_space, "one shared shift preserves border space");
+                    assert_eq!(text_y - after_top, moved_space + 2.5 / 2.0, "one shared shift preserves border space");
                     if original_top >= 0.0 {
                         assert!(after_top >= 0.0);
                     } else {
@@ -11329,7 +11329,7 @@ fn split_para_border_fallbacks() {
         let row = para_border_row(space, 8.0);
         let (first, rest) = split_row(&row, 80.0).unwrap();
         assert_eq!(first.height, 80.0);
-        assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + space]);
+        assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + space + 1.5 / 2.0]);
         assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
     }
     // A bottom beyond the physical cut keeps the generic overflow route. The shared cell
@@ -11338,13 +11338,13 @@ fn split_para_border_fallbacks() {
     let (first, rest) = split_row(&row, 80.0).unwrap();
     assert_eq!(first.height, 24.0);
     assert!(para_border_rules(&first, Rgb(200, 0, 0)).is_empty());
-    assert_eq!(para_border_rules(&rest, Rgb(200, 0, 0)), vec![31.0]);
+    assert_eq!(para_border_rules(&rest, Rgb(200, 0, 0)), vec![33.0]);
 
     // Partial runs retain the previous cut and vertical-border policy.
     let row = para_border_row(0.0, 8.0);
     let (first, rest) = split_row(&row, 90.0).unwrap();
     assert_eq!(first.height, 84.0);
-    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0]);
+    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0 - 2.5 / 2.0]);
     assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
     let ranges = |part: &crate::table::RowLayout| {
         part.items
@@ -11364,8 +11364,8 @@ fn split_para_border_fallbacks() {
     row.items.insert(index, Placed::Fill { rect: Rect::new(0.0, 0.0, 1.0, 1.0), color: Rgb(1, 2, 3) });
     row.cells[0].items.end += 1;
     let (first, rest) = split_row(&row, 80.0).unwrap();
-    assert_eq!(first.height, 56.0);
-    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0]);
+    assert_eq!(first.height, 56.0 - 2.5 / 2.0);
+    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0 - 2.5 / 2.0]);
     assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
 }
 
@@ -11410,13 +11410,18 @@ fn fallback_rule_frame_bounds() {
     add_rule_frame(&mut row);
     let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
     assert_frame_bounds(&first, 80.0);
-    assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [77.0]);
+    assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [77.0 + 1.5 / 2.0]);
     assert!(para_border_rules(&first, Rgb(0, 0, 200)).is_empty());
     assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
     assert_eq!(para_border_rules(&rest, Rgb(0, 0, 200)), [2.0]);
     assert_eq!(first.items.iter().filter(|item| matches!(item, Placed::Rule { .. })).count(), 3);
-    assert!(first.items.iter().any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 77.0 && y0 == y1 && border.width == 1.5)));
-    assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0)));
+    assert!(
+        first
+            .items
+            .iter()
+            .any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 77.0 + 1.5 / 2.0 && y0 == y1 && border.width == 1.5))
+    );
+    assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0 + 2.5 / 2.0)));
 }
 
 #[test]
@@ -11428,12 +11433,17 @@ fn interrupted_rule_frame_bounds() {
     row.cells[0].items.end += 1;
     add_rule_frame(&mut row);
     let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
-    assert_frame_bounds(&first, 56.0);
-    assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [20.0]);
-    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), [52.0]);
+    assert_frame_bounds(&first, 56.0 - 2.5 / 2.0);
+    assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [20.0 + 1.5 / 2.0]);
+    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), [52.0 - 2.5 / 2.0]);
     assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
     assert_eq!(first.items.iter().filter(|item| matches!(item, Placed::Rule { .. })).count(), 4);
-    assert!(first.items.iter().any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 52.0 && y0 == y1 && border.width == 2.5)));
+    assert!(
+        first
+            .items
+            .iter()
+            .any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 52.0 - 2.5 / 2.0 && y0 == y1 && border.width == 2.5))
+    );
     assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 2.0)));
 }
 
@@ -11443,10 +11453,10 @@ fn owned_rule_frame_unchanged() {
     let mut row = para_border_row(0.0, 8.0);
     add_rule_frame(&mut row);
     let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
-    assert_frame_bounds(&first, 24.0);
+    assert_frame_bounds(&first, 24.0 + 1.5 / 2.0);
     assert!(para_border_rules(&first, Rgb(0, 0, 200)).is_empty());
     assert_eq!(para_border_rules(&rest, Rgb(0, 0, 200)), [2.0]);
-    assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0)));
+    assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0 + 2.5 / 2.0)));
 }
 
 #[test]
@@ -11466,12 +11476,12 @@ fn rule_frame_boundary_limits() {
         let (x0, y0, x1, y1, height) = match case {
             Case::Interior => (0.0, 64.0, RULE_FRAME_WIDTH, 64.0, 68.0),
             Case::AtCut => (0.0, 80.0, RULE_FRAME_WIDTH, 80.0, 80.0),
-            Case::Top => (0.0, 0.0, RULE_FRAME_WIDTH, 0.0, 24.0),
-            Case::Bottom => (0.0, 200.0, RULE_FRAME_WIDTH, 200.0, 24.0),
-            Case::BeyondCut => (0.0, 81.0, RULE_FRAME_WIDTH, 81.0, 24.0),
-            Case::Vertical => (10.0, 60.0, 10.0, 70.0, 24.0),
-            Case::NonfiniteX => (f32::NAN, 64.0, RULE_FRAME_WIDTH, 64.0, 24.0),
-            Case::NonfiniteY => (0.0, f32::NAN, RULE_FRAME_WIDTH, f32::NAN, 24.0),
+            Case::Top => (0.0, 0.0, RULE_FRAME_WIDTH, 0.0, 24.0 + 1.5 / 2.0),
+            Case::Bottom => (0.0, 200.0, RULE_FRAME_WIDTH, 200.0, 24.0 + 1.5 / 2.0),
+            Case::BeyondCut => (0.0, 81.0, RULE_FRAME_WIDTH, 81.0, 24.0 + 1.5 / 2.0),
+            Case::Vertical => (10.0, 60.0, 10.0, 70.0, 24.0 + 1.5 / 2.0),
+            Case::NonfiniteX => (f32::NAN, 64.0, RULE_FRAME_WIDTH, 64.0, 24.0 + 1.5 / 2.0),
+            Case::NonfiniteY => (0.0, f32::NAN, RULE_FRAME_WIDTH, f32::NAN, 24.0 + 1.5 / 2.0),
         };
         let mut row = para_border_row(0.0, 8.0);
         add_rule_frame(&mut row);
