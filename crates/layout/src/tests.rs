@@ -11437,6 +11437,28 @@ fn a_row_leaves_room_for_the_border_below_it() {
 }
 
 #[test]
+fn ref_keeps_complete_cjk_face() {
+    let text = "日本語 龘 日本語";
+    let mut doc = ref_wrap_doc(text, RefText::Field);
+    doc.last_section.page_w = 1200.0;
+    let drawn = |doc: &Document| {
+        let layout = lay(doc);
+        display::page_display(doc, &layout.pages[0], &display::DisplayOptions::default())
+            .into_iter()
+            .flat_map(|draw| match draw {
+                display::Draw::Glyphs { face, glyphs, .. } => glyphs.into_iter().map(|glyph| (face.id(), glyph.0)).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let wrapped = drawn(&doc);
+    let mut plain = ref_wrap_doc(text, RefText::Plain);
+    plain.last_section.page_w = doc.last_section.page_w;
+    assert!(!wrapped.is_empty());
+    assert_eq!(wrapped, drawn(&plain), "REF pieces retain the full text's CJK face and primary-font spaces");
+}
+
+#[test]
 fn ref_visual_lines() {
     let doc = ref_wrap_doc(&"Alpha Beta ".repeat(12), RefText::Field);
     let layout = Arc::new(lay(&doc));
