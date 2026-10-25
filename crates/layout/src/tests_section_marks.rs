@@ -542,3 +542,69 @@ fn mark_follows_aligned_break() {
         assert_eq!(body_slot(&laid, 2), (0, bottom), "alignment={align:?}");
     }
 }
+
+#[test]
+fn mark_keeps_prior_section_width() {
+    let mut doc = numbered_document(LineNumberRestart::Continuous);
+    doc.body = [0, 2, 3, 4].map(|i| doc.body[i].clone()).to_vec();
+    let mut prior = doc.last_section.clone();
+    prior.columns.count = 2;
+    prior.columns.widths = vec![(100.0, 36.0), (332.0, 0.0)];
+    doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().section = Some(Box::new(prior));
+    let mark = doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap();
+    mark.section.as_mut().unwrap().start = SectionStart::Continuous;
+    let lead = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    lead.text = "\u{000e}Lead".into();
+    lead.runs[0].len = lead.text.len();
+    let original = doc.clone();
+    let laid = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+    let find = |block| {
+        laid.pages[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, path, x, para, .. } if *path == Path::top(block) => Some((*x, para.lines[0].right)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(find(2), find(1), "a continuous section must not replace the break's column geometry");
+    assert_eq!(doc, original);
+}
+
+#[test]
+fn mark_stays_after_flow_table() {
+    mark_after_table(None);
+}
+
+#[test]
+fn mark_stays_after_float_table() {
+    use wordcraft_doc::para::Anchor;
+    mark_after_table(Some(wordcraft_doc::props::TableFloat {
+        h_rel: Anchor::Page,
+        v_rel: Anchor::Page,
+        x: PAGE_MARGIN,
+        y: PAGE_MARGIN,
+        ..Default::default()
+    }));
+}
+
+fn mark_after_table(float: Option<wordcraft_doc::props::TableFloat>) {
+    let mut doc = numbered_document(LineNumberRestart::Continuous);
+    doc.body = [0, 2, 3, 4].map(|i| doc.body[i].clone()).to_vec();
+    let mut table = wordcraft_doc::Table::new(1, 1, 100.0);
+    table.props.float = float;
+    table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(Paragraph::with_text("Intervening table", Default::default()))];
+    doc.body.insert(2, std::sync::Arc::new(wordcraft_doc::Block::Table(table)));
+    let original = doc.clone();
+    let laid = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+    let table_page = laid
+        .pages
+        .iter()
+        .position(|page| page.items.iter().any(|item| matches!(item, Placed::Cell { story: StoryRef::Body, table, .. } if *table == Path::top(2))))
+        .unwrap();
+    assert_eq!(table_page, 1);
+    assert_eq!(body_slot(&laid, 3).0, table_page, "the section mark must not cross a table after the break");
+    assert_eq!(laid.caret(&wordcraft_doc::Pos::body(3, 0)).unwrap().page, table_page);
+    assert_eq!(doc, original);
+}
