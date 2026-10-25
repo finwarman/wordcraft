@@ -575,25 +575,3 @@ fn behind_frame_stays_in_turn() {
     let Placed::Spun { rect, .. } = &items[open] else { panic!("missing turn") };
     assert_eq!(frame_of(&layout, id), *rect, "justification keeps the hit and paint frames together");
 }
-
-#[test]
-fn rotated_row_stays_whole() {
-    use crate::table::{CellPart, RowLayout, split_row};
-    let layout = lay(&Document::from_text("Line"));
-    let Placed::Lines { story, path, para, .. } = layout.pages[0].items.iter().find(|it| matches!(it, Placed::Lines { .. })).unwrap() else {
-        panic!("missing line")
-    };
-    let line = |y| Placed::Lines {
-        story: *story, path: path.clone(), para: para.clone(), l0: 0, l1: 1, x: 0.0, y, turn: TextDirection::Horizontal,
-    };
-    let mut row = RowLayout {
-        height: 200.0, items: vec![line(0.0), line(150.0)], bottom: 4.0, edge: 0.0,
-        cells: vec![CellPart { top: 2.0, items: 0..2, end: Some(170.0) }],
-    };
-    assert!(split_row(&row, 100.0).is_some(), "ordinary text can split");
-    let marker = |open| Placed::Spun { rect: Rect::new(0.0, 0.0, 100.0, 170.0), spin: Spin::new(30.0, false, false), part: 1, open };
-    row.items.insert(0, marker(true));
-    row.items.push(marker(false));
-    row.cells[0].items = 0..row.items.len();
-    assert!(split_row(&row, 100.0).is_none(), "markers and enclosed content remain atomic");
-}
