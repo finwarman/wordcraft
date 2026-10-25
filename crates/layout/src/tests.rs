@@ -10915,6 +10915,7 @@ fn inline_content_row() -> crate::table::RowLayout {
     RowLayout {
         height: 200.0,
         bottom: 0.0,
+        edge: 0.0,
         items: vec![kept, moved],
         cells: vec![CellPart { top: 0.0, items: 0..1, end: Some(30.0) }, CellPart { top: 0.0, items: 1..2, end: Some(180.0) }],
     }
