@@ -24,11 +24,11 @@ fn soft_shape(kind: ShapeKind, alpha: f32, radius: f32, effects: ShapeEffects) -
     Draw::Shape {
         rect: Rect::new(4.0, 4.0, 24.0, 24.0),
         kind,
-        fill: Some(RED),
-        fill_alpha: alpha,
+        fill: Some(wordcraft_layout::display::Paint::Solid(RED, alpha)),
         stroke: None,
         stroke_width: 0.0,
         dash: Vec::new(),
+        cap: Default::default(),
         corner: None,
         effects: ShapeEffects { soft_edge: Some(radius), ..effects },
     }
@@ -39,11 +39,11 @@ fn path_fill_keeps_stroke_alpha() {
     for alpha in [0.0, 0.5, 1.0] {
         let item = Draw::Path {
             segs: vec![PathSeg::Move(4.0, 4.0), PathSeg::Line(28.0, 4.0), PathSeg::Line(28.0, 28.0), PathSeg::Line(4.0, 28.0), PathSeg::Close],
-            fill: Some(RED),
-            fill_alpha: alpha,
+            fill: Some(wordcraft_layout::display::Paint::Solid(RED, alpha)),
             stroke: Some(GREEN),
             stroke_width: 2.0,
             dash: Vec::new(),
+            cap: Default::default(),
         };
         let rendered = image(item);
         close(rendered.pixel(64, 64), alpha);
@@ -101,4 +101,23 @@ fn soft_edge_keeps_effects() {
         image(item)
     };
     assert_eq!(stroke(0.0).pixels, stroke(1.0).pixels);
+}
+
+#[test]
+fn caret_samples_soft_edge_bands() {
+    for kind in [ShapeKind::Rectangle, ShapeKind::Ellipse] {
+        for alpha in [0.0, 0.5, 1.0] {
+            let shape = soft_shape(kind, alpha, 6.0, ShapeEffects::default());
+            let rendered = image(shape.clone());
+            for (x, y) in [(18, 64), (22, 64), (30, 64), (64, 64)] {
+                let mut bg = [0.0, 0.0, 255.0];
+                let point = wordcraft_geom::Point::new((x as f32 + 0.5) / 4.0, (y as f32 + 0.5) / 4.0);
+                blend_backgrounds(std::slice::from_ref(&shape), point, &RenderOptions::default(), &mut bg, 0);
+                let pixel = rendered.pixel(x, y);
+                for (sample, channel) in bg.into_iter().zip(pixel) {
+                    assert!((sample - channel as f32).abs() <= PIXEL_TOLERANCE as f32, "{kind:?}, alpha={alpha}, ({x},{y}): {bg:?} vs {pixel:?}");
+                }
+            }
+        }
+    }
 }

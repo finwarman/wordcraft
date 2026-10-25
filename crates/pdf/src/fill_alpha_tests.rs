@@ -4,7 +4,6 @@ use hayro_interpret::{
     BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask, interpret_page,
 };
 use kurbo::Shape;
-use wordcraft_doc::connector::ShapeExtra;
 use wordcraft_doc::effects::ShapeEffects;
 use wordcraft_doc::freeform::{FreePath, Freeform};
 use wordcraft_doc::para::{Anchor, Float, InlineObject, ShapeKind, Wrap};
@@ -88,14 +87,14 @@ fn shape(kind: ShapeKind, transparency: f32, effects: ShapeEffects) -> InlineObj
         kind,
         w: 24.0,
         h: 24.0,
-        fill: Some(RED),
+        fill: Some(wordcraft_doc::fill::Fill::Solid { color: RED, transparency }),
         stroke: None,
         stroke_width: 0.0,
         float: Float { wrap: Wrap::InFrontOfText, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 100.0, y: 100.0, ..Default::default() },
         story: None,
         freeform: None,
         effects,
-        extra: ShapeExtra { fill_transparency: transparency, ..Default::default() },
+        extra: Default::default(),
     }
 }
 
