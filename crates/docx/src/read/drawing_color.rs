@@ -46,11 +46,9 @@ pub(crate) fn pattern_fill(sppr: &El, theme: &[Rgb]) -> Option<wordcraft_doc::pa
         return None;
     }
     let resolve = |name| {
-        let e = p.child(name)?;
-        let c = e.els().find(|c| is_color(c))?;
-        let alpha =
-            c.child("a:alpha").and_then(|a| a.attr("val")).and_then(int).unwrap_or(i64::from(ALPHA_SCALE)).clamp(0, i64::from(ALPHA_SCALE)) as u32;
-        Some(PatternColor { color: color(e, theme)?, alpha })
+        let (color, transparency) = color_alpha(p.child(name)?, theme, None)?;
+        let alpha = ((100.0 - transparency) * ALPHA_SCALE as f32 / 100.0).round().clamp(0.0, ALPHA_SCALE as f32) as u32;
+        Some(PatternColor { color, alpha })
     };
     Some(PatternFill { kind, foreground: resolve("a:fgClr")?, background: resolve("a:bgClr")? })
 }
