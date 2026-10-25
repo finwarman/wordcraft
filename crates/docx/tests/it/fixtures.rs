@@ -82,6 +82,7 @@ fn paragraph_default_presence_survives_repeated_saves() {
 
 #[test]
 fn zero_frame_keeps_normal_flow() {
+    const ROUND_TRIPS: usize = 2;
     let zero = r#"<w:framePr w:w="0" w:h="0" w:xAlign="left" w:y="0" w:hRule="exact" w:vAnchor="margin"/>"#;
     let sized = r#"<w:framePr w:w="2400" w:h="1200" w:x="1440" w:y="2880" w:hAnchor="page" w:vAnchor="page" w:hRule="exact"/>"#;
     for frame in [zero, sized] {
@@ -104,7 +105,7 @@ fn zero_frame_keeps_normal_flow() {
             &[("word/styles.xml", &styles), ("word/header1.xml", &header), ("word/footer1.xml", &footer)],
         ))
         .unwrap();
-        for _ in 0..2 {
+        for pass in 0..=ROUND_TRIPS {
             let body = paras(&document);
             let resolved = document.styles.resolve_para(&body[0].props);
             assert!(resolved.frame.is_none(), "document defaults never create a frame");
@@ -120,6 +121,9 @@ fn zero_frame_keeps_normal_flow() {
                     let paragraph = block.as_para().unwrap();
                     assert!(document.styles.resolve_para(&paragraph.props).frame.is_none(), "defaults do not frame headers or footers");
                 }
+            }
+            if pass == ROUND_TRIPS {
+                break;
             }
             document = wordcraft_docx::read(&wordcraft_docx::write(&document).unwrap()).unwrap();
         }
