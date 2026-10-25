@@ -184,7 +184,7 @@ fn break_spacing_setting_saves() {
 #[test]
 fn break_spacing_schema_order() {
     for later in ["swapBordersFacingPages", "doNotUseHTMLParagraphAutoSpacing", "cachedColBalance"] {
-        let original = SETTINGS.replace("<w:compat>", &format!("<w:compat><w:suppressTopSpacingWP/><w:{later}/>"));
+        let original = SETTINGS.replace("<w:compat>", &format!("<w:compat><w:doNotExpandShiftReturn/><w:suppressTopSpacingWP/><w:{later}/>"));
         let mut d = wordcraft_docx::read(&with_settings(&original)).unwrap();
         for enabled in [true, false, true] {
             d.settings.suppress_break_spacing = enabled;
@@ -192,12 +192,14 @@ fn break_spacing_schema_order() {
             let settings = text(&unzip(&bytes), "word/settings.xml");
             if enabled {
                 let at = settings.find("<w:suppressSpBfAfterPgBrk").unwrap();
+                assert!(settings.find("<w:doNotExpandShiftReturn").unwrap() < at, "{settings}");
                 assert!(settings.find("<w:suppressTopSpacingWP").unwrap() < at, "{settings}");
                 assert!(at < settings.find(&format!("<w:{later}")).unwrap(), "{settings}");
             }
             assert_eq!(settings.matches("<w:suppressSpBfAfterPgBrk").count(), usize::from(enabled));
             d = wordcraft_docx::read(&bytes).unwrap();
             assert_eq!(d.settings.suppress_break_spacing, enabled);
+            assert!(d.settings.do_not_expand_shift_return);
         }
     }
 }
