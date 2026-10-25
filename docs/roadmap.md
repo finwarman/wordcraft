@@ -1,8 +1,6 @@
 # WordCraft roadmap: milestones and what's next
 
-> **Table shading update:** 2026-10-21. Bounded source/model coverage; global assessment unchanged.
-
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** trivial (M6: Manage Sources imports Word's `Sources.xml`, #2640; previously minor: Czech proofing review fixes; previously minor: Portuguese proofing; previously minor: Polish interface and Polish proofing; previously trivial: M7: formatting revisions landed, #41; previously trivial: M5: Draw Table and Eraser landed, #303; previously minor: beta distance restated: ~15 points, ~150–230 h; previously: alpha gate checked: six core workflows pass; previously major: milestones moved here from ROADMAP.md; Current focus set from the re-measured gaps) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** trivial (bounded table shading and centered picture fragments, source/model coverage only, readiness unchanged; previously trivial: M6: Manage Sources imports Word's `Sources.xml`, #2640; previously minor: Czech proofing review fixes; previously minor: Portuguese proofing; previously minor: Polish interface and Polish proofing; previously trivial: M7: formatting revisions landed, #41; previously trivial: M5: Draw Table and Eraser landed, #303; previously minor: beta distance restated: ~15 points, ~150–230 h; previously: alpha gate checked: six core workflows pass; previously major: milestones moved here from ROADMAP.md; Current focus set from the re-measured gaps) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 Forward-looking plan. The summary is [`ROADMAP.md`](../ROADMAP.md); the ranked work list is
 [`gaps.md`](gaps.md); the numbers are in [`target-app-parity.md`](target-app-parity.md). Hours are
@@ -80,6 +78,7 @@ languages, screen-reader access, ecosystem decisions (VBA, add-ins, cloud), an i
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | trivial | Fold the table shading scope into the status line; readiness and native comparison limits unchanged. |
 | 2026-10-21 | trivial | Preserve per-cell center/merge exclusions during shading adjustment. Current-input metadata scope; original synthetic controls, no new native comparison. |
 | 2026-10-21 | minor | Bounded paragraph shading ownership across table-row fragments; source/model coverage only |
 | 2026-10-18 | trivial | M6: Manage Sources imports Word's `Sources.xml` (#2640) |
