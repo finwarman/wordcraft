@@ -4562,15 +4562,19 @@ fn picture(w: f32, h: f32, float: wordcraft_doc::para::Float) -> InlineObject {
 fn picture_auto_spacing_leading() {
     use wordcraft_doc::props::LineSpacing;
     // Word Mac: single, 1.15 and double spacing add only the font's extra leading.
-    for multiple in [1.0, 1.15, 2.0] {
+    for (multiple, manual_break) in [1.0, 1.15, 2.0].into_iter().flat_map(|m| [false, true].map(|b| (m, b))) {
         let mut d = Document::from_text("");
         let p = d.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
         p.props.line_spacing = Some(LineSpacing::Multiple(multiple));
         let chr = wordcraft_doc::CharProps { font: Some("Arial".into()), size: Some(10.0), ..Default::default() };
         p.insert_object(0, picture(144.0, 144.0, Default::default()), &chr).unwrap();
+        if manual_break {
+            p.insert_text(p.len(), &wordcraft_doc::para::LINE_BREAK.to_string(), &chr).unwrap();
+        }
         let l = lay(&d);
         let Some(Placed::Lines { para, .. }) = l.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
         let line = &para.lines[0];
+        assert_eq!(line.end, if manual_break { para::LineEnd::LineBreak } else { para::LineEnd::Para });
         let style = &para.styles[para.clusters[0].style as usize];
         let natural = style.ascent + style.descent;
         let expected = (144.0 + natural * (multiple - 1.0)).max(natural * multiple);

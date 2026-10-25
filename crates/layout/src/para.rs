@@ -2877,10 +2877,12 @@ fn baseline_offset(spacing: LineSpacing, asc: f32, height: f32, desc: f32) -> f3
 
 fn picture_clusters_only(pl: &ParaLayout, c0: usize, c1: usize) -> bool {
     pl.clusters.get(c0..c1).is_some_and(|cs| {
-        cs.iter().all(|c| match c.kind {
+        cs.iter().enumerate().all(|(i, c)| match c.kind {
             // Hidden and floating anchors have no inline extent or font height.
             ClKind::Object(_) => c.picture || (c.adv == 0.0 && c.obj_h == 0.0),
             ClKind::Space | ClKind::Tab | ClKind::Marker => true,
+            // A terminal manual break has no ink and keeps the picture's leading policy.
+            ClKind::LineBreak => i + 1 == cs.len() && c.adv == 0.0 && c.obj_h == 0.0 && c.obj_d == 0.0 && c.g0 == c.g1,
             _ => false,
         })
     })
