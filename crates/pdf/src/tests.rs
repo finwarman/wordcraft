@@ -2328,7 +2328,7 @@ fn pattern_and_solid_pdf_alpha() {
             story: None,
             freeform: None,
             effects: Default::default(),
-            extra: wordcraft_doc::connector::ShapeExtra { pattern, ..Default::default() },
+            extra: wordcraft_doc::connector::ShapeExtra { pattern: pattern.map(Box::new), ..Default::default() },
         };
         let mut d = Document::new();
         let mut p = Paragraph::new();
