@@ -82,17 +82,22 @@ fn paragraph_default_presence_survives_repeated_saves() {
 
 #[test]
 fn zero_frame_keeps_normal_flow() {
+    const FRAME_STYLE: &str = "FrameInput";
     let zero = r#"<w:framePr w:w="0" w:h="0" w:xAlign="left" w:y="0" w:hRule="exact" w:vAnchor="margin"/>"#;
     let sized = r#"<w:framePr w:w="2400" w:h="1200" w:x="1440" w:y="2880" w:hAnchor="page" w:vAnchor="page" w:hRule="exact"/>"#;
     for (frame, active) in [(zero, false), (sized, true)] {
         let styles = format!(
             r#"<w:styles {W_NS}><w:docDefaults><w:pPrDefault><w:pPr>{frame}<w:spacing w:after="160"/></w:pPr></w:pPrDefault></w:docDefaults>
+            <w:style w:type="paragraph" w:styleId="{FRAME_STYLE}"><w:name w:val="{FRAME_STYLE}"/><w:pPr>{frame}</w:pPr></w:style>
             <w:style w:type="paragraph" w:styleId="Framed"><w:name w:val="Framed"/><w:pPr>{sized}</w:pPr></w:style></w:styles>"#
         );
-        let header = format!(r#"<w:hdr {W_NS}><w:p><w:r><w:t>Header alpha</w:t></w:r></w:p><w:p><w:r><w:t>Header beta</w:t></w:r></w:p></w:hdr>"#);
-        let footer = format!(r#"<w:ftr {W_NS}><w:p><w:r><w:t>Footer delta</w:t></w:r></w:p></w:ftr>"#);
+        let header = format!(
+            r#"<w:hdr {W_NS}><w:p><w:pPr><w:pStyle w:val="{FRAME_STYLE}"/></w:pPr><w:r><w:t>Header alpha</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val="{FRAME_STYLE}"/></w:pPr><w:r><w:t>Header beta</w:t></w:r></w:p></w:hdr>"#
+        );
+        let footer =
+            format!(r#"<w:ftr {W_NS}><w:p><w:pPr><w:pStyle w:val="{FRAME_STYLE}"/></w:pPr><w:r><w:t>Footer delta</w:t></w:r></w:p></w:ftr>"#);
         let body = format!(
-            r#"<w:p><w:r><w:t>Body one</w:t></w:r></w:p>
+            r#"<w:p><w:pPr><w:pStyle w:val="{FRAME_STYLE}"/></w:pPr><w:r><w:t>Body one</w:t></w:r></w:p>
             <w:p><w:pPr>{sized}</w:pPr><w:r><w:t>Direct frame</w:t></w:r></w:p>
             <w:p><w:pPr><w:pStyle w:val="Framed"/></w:pPr><w:r><w:t>Styled frame</w:t></w:r></w:p>
             <w:p><w:pPr><w:pStyle w:val="Framed"/>{zero}</w:pPr><w:r><w:t>Frame reset</w:t></w:r></w:p>
@@ -108,7 +113,9 @@ fn zero_frame_keeps_normal_flow() {
             let body = paras(&document);
             let resolved = document.styles.resolve_para(&body[0].props);
             assert_eq!(resolved.frame.is_some(), active);
-            let stored = document.styles.default_para.frame.as_ref().unwrap();
+            // Main ignores document-default frames; a named style retains explicit dimensions.
+            assert!(document.styles.default_para.frame.is_none());
+            let stored = document.styles.get(FRAME_STYLE).unwrap().para.frame.as_ref().unwrap();
             assert_eq!((stored.w, stored.h), if active { (Some(120.0), Some(60.0)) } else { (Some(0.0), Some(0.0)) });
             assert_eq!(resolved.space_after, 8.0);
             assert!(document.styles.resolve_para(&body[1].props).frame.is_some());
