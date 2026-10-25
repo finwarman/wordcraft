@@ -188,6 +188,7 @@ Imported Word 97–2003 `.doc`/`.dot` files now ask for a supported DOCX target 
 - 2026-10-15: Find opens Navigation on Results; editing the query restores Results after manual Headings/Pages navigation. Typed and selected-text searches retain document contents (#2096).
 
 | Date | What landed |
+|---|---|
 | 2026-10-23 | A command that changes nothing is not an edit: it adds no undo step, marks no unsaved changes and forces no relayout, so the redo stack survives it and five hundred of them can no longer push the user's own edits out of the undo history. |
 | 2026-10-23 | Interface translations come from storytold/craft-i18n, shared with the other Crafting Apps: the catalogs are embedded at build time from the commit in `craft-i18n.rev` and looked up through craft-libs' `craft-i18n` crate; `crates/ui-egui/src/i18n/*.tsv` are gone (translations now go to craft-i18n). Strings other apps already translate show translated; a build without `CRAFT_I18N_DIR` is English only |
 | 2026-10-25 | #4085 mark review: whole-cell and ordinary highlight targets include their selected paragraph marks; empty, inherited and partial-column controls added. |
@@ -296,7 +297,6 @@ Imported Word 97–2003 `.doc`/`.dot` files now ask for a supported DOCX target 
 | 2026-10-17 | Non-overlapping body floating tables clear header tables. Original native controls distinguish never-overlap from allowed overlap. |
 | 2026-10-14 | Comment text being typed is no longer lost or misplaced (#1348): an edit or reply the document refuses (for example read-only protection) keeps the typed text in its field and says why on the status line; drafts belong to their document, so after New or Open a comment with the same number shows its own text; Save, Export, Print, Close, New and Open write pending comment text first; if the document refuses it, Save, Export and Print carry on with the stored comments and show why on the status line (a refused draft is dropped when Save is the only change), while Close, New and Open show the Save Changes prompt (Don't Save drops text the document refuses); Escape discards what was typed; in a document protected as read only or for forms the comment fields can't be typed in |
 | 2026-10-16 | Row table cell margin exceptions affect sizing, text placement and pagination; omitted sides inherit table defaults. |
-|---|---|
 | 2026-10-18 | Explicit New/Open keeps the requested document visible when startup recovery discovery finishes; older copies stay available. Recover uses the regular theme. See docs/recovery.md. |
 | 2026-10-15 | A floating picture or shape in a table cell set to align centre or bottom no longer lands half its height above its line (#1887); it starts at the anchor line |
 | 2026-10-18 | Picture Format › Size (#2573): width and height in the interface unit, and a size typed in any unit works, pixels too (`300 px` keeps the picture's proportions, #1901), applied once typed (Enter, Tab or a click elsewhere; Esc cancels) in one undo step. The group's launcher opens a Size dialog: height and width, scale of the original size (or of the size it opened with), Lock aspect ratio, the original size with its pixels, and Reset. `picture.size {"original": true, "scale"?}` sizes from the original; sizes past 4000 pt that keep the proportions shrink as a whole. |
@@ -308,7 +308,6 @@ Imported Word 97–2003 `.doc`/`.dot` files now ask for a supported DOCX target 
 | 2026-10-15 | Dialog close control: a Windows-style box at the title bar's right end, the whole box clickable, red on hover, in both themes (#1885) |
 | 2026-10-15 | Font box: a Recently Used Fonts section at the top of the list (the fonts applied lately, most recent first, ten at most, kept between runs), then All Fonts, as in Word (#2068) |
 | 2026-10-15 | A missing Thai document font (TH Sarabun New, Angsana New, Cordia New, the UPC families…) is substituted by one Thai face for the whole run, Latin letters and digits included, as Word substitutes Cordia New; Thai no longer sits in one font next to larger Latin in another (#1549) |
-|---|---|
 | 2026-10-17 | Paste from LibreOffice: a paragraph indented on both sides (HTML `<blockquote>` on the clipboard) pastes as an indented Normal paragraph with LibreOffice's margins, not centred and italic in the Quote style (#1270). |
 | 2026-10-17 | DrawingML shape outlines retain explicit preset/custom dashes on screen and in PDF, including zero-width path strokes. |
 | 2026-10-17 | Missing Arial Unicode MS tries Arial and its proportional substitutes before code-font heuristics. |
