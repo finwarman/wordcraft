@@ -38,7 +38,7 @@ enum CenterKind {
     Fragment,
 }
 
-/// A cell of a [`RowLayout`].
+/// A vertical merge's border span and source key.
 #[derive(Clone)]
 pub(crate) struct MergeEdge {
     pub(crate) key: (usize, usize),
@@ -56,6 +56,7 @@ pub(crate) struct CellCenter {
     content: std::ops::Range<usize>,
 }
 
+/// A cell of a [`RowLayout`].
 #[derive(Clone)]
 pub struct CellPart {
     pub(crate) merge: Option<MergeEdge>,

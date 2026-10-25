@@ -4379,7 +4379,9 @@ fn close_merge_bands(pb: &mut PageBuilder, bands: &mut HashMap<(usize, usize), M
             _ => None,
         })
         .collect();
-    for (_, band) in bands.drain() {
+    let mut ordered: Vec<_> = bands.drain().collect();
+    ordered.sort_unstable_by_key(|(key, _)| *key);
+    for (_, band) in ordered {
         let edge = band.edge;
         if let Some(border) = edge.bottom
             && keep_rule_edge(&mut edges, (edge.x0.to_bits(), edge.x1.to_bits(), band.bottom.to_bits()), border)
