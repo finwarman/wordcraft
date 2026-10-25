@@ -3840,8 +3840,6 @@ fn equation_in_alternate_content_is_read() {
     assert!(!p.plain_text().contains("[picture]"));
 }
 
-/// A fill's `a:alpha` is its opacity: a translucent white wash over a picture stayed opaque and
-/// hid the picture.
 #[test]
 fn pattern_alpha_transform_order() {
     let cases = [
@@ -3881,6 +3879,8 @@ fn pattern_alpha_transform_order() {
     }
 }
 
+/// A fill's `a:alpha` is its opacity: a translucent white wash over a picture stayed opaque and
+/// hid the picture.
 #[test]
 fn a_shape_fill_keeps_its_transparency() {
     let fill =
