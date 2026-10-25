@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::WordApp;
 use crate::dialogs::Dialog;
-use crate::dialogs_keyboard::{categories, commands, list};
+use crate::dialogs_keyboard::{categories, commands, list, matching_commands, select_in};
 use crate::theme::semibold;
 
 /// The dialog's two pages.
@@ -39,6 +39,9 @@ pub struct RibbonForm {
     /// The left list: a category (empty for All Commands) and the command picked in it.
     pub category: String,
     pub command: String,
+    /// Filter-as-you-type query for the command list (#1845); UI-only dialog state, ignored
+    /// while empty. Never persisted and never a command parameter.
+    pub filter: String,
     /// The item picked in the ribbon tree.
     pub selected: TreeItem,
     /// The command picked in the Quick Access Toolbar list.
@@ -97,16 +100,22 @@ pub fn customize_ribbon(app: &mut WordApp, ui: &mut Ui, f: &mut RibbonForm) -> b
     });
     ui.separator();
     let (left, right, h) = (150.0, 230.0, 300.0);
+    ui.add(egui::TextEdit::singleline(&mut f.filter).hint_text(tl!("Search")).desired_width(left + right + 8.0));
     let mut cats: Vec<(String, String)> = categories(app).into_iter().map(|c| (c.clone(), tl!(&c).to_string())).collect();
     cats.push((String::new(), tl!("All Commands").to_string()));
-    let cmds: Vec<(String, String)> = commands(app, &f.category).into_iter().map(|(id, l)| (id.to_string(), l)).collect();
+    let cmds: Vec<(String, String)> = matching_commands(app, &f.category, &f.filter);
+    f.command = select_in(&cmds, &f.command);
+    if cmds.is_empty() {
+        ui.label(egui::RichText::new(tl!("No matching commands")).weak());
+    }
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.label(egui::RichText::new(tl!("Choose a command")).font(semibold(12.5)));
             ui.horizontal_top(|ui| {
                 if let Some(c) = list(ui, "rb_categories", vec2(left, h), &cats, &f.category) {
                     f.category = c;
-                    f.command = commands(app, &f.category).first().map(|(id, _)| (*id).to_string()).unwrap_or_default();
+                    f.filter.clear();
+                    f.command = matching_commands(app, &f.category, &f.filter).first().map(|(id, _)| id.clone()).unwrap_or_default();
                 }
                 if let Some(c) = list(ui, "rb_commands", vec2(right, h), &cmds, &f.command) {
                     f.command = c;
@@ -275,10 +284,15 @@ fn ribbon_page(app: &mut WordApp, ui: &mut Ui, f: &mut RibbonForm, h: f32) {
                 ui.label(tl!("Name:"));
                 let r = ui.add(egui::TextEdit::singleline(name).desired_width(140.0));
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                // macOS puts Cancel before OK.
+                let mac = cfg!(target_os = "macos");
+                if mac && ui.button(tl!("Cancel")).clicked() {
+                    done = Some(None);
+                }
                 if ui.button(tl!("OK")).clicked() || enter {
                     done = Some(Some(name.clone()));
                 }
-                if ui.button(tl!("Cancel")).clicked() {
+                if !mac && ui.button(tl!("Cancel")).clicked() {
                     done = Some(None);
                 }
             });
@@ -369,6 +383,12 @@ fn qat_page(app: &mut WordApp, ui: &mut Ui, f: &mut RibbonForm, h: f32) {
                 }
             });
         });
+        // The same switch as the toolbar menu's Hide Quick Access Toolbar (#1945).
+        ui.add_space(4.0);
+        let mut shown = app.ui.quick_access_toolbar;
+        if ui.checkbox(&mut shown, tl!("Show Quick Access Toolbar")).changed() {
+            let _ = app.run("ui.quickAccessToolbar", json!({"value": shown}));
+        }
     });
 }
 
@@ -405,8 +425,7 @@ mod tests {
         assert_eq!(b.session.ribbon.qat(), ["file.save", "edit.undo", "edit.redo", "format.bold"]);
 
         let mut c = app();
-        c.apply_prefs(serde_json::from_str(r#"{"tab": "Insert", "ribbon": {"tabs": 3, "qat": ["gone.command", "edit.undo"]}}"#).unwrap());
-        assert_eq!(c.ui.tab, "Insert");
+        c.apply_prefs(serde_json::from_str(r#"{"ribbon": {"tabs": 3, "qat": ["gone.command", "edit.undo"]}}"#).unwrap());
         assert!(c.session.ribbon.ribbon_is_default());
         assert_eq!(c.session.ribbon.qat(), ["edit.undo"]);
     }
@@ -456,6 +475,40 @@ mod tests {
         assert_eq!(a.ui.tab, "Insert", "a hidden tab isn't shown");
     }
 
+    /// #1845: the shared command picker (Ribbon and Quick Access Toolbar pages) filters
+    /// as you type, and Add works from a filtered selection.
+    #[test]
+    fn command_filter_narrows_the_picker_and_add_works() {
+        use crate::dialogs_keyboard::{matching_commands, select_in};
+
+        let mut a = app();
+        a.run("tools.customizeRibbon", json!({})).unwrap();
+        assert!(matches!(a.dialog, Some(Dialog::CustomizeRibbon { .. })));
+        if let Some(Dialog::CustomizeRibbon { form }) = &mut a.dialog {
+            form.filter = "bold".to_string();
+        }
+        let (category, filter, current) = match &a.dialog {
+            Some(Dialog::CustomizeRibbon { form }) => (form.category.clone(), form.filter.clone(), form.command.clone()),
+            _ => panic!("expected the Customize Ribbon dialog"),
+        };
+        // Empty filter keeps the category scope.
+        let unfiltered = matching_commands(&a, &category, "");
+        assert!(!unfiltered.is_empty());
+        // Typing searches every command, ignoring the category.
+        let cmds = matching_commands(&a, &category, &filter);
+        assert!(cmds.iter().any(|(id, _)| id == "format.bold"));
+        assert!(cmds.len() < a.session.registry.all().len());
+        // The dialog's Add >> adds the filtered pick to the Quick Access Toolbar.
+        let picked = select_in(&cmds, &current);
+        assert!(!picked.is_empty());
+        if let Some(Dialog::CustomizeRibbon { form }) = &mut a.dialog {
+            form.command = picked.clone();
+        }
+        a.run("tools.customizeRibbon", json!({"qatAdd": picked})).unwrap();
+        assert!(a.session.ribbon.qat().contains(&picked.as_str()));
+        assert!(a.session.ribbon.qat().contains(&"format.bold"));
+    }
+
     /// #376: the Quick Access Toolbar's … button opens its menu, and the toolbar shows the user's
     /// commands.
     #[test]
@@ -474,5 +527,33 @@ mod tests {
         assert!(a.session.ribbon.qat().contains(&"file.new"));
         a.run("tools.customizeRibbon", json!({"qatRemove": "file.new"})).unwrap();
         assert_eq!(a.session.ribbon.qat(), ["file.save", "edit.undo", "edit.redo"]);
+    }
+
+    /// #1945: the Quick Access Toolbar page's Show Quick Access Toolbar check box is the toolbar's
+    /// visibility; the dialog stays open while it is switched.
+    #[test]
+    fn quick_access_page_has_a_show_toolbar_check_box() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut a = app();
+        super::open(&mut a, super::Page::QuickAccess);
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        h.run_steps(4);
+        let ticked = |h: &egui_kittest::Harness<'static, WordApp>| h.get_by_label("Show Quick Access Toolbar").accesskit_node().toggled();
+        assert_eq!(ticked(&h), Some(egui::accesskit::Toggled::True), "ticked while the toolbar shows");
+        h.get_by_label("Show Quick Access Toolbar").click();
+        h.run_steps(2);
+        assert!(!h.state().ui.quick_access_toolbar, "unticking hides the toolbar");
+        assert!(matches!(h.state().dialog, Some(Dialog::CustomizeRibbon { .. })), "the dialog stays open");
+        assert_eq!(ticked(&h), Some(egui::accesskit::Toggled::False));
+        h.get_by_label("Show Quick Access Toolbar").click();
+        h.run_steps(2);
+        assert!(h.state().ui.quick_access_toolbar, "ticking shows it again");
     }
 }
