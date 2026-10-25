@@ -1202,7 +1202,19 @@ impl Ctx {
                 compose(atoms, st, em)
             }
             MNode::Delim { beg, end, sep, grow, shp_match, elems } => {
-                let parts: Vec<Bx> = elems.iter().enumerate().map(|(k, e)| self.sub(k, e, st, d)).collect();
+                let parts: Vec<Bx> = elems
+                    .iter()
+                    .enumerate()
+                    .map(|(k, e)| {
+                        let edges = match (k == 0, k + 1 == elems.len()) {
+                            (true, true) => FracEdges::Tight,
+                            (true, false) => FracEdges::LeftTight,
+                            (false, true) => FracEdges::RightTight,
+                            (false, false) => FracEdges::Spaced,
+                        };
+                        self.sub(k, e, st.at_edges(edges), d)
+                    })
+                    .collect();
                 let a = parts.iter().map(|b| b.a).fold(0.0f32, f32::max);
                 let dd = parts.iter().map(|b| b.d).fold(0.0f32, f32::max);
                 let mut row: Vec<Bx> = Vec::new();
@@ -1903,7 +1915,7 @@ impl Ctx {
 
     fn matrix(&mut self, rows: &[Vec<Arg>], col_jc: &[ColJc], st: St, d: usize) -> Bx {
         let em = self.em(st);
-        let mut cells: Vec<Vec<Bx>> = Vec::new();
+        let mut cells = Vec::new();
         let ncols = rows.iter().take(1000).map(|r| r.len().min(64)).max().unwrap_or(0);
         let mut flat = 0usize;
         for r in rows.iter().take(1000) {
@@ -1916,13 +1928,55 @@ impl Ctx {
                         (false, true) => FracEdges::RightTight,
                         (false, false) => FracEdges::Spaced,
                     };
-                    row.push(self.sub(flat, c, st.at_edges(edges), d));
+                    let packed_st = st.at_edges(edges);
+                    let packed = self.sub(flat, c, packed_st, d);
+                    let aligned = match col_jc.get(ci).copied().unwrap_or_default() {
+                        ColJc::Left if ci == 0 => FracEdges::LeftTight,
+                        ColJc::Right if ci + 1 == ncols => FracEdges::RightTight,
+                        _ => FracEdges::Spaced,
+                    };
+                    let aligned_st = st.at_edges(aligned);
+                    let inset = (aligned_st.frac_edges != packed_st.frac_edges).then(|| self.sub(flat, c, aligned_st, d));
+                    row.push((packed, inset));
                 }
                 flat += 1;
             }
             cells.push(row);
         }
         let mut col_w = vec![0.0f32; ncols];
+        for r in &cells {
+            for (i, (b, _)) in r.iter().enumerate() {
+                if let Some(c) = col_w.get_mut(i) {
+                    *c = c.max(b.w);
+                }
+            }
+        }
+        // Restore inset cells first. If that widens a column, none of its initially widest
+        // packed cells still span it. Two candidate widths avoid an iterative layout pass.
+        let mut restored_w = col_w.clone();
+        for r in &cells {
+            for (i, (packed, inset)) in r.iter().enumerate() {
+                if let (Some(inset), Some(width), Some(restored)) = (inset, col_w.get(i), restored_w.get_mut(i))
+                    && packed.w < *width
+                {
+                    *restored = restored.max(inset.w);
+                }
+            }
+        }
+        let cells: Vec<Vec<Bx>> = cells
+            .into_iter()
+            .map(|r| {
+                r.into_iter()
+                    .enumerate()
+                    .map(|(i, (packed, inset))| {
+                        let width = col_w.get(i).copied().unwrap_or(0.0);
+                        let widened = restored_w.get(i).is_some_and(|w| *w > width);
+                        if packed.w < width || widened { inset.unwrap_or(packed) } else { packed }
+                    })
+                    .collect()
+            })
+            .collect();
+        col_w.fill(0.0);
         for r in &cells {
             for (i, b) in r.iter().enumerate() {
                 if let Some(c) = col_w.get_mut(i) {
@@ -2453,6 +2507,123 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn radical_matrix_alignment() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let font = db.face(wordcraft_fonts::DEFAULT_FAMILY, "Regular");
+        let face = FaceRef::of(&font);
+        let mut cx = Ctx {
+            face,
+            t: None,
+            upem: face.upem as f32,
+            base: 14.0,
+            color: Rgb::BLACK,
+            text_font: wordcraft_fonts::DEFAULT_FAMILY.into(),
+            nodes: 0,
+            path: Vec::new(),
+            node_stack: Vec::new(),
+        };
+        let st = St { level: 0, display: false, frac_edges: FracEdges::Spaced, cramped: true, upright: false };
+        let frac = MNode::Frac { kind: FracKind::Bar, num: vec![MNode::Run(MRun::new("a"))], den: vec![MNode::Run(MRun::new("b"))] };
+        let bars = |b: &Bx| {
+            b.items
+                .iter()
+                .filter_map(|i| match i {
+                    MItem::Rect { w, .. } => Some(*w),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let plain = bars(&cx.node(&frac, st, 0))[0];
+        let pad = cx.em(st) * 0.08;
+        let mut failures = Vec::new();
+        for count in [1, 3] {
+            for jc in [ColJc::Left, ColJc::Center, ColJc::Right] {
+                for edges in [FracEdges::Spaced, FracEdges::LeftTight, FracEdges::RightTight, FracEdges::Tight] {
+                    let rows = vec![vec![vec![frac.clone()]; count], vec![vec![MNode::Run(MRun::new("xxxxxxxx"))]; count]];
+                    let matrix = MNode::Matrix { rows, col_jc: vec![jc; count] };
+                    let packed = bars(&cx.node(&matrix, St { frac_edges: edges, ..st }, 0));
+                    assert_eq!(packed.len(), count);
+                    for (i, width) in packed.into_iter().enumerate() {
+                        let left = i == 0 && jc == ColJc::Left && matches!(edges, FracEdges::LeftTight | FracEdges::Tight);
+                        let right = i + 1 == count && jc == ColJc::Right && matches!(edges, FracEdges::RightTight | FracEdges::Tight);
+                        let expected = plain - (usize::from(left) + usize::from(right)) as f32 * pad * 0.5;
+                        if (width - expected).abs() >= 0.001 {
+                            failures.push(format!("columns={count} {jc:?} {edges:?} column={i}: bar={width}, expected={expected}"));
+                        }
+                    }
+                }
+            }
+        }
+        for size in [14.0, 15.0] {
+            let run = MNode::Run(MRun { size: Some(size), ..MRun::new("b") });
+            let other = MNode::Frac { kind: FracKind::Bar, num: vec![MNode::Run(MRun::new("a"))], den: vec![run] };
+            let other_plain = bars(&cx.node(&other, st, 0))[0];
+            let matrix = MNode::Matrix { rows: vec![vec![vec![frac.clone()]], vec![vec![other]]], col_jc: vec![ColJc::Center] };
+            let packed = bars(&cx.node(&matrix, St { frac_edges: FracEdges::Tight, ..st }, 0));
+            let removed = if size == 14.0 { pad } else { 0.0 };
+            for (width, plain) in packed.into_iter().zip([plain, other_plain]) {
+                if (width - (plain - removed)).abs() >= 0.001 {
+                    failures.push(format!("competing centered cells, size={size}: bar={width}, expected={}", plain - removed));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "aligned interior edges must retain spacing: {failures:#?}");
+    }
+
+    #[test]
+    fn radical_delimiter_elements() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let font = db.face(wordcraft_fonts::DEFAULT_FAMILY, "Regular");
+        let face = FaceRef::of(&font);
+        let mut cx = Ctx {
+            face,
+            t: None,
+            upem: face.upem as f32,
+            base: 14.0,
+            color: Rgb::BLACK,
+            text_font: wordcraft_fonts::DEFAULT_FAMILY.into(),
+            nodes: 0,
+            path: Vec::new(),
+            node_stack: Vec::new(),
+        };
+        let st = St { level: 0, display: false, frac_edges: FracEdges::Spaced, cramped: true, upright: false };
+        let frac = MNode::Frac { kind: FracKind::Bar, num: vec![MNode::Run(MRun::new("a"))], den: vec![MNode::Run(MRun::new("b"))] };
+        let bars = |b: &Bx| {
+            b.items
+                .iter()
+                .filter_map(|i| match i {
+                    MItem::Rect { w, .. } => Some(*w),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let plain = bars(&cx.node(&frac, st, 0))[0];
+        let pad = cx.em(st) * 0.08;
+        let mut failures = Vec::new();
+        for count in [1, 2, 3] {
+            for sep in [None, Some('|')] {
+                for edges in [FracEdges::Spaced, FracEdges::LeftTight, FracEdges::RightTight, FracEdges::Tight] {
+                    let delim =
+                        MNode::Delim { beg: Some('('), end: Some(')'), sep, grow: false, shp_match: false, elems: vec![vec![frac.clone()]; count] };
+                    let packed = bars(&cx.node(&delim, St { frac_edges: edges, ..st }, 0));
+                    assert_eq!(packed.len(), count);
+                    for (i, width) in packed.into_iter().enumerate() {
+                        let left = i == 0 && matches!(edges, FracEdges::LeftTight | FracEdges::Tight);
+                        let right = i + 1 == count && matches!(edges, FracEdges::RightTight | FracEdges::Tight);
+                        let expected = plain - (usize::from(left) + usize::from(right)) as f32 * pad * 0.5;
+                        if (width - expected).abs() >= 0.001 {
+                            failures.push(format!("elements={count} separator={sep:?} {edges:?} element={i}: bar={width}, expected={expected}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "interior delimiter element edges must retain spacing: {failures:#?}");
     }
 
     #[test]
