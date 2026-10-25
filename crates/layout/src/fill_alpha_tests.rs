@@ -18,18 +18,24 @@ fn freeform_fill_has_own_alpha() {
             shape_draws(
                 rect,
                 ShapeKind::Freeform,
-                Some(Rgb::BLACK),
+                Some(&wordcraft_doc::fill::Fill::Solid { color: Rgb::BLACK, transparency }),
                 Some(Rgb::WHITE),
                 2.0,
                 Default::default(),
                 Some(&freeform),
-                &ShapeExtra { fill_transparency: transparency, ..Default::default() },
+                &ShapeExtra::default(),
                 &DisplayOptions::default(),
                 &mut out,
             );
-            let Draw::Path { fill, fill_alpha, stroke, stroke_width, .. } = &out[0] else { panic!("expected freeform path") };
-            assert_eq!(*fill, closed.then_some(Rgb::BLACK));
-            assert_eq!(*fill_alpha, if closed { 1.0 - transparency / 100.0 } else { 1.0 });
+            let Draw::Path { fill, stroke, stroke_width, .. } = &out[0] else { panic!("expected freeform path") };
+            match fill {
+                Some(Paint::Solid(color, alpha)) if closed => {
+                    assert_eq!(*color, Rgb::BLACK);
+                    assert_eq!(*alpha, 1.0 - transparency / 100.0);
+                }
+                None if !closed => {}
+                _ => panic!("unexpected freeform paint: {fill:?}"),
+            }
             assert_eq!((*stroke, *stroke_width), (Some(Rgb::WHITE), 2.0));
         }
     }
@@ -38,12 +44,12 @@ fn freeform_fill_has_own_alpha() {
     shape_draws(
         rect,
         ShapeKind::Freeform,
-        Some(Rgb::BLACK),
+        Some(&wordcraft_doc::fill::Fill::Solid { color: Rgb::BLACK, transparency: 100.0 }),
         Some(Rgb::WHITE),
         2.0,
         Default::default(),
         Some(&ink),
-        &ShapeExtra { fill_transparency: 100.0, ..Default::default() },
+        &ShapeExtra::default(),
         &DisplayOptions::default(),
         &mut out,
     );
@@ -64,8 +70,8 @@ fn other_path_alpha_defaults() {
     };
     let mut out = graphic_draws(&Document::new(), &graphic, rect, 1.0);
     out.push(path_arrowhead(&[(4.0, 4.0), (28.0, 28.0)], Rgb::BLACK, 2.0).unwrap());
-    let extra = ShapeExtra { arrow_start: true, arrow_end: true, fill_transparency: 100.0, ..Default::default() };
+    let extra = ShapeExtra { arrow_start: true, arrow_end: true, ..Default::default() };
     line_draws(rect, ShapeKind::ElbowConnector, Some(Rgb::BLACK), 2.0, Default::default(), &extra, &mut out);
     assert_eq!(out.len(), 5);
-    assert!(out.iter().all(|item| matches!(item, Draw::Path { fill_alpha, .. } if *fill_alpha == 1.0)));
+    assert!(out.iter().all(|item| matches!(item, Draw::Path { fill, .. } if fill.as_ref().is_none_or(|paint| matches!(paint, Paint::Solid(_, alpha) if *alpha == 1.0)))));
 }
