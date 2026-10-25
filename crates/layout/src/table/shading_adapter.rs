@@ -40,7 +40,7 @@ fn emitted_row() -> RowLayout {
     }
     assert!(items.iter().any(|it| matches!(it, Placed::Lines { para, .. } if para.lines.len() == 20)));
     let part = CellPart { top: CELL_PAD, items: 0..items.len(), end: Some(frame.h - CELL_PAD), center: None, merge: None };
-    RowLayout { height: frame.h, min_height: 0.0, bottom: CELL_PAD, items, cells: vec![part] }
+    RowLayout { edge: 0.0, height: frame.h, min_height: 0.0, bottom: CELL_PAD, items, cells: vec![part] }
 }
 
 fn fill_pair(pair: &(RowLayout, RowLayout)) -> [Vec<Rect>; 2] {
