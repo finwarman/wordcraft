@@ -2350,7 +2350,12 @@ fn spun_links_follow_page_fit() {
             }
         }
         let frames = frames.unwrap();
-        assert_eq!(frames.len(), if nested.is_some() { 2 } else { 1 });
+        assert_eq!(frames.len(), 1, "nested text inherits only its allowed outer turn");
+        assert_eq!(frames[0].1.deg, if nested.is_some() { 25.0 } else { 90.0 });
+        if let Some(angle) = nested {
+            let child = lay.find_object(1, |object| matches!(object.story, wordcraft_doc::StoryRef::Part(_)) && object.text_box.is_some()).unwrap();
+            assert_eq!(child.spin.deg, angle, "the nested frame retains main's stored angle");
+        }
         let [x0, y0, x1, y1] = base[0].1;
         let height = lay.pages[1].h;
         let mut corners = [(x0, height - y0), (x0, height - y1), (x1, height - y0), (x1, height - y1)];
