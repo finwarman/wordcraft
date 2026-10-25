@@ -754,6 +754,8 @@ mod probe_work_tests {
         let opts = crate::LayoutOptions::default();
         let mut ctx = Ctx {
             doc: &d,
+            sections: d.sections(),
+            floats_above: HashMap::new(),
             cache: &mut cache,
             opts: &opts,
             counters: Default::default(),
@@ -807,6 +809,8 @@ mod probe_work_tests {
         let opts = crate::LayoutOptions::default();
         let mut ctx = Ctx {
             doc: d,
+            sections: d.sections(),
+            floats_above: HashMap::new(),
             cache: &mut cache,
             opts: &opts,
             counters: Default::default(),
@@ -965,7 +969,7 @@ mod probe_work_tests {
             *kind = ShapeKind::Rectangle;
             *story = None;
             *h = 10.0;
-            *fill = Some(wordcraft_doc::props::Rgb(19, 47, 83));
+            *fill = Some(wordcraft_doc::fill::Fill::solid(wordcraft_doc::props::Rgb(19, 47, 83)));
             float.h_rel = wordcraft_doc::para::Anchor::Column;
             float.v_rel = wordcraft_doc::para::Anchor::Paragraph;
         }
@@ -1157,7 +1161,7 @@ mod probe_work_tests {
             kind: ShapeKind::Rectangle,
             w: 20.0,
             h: 20.0,
-            fill: Some(Rgb(25, 73, 137)),
+            fill: Some(wordcraft_doc::fill::Fill::solid(Rgb(25, 73, 137))),
             stroke: None,
             stroke_width: 0.0,
             float: Float { wrap: Wrap::InFrontOfText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, y: 500.0, ..Default::default() },
@@ -1371,7 +1375,7 @@ mod fitting_policy_tests {
             kind: ShapeKind::Rectangle,
             w: 40.0,
             h: 10.0,
-            fill: Some(CHILD_COLOR),
+            fill: Some(wordcraft_doc::fill::Fill::solid(CHILD_COLOR)),
             stroke: None,
             stroke_width: 0.0,
             float: Float { wrap, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, y, ..Default::default() },
@@ -1395,7 +1399,7 @@ mod fitting_policy_tests {
             kind: ShapeKind::TextBox,
             w: FRAME_WIDTH,
             h: SAVED_HEIGHT,
-            fill: Some(Rgb(240, 248, 240)),
+            fill: Some(wordcraft_doc::fill::Fill::solid(Rgb(240, 248, 240))),
             stroke: Some(Rgb(192, 0, 0)),
             stroke_width: 1.0,
             float: Float { wrap: Wrap::InFrontOfText, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 100.0, ..Default::default() },
@@ -1432,7 +1436,7 @@ mod fitting_policy_tests {
         draws
             .iter()
             .map(|draw| match draw {
-                Draw::Shape { fill: Some(color), .. } if *color == CHILD_COLOR => 1,
+                Draw::Shape { fill: Some(color), .. } if *color == crate::display::Paint::solid(CHILD_COLOR) => 1,
                 Draw::Rotated { items, .. } | Draw::Turned { items, .. } | Draw::Clip { items, .. } => child_draws(items),
                 _ => 0,
             })
@@ -1684,7 +1688,7 @@ mod fitting_policy_tests {
         d.parts.get_mut(&root).unwrap().body.inset = Some([12700; 4]);
         let child = d.para_mut(StoryRef::Part(root), &Path::top(0)).unwrap().object_at_mut(0).unwrap();
         if let InlineObject::Shape { fill, w, h, .. } = child {
-            *fill = Some(Rgb(107, 31, 48));
+            *fill = Some(wordcraft_doc::fill::Fill::solid(Rgb(107, 31, 48)));
             *w = 53.0;
             *h = 19.0;
         }
