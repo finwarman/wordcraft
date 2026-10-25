@@ -352,6 +352,21 @@ impl Placed {
         None
     }
 
+    // A whole canvas may escape its cell only when every leaf belongs to the pinned object.
+    fn owns_object(&self, story: StoryRef, path: &Path, off: usize) -> bool {
+        let mut pending = vec![self];
+        while let Some(item) = pending.pop() {
+            match item {
+                Placed::Clip { items, .. } if !items.is_empty() => pending.extend(items),
+                Placed::Image { story: s, path: p, off: o, .. } | Placed::Graphic { story: s, path: p, off: o, .. }
+                    if (*s, p, *o) == (story, path, off) => {}
+                Placed::Shape { object: Some(pos), .. } if (pos.story, &pos.path, pos.off) == (story, path, off) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
     fn translate(&mut self, dx: f32, dy: f32) {
         match self {
             Placed::Lines { x, y, .. } => {

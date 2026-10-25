@@ -581,7 +581,7 @@ fn stories_display(doc: &Document, stories: &[&Vec<Placed>], opts: &DisplayOptio
             }
             if !clips.is_empty()
                 && let Some((story, path, off)) = it.source()
-                && !off.is_some_and(|off| page_objects.contains(&(story, path, off)))
+                && !off.is_some_and(|off| page_objects.contains(&(story, path, off)) && it.owns_object(story, path, off))
                 && let Some(rect) = cell_clip(&clips, story, &path.0)
             {
                 let mut inner = Vec::new();

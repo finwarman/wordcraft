@@ -12204,4 +12204,48 @@ mod review2590 {
         object_clips(&display::page_display(&d, &l.pages[0], &opts), cell_rect(&l), None, &mut found);
         assert!(found.is_empty(), "pinned paint retains the source used to hide a dragged object");
     }
+    #[test]
+    fn mixed_clip_keeps_cell_clip() {
+        let float = Float {
+            wrap: Wrap::InFrontOfText,
+            h_rel: Anchor::Page,
+            v_rel: Anchor::Page,
+            x: 200.0,
+            y: 200.0,
+            outside_cell: true,
+            ..Default::default()
+        };
+        let mut t = cell_table(TextDirection::Down, None);
+        let mut p = Paragraph::with_text("Cell", Default::default());
+        p.insert_object(0, objects(float).remove(3), &Default::default()).unwrap();
+        t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+        let d = document(t, Some(PartKind::Header));
+        let l = lay(&d);
+        let cell = cell_rect(&l);
+        let original = &l.pages[0];
+        let index = original.header.iter().position(|it| matches!(it, Placed::Image { .. })).unwrap();
+        let pinned = original.header[index].clone();
+        let frame = if let Placed::Image { rect, .. } = &pinned { *rect } else { panic!("pinned image fixture") };
+        assert_ne!(frame, cell, "the canvas frame must not mimic the physical cell clip");
+        let mut other = pinned.clone();
+        if let Placed::Image { off, .. } = &mut other {
+            *off = 3;
+        }
+        let unknown = Placed::Fill { rect: cell, color: PARA_FILL, source: None };
+        let empty = Placed::Clip { rect: cell, spin: Spin::default(), items: Vec::new() };
+        let mut failures = Vec::new();
+        for (label, child) in [("other object", other), ("unknown fill", unknown), ("empty clip", empty)] {
+            let mut page = original.clone();
+            let clip = Placed::Clip { rect: frame, spin: Spin::default(), items: vec![pinned.clone(), child] };
+            assert_eq!(clip.source(), pinned.source(), "ordinary cell ownership still uses its first owned descendant");
+            page.header[index] = clip;
+            let mut found = Vec::new();
+            object_clips(&display::page_display(&d, &page, &Default::default()), cell, None, &mut found);
+            assert!(!found.is_empty());
+            if found.iter().any(|v| !v) {
+                failures.push(label);
+            }
+        }
+        assert!(failures.is_empty(), "mixed or unknown canvas descendants must not exempt the whole clip: {failures:?}");
+    }
 }
