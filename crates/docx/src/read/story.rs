@@ -1555,6 +1555,7 @@ impl Reader<'_> {
             dash: super::shape_style::line_dash(ln),
             cap: wordcraft_doc::connector::LineCap::from_ooxml(ln.and_then(|e| e.attr("cap")).unwrap_or("flat")),
             outline_fill: paint.outline_fill,
+            pattern: paint.pattern.map(Box::new),
             ..ShapeExtra::default()
         };
         // A rounded rectangle's own corner (`adj`, ECMA-376 §20.1.10.56); other presets drawn as
@@ -1582,7 +1583,6 @@ impl Reader<'_> {
             self.glued.extend(extra.start.iter().chain(extra.end.iter()).map(|e| e.id));
         }
         extra.warp = wsp.child("wps:bodyPr").and_then(|b| b.child("a:prstTxWarp")).and_then(text_warp);
-        extra.pattern = sppr.and_then(|s| super::drawing_color::pattern_fill(s, &self.pc.theme)).map(Box::new);
         // A freeform: its custom geometry (#743: in a group too).
         let freeform = sppr.and_then(|s| super::freeform::cust_geom(s, w, h)).map(|mut f| {
             f.alpha = super::freeform::line_alpha(ln);

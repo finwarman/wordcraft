@@ -36,17 +36,21 @@ pub(crate) fn fill_colour(e: &El, theme: &[Rgb]) -> Option<Rgb> {
 
 /// Preserve light vertical fills; other presets keep the foreground fallback.
 pub(crate) fn pattern_fill(sppr: &El, theme: &[Rgb]) -> Option<wordcraft_doc::pattern::PatternFill> {
-    use wordcraft_doc::pattern::{ALPHA_SCALE, PatternColor, PatternFill, PatternKind};
     if sppr.child("a:noFill").is_some() || sppr.child("a:blipFill").is_some() {
         return None;
     }
-    let p = sppr.child("a:pattFill")?;
+    pattern_from_fill(sppr.child("a:pattFill")?, theme, None)
+}
+
+/// A supported pattern's colors and opacity, with the selected theme reference as `phClr`.
+pub(crate) fn pattern_from_fill(p: &El, theme: &[Rgb], ph: Option<(Rgb, f32)>) -> Option<wordcraft_doc::pattern::PatternFill> {
+    use wordcraft_doc::pattern::{ALPHA_SCALE, PatternColor, PatternFill, PatternKind};
     let kind = PatternKind::LightVertical;
-    if p.attr("prst")? != kind.ooxml() {
+    if p.name != "a:pattFill" || p.attr("prst")? != kind.ooxml() {
         return None;
     }
     let resolve = |name| {
-        let (color, transparency) = color_alpha(p.child(name)?, theme, None)?;
+        let (color, transparency) = color_alpha(p.child(name)?, theme, ph)?;
         let alpha = ((100.0 - transparency) * ALPHA_SCALE as f32 / 100.0).round().clamp(0.0, ALPHA_SCALE as f32) as u32;
         Some(PatternColor { color, alpha })
     };
