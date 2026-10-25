@@ -8,7 +8,8 @@ use wordcraft_layout::para::{Exclusion, Grid, ParaEnv, layout_para};
 fn old_public_shapes_stay_valid() {
     let doc = Document::new();
     let fields = FieldCtx::default();
-    let exclusions = [Exclusion { top: 0.0, bottom: 60.0, left: 0.0, right: 180.0, top_bottom: false, contour: None, side: WrapText::BothSides }];
+    let exclusions =
+        [Exclusion { top: 0.0, bottom: 60.0, left: 0.0, right: 180.0, top_bottom: false, contour: None, side: WrapText::BothSides, table: false }];
     let env = ParaEnv {
         doc: &doc,
         width: 200.0,

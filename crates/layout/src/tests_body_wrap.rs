@@ -7,7 +7,7 @@ const TEST_WIDTH: f32 = 200.0;
 const WRAP_END: f32 = 60.0;
 
 fn area(left: f32, right: f32) -> para::Exclusion {
-    para::Exclusion { top: 0.0, bottom: WRAP_END, left, right, top_bottom: false, contour: None, side: WrapText::BothSides }
+    para::Exclusion { top: 0.0, bottom: WRAP_END, left, right, top_bottom: false, contour: None, side: WrapText::BothSides, table: false }
 }
 
 fn word_doc() -> Document {
@@ -25,6 +25,8 @@ fn with_ctx<T>(d: &Document, f: impl FnOnce(&mut Ctx) -> T) -> T {
     let mut back_wraps = BackBodyWraps::new();
     let mut ctx = Ctx {
         doc: d,
+        sections: d.sections(),
+        floats_above: HashMap::new(),
         cache: &mut cache,
         opts: &opts,
         counters: Default::default(),
@@ -113,8 +115,8 @@ fn continuation_reindexes_policy() {
     rel.append_wait([area(0.0, 40.0)]);
     rel.append_split([area(60.0, 90.0)]);
     assert_eq!(rel.split, [0, 2]);
-    let ordinary = (Rect::new(120.0, 0.0, 20.0, 1000.0), false, None, WrapText::BothSides);
-    let filtered = (Rect::new(900.0, 0.0, 20.0, 1000.0), false, None, WrapText::BothSides);
+    let ordinary = (Rect::new(120.0, 0.0, 20.0, 1000.0), false, None, WrapText::BothSides, false);
+    let filtered = (Rect::new(900.0, 0.0, 20.0, 1000.0), false, None, WrapText::BothSides, false);
     let here = BodyExclusions::wait(rel_exclusions(&[ordinary, filtered], 0.0, -30.0));
     let next = continued_exclusions(&rel, &here, 30.0, TEST_WIDTH);
     assert_eq!(next.areas.len(), 3);
@@ -273,11 +275,12 @@ fn counted_layout(d: &Document, cache: &mut LayoutCache) -> (DocLayout, ReplaySt
     REPLAY_STATS.with(|s| *s.borrow_mut() = ReplayStats::default());
     let laid = layout(d, cache, &LayoutOptions::default());
     let stats = REPLAY_STATS.with(|s| s.borrow().clone());
-    assert_eq!(stats.passes, 1 + stats.back_retries + stats.total_retries + stats.note_retries);
+    assert_eq!(stats.passes, 1 + stats.back_retries + stats.total_retries + stats.early_retries + stats.note_retries);
     assert!(stats.back_retries <= MAX_BACK_WRAP_PASSES);
     assert!(stats.total_retries + stats.totals_with_back <= MAX_TOTAL_PASSES);
     assert!(stats.note_retries < MAX_NOTE_PASSES);
-    assert!(stats.passes <= MAX_BACK_WRAP_PASSES + MAX_TOTAL_PASSES + MAX_NOTE_PASSES);
+    assert!(stats.early_retries + stats.early_with_back <= MAX_REWRAP_PASSES);
+    assert!(stats.passes <= MAX_BACK_WRAP_PASSES + MAX_TOTAL_PASSES + MAX_NOTE_PASSES + MAX_REWRAP_PASSES);
     assert_eq!(stats.wrap_attempts, stats.wrap_accepted + stats.wrap_rejected);
     (laid, stats)
 }
@@ -547,8 +550,16 @@ fn relay_boundary_cache_is_exact() {
         let plain = ctx.para_labelled(p, 240.0, None, &[], None);
         let index = 20;
         let (resume, top) = (plain.lines[index].start, plain.lines[index].top);
-        let areas =
-            [para::Exclusion { top, bottom: top + 60.0, left: 0.0, right: 100.0, top_bottom: false, contour: None, side: WrapText::BothSides }];
+        let areas = [para::Exclusion {
+            top,
+            bottom: top + 60.0,
+            left: 0.0,
+            right: 100.0,
+            top_bottom: false,
+            contour: None,
+            side: WrapText::BothSides,
+            table: false,
+        }];
         let ordinary = ctx.para_with_wrap(p, 240.0, None, &areas, None, &[]);
         let relaid = ctx.para_relay(p, 240.0, None, &areas, None, &[], Some(top));
         eprintln!(
