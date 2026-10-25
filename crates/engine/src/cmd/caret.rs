@@ -273,7 +273,7 @@ fn page(s: &mut Session, v: &Value, dir: i32) -> CmdResult {
 
 fn set(s: &mut Session, v: &Value) -> CmdResult {
     let ext = extend(v);
-    let mut target = None;
+    let mut point = None;
     let to = if let Some(pv) = v.get("pos") {
         parse_pos(pv).ok_or_else(|| CmdError::Params("bad `pos`".into()))?
     } else if let (Some(pg), Some(x), Some(y)) = (p::u64(v, "page"), p::f32(v, "x"), p::f32(v, "y")) {
@@ -282,7 +282,7 @@ fn set(s: &mut Session, v: &Value) -> CmdResult {
         let page = usize::try_from(pg).map_err(|_| CmdError::Params("bad `page`".into()))?;
         let hit = l.hit_visual(page, x, y, story).ok_or_else(|| CmdError::Params("no text on that page".into()))?;
         let pos = hit.position().clone();
-        target = Some(hit);
+        point = Some((page, x, y, story));
         s.page_hint = page;
         pos
     } else {
@@ -291,8 +291,12 @@ fn set(s: &mut Session, v: &Value) -> CmdResult {
     let to = s.doc.clamp(&to);
     s.goal_x = None;
     apply(s, to, ext);
-    if let Some(target) = target {
-        s.retain_visual(target);
+    // Ending typing can replace the snapshot even when the document is unchanged.
+    if let Some((page, x, y, story)) = point {
+        let layout = s.layout();
+        if let Some(target) = layout.hit_visual(page, x, y, story) {
+            s.retain_visual(target);
+        }
     }
     sel_result(s)
 }
