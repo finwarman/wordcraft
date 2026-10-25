@@ -11123,13 +11123,25 @@ mod continuous_picture_fit {
         let top = BODY_TOP + BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT;
         assert_eq!(first.section, 0);
         assert!((first.body.y - top).abs() < EPSILON);
-        assert!(!first.items.iter().any(|item| matches!(item,
-            Placed::Lines { story: StoryRef::Body, path, .. } if *path == Path::top(0)
-        )), "the predecessor has no body lines");
+        let marks: Vec<_> =
+            first.items.iter().filter(|item| matches!(item, Placed::Lines { story: StoryRef::Body, path, .. } if *path == Path::top(0))).collect();
+        assert_eq!(marks.len(), 1, "the hidden section mark keeps its caret item");
+        let Placed::Lines { para, .. } = marks[0] else { panic!("section mark") };
+        assert_eq!(para.text_len, 0);
+        assert_eq!(para.height, 0.0, "the predecessor occupies no body height");
+        assert_eq!(v_span(marks[0]), (first.body.y, first.body.y), "its footprint cannot raise content_bottom");
         assert_eq!(image_rects(&first.items), [Rect::new(BODY_TOP, top, PICTURE_WIDTH, OVERFLOW_HEIGHT)]);
         let after = laid.caret(&Pos::body(2, 0)).unwrap();
         assert_eq!(after.page, 0);
-        assert!((after.top - (top + ANCHOR_LINE_HEIGHT)).abs() < EPSILON);
+        let after_y = first
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, path, y, .. } if *path == Path::top(2) => Some(*y),
+                _ => None,
+            })
+            .unwrap();
+        assert!((after_y - (top + ANCHOR_LINE_HEIGHT)).abs() < EPSILON, "following line starts at {after_y}");
     }
 
     #[test]
