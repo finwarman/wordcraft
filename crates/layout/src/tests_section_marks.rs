@@ -393,3 +393,152 @@ fn mark_keeps_break_column() {
         assert_eq!(caret.x, break_geometry.0);
     }
 }
+
+#[test]
+fn mark_keeps_break_column_bottom() {
+    for widths in [vec![], vec![(100.0, 36.0), (332.0, 0.0)]] {
+        let mut doc = numbered_document(LineNumberRestart::Continuous);
+        doc.body = [0, 2, 3, 4].map(|i| doc.body[i].clone()).to_vec();
+        let section = doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap().section.as_mut().unwrap();
+        section.columns.count = 2;
+        section.columns.widths = widths;
+        let lead = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+        lead.text = "Tall\nTall\nTall\nTall\u{000e}Short".into();
+        lead.runs[0].len = lead.text.len();
+        let original = doc.clone();
+        let laid = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+        assert_eq!(laid.pages.len(), 2);
+        let page = &laid.pages[0];
+        let find = |block| {
+            page.items
+                .iter()
+                .find_map(|item| match item {
+                    Placed::Lines { story: StoryRef::Body, path, x, y, .. } if *path == Path::top(block) => Some((*x, *y, v_span(item).1)),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let break_geometry = find(1);
+        let prior_bottom = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, x, .. } if *x < break_geometry.0 => Some(v_span(item).1),
+                _ => None,
+            })
+            .reduce(f32::max)
+            .unwrap();
+        assert!(prior_bottom > break_geometry.2, "the prior column must be taller than the break column");
+        let mark = find(2);
+        assert_eq!(mark.0, break_geometry.0);
+        assert_eq!(mark.1, break_geometry.2, "mark must follow its own break, not prior-column bottom {prior_bottom}");
+        let caret = laid.caret(&wordcraft_doc::Pos::body(2, 0)).unwrap();
+        assert_eq!(caret.page, 0);
+        assert_eq!(caret.x, break_geometry.0);
+        assert!(caret.top >= mark.1 && caret.top < mark.1 + LINE_HEIGHT);
+        assert_eq!(doc, original);
+    }
+}
+
+#[test]
+fn mark_uses_indented_break_end() {
+    for mirrored in [false, true] {
+        let mut doc = numbered_document(LineNumberRestart::Continuous);
+        doc.body = [0, 2, 3, 4].map(|i| doc.body[i].clone()).to_vec();
+        doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap().section.as_mut().unwrap().columns.count = 2;
+        let lead = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+        lead.text = "\u{000e}Short".into();
+        lead.runs[0].len = lead.text.len();
+        let mut first_page = Paragraph::with_text("\u{000c}", doc.styles.default_chr.clone());
+        first_page.props = doc.para(StoryRef::Body, &Path::top(1)).unwrap().props.clone();
+        doc.body.insert(0, wordcraft_doc::para_block(first_page));
+        for block in [1, 2] {
+            let p = doc.para_mut(StoryRef::Body, &Path::top(block)).unwrap();
+            p.props.indent_left = Some(if mirrored { 36.0 } else { -24.0 });
+            p.props.indent_first = Some(-12.0);
+            p.props.indent_right = Some(0.0);
+            p.props.mirror_indents = Some(mirrored);
+        }
+        let original = doc.clone();
+        let laid = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+        assert_eq!(laid.pages.len(), 3);
+        let page = &laid.pages[1];
+        let (x, bottom) = page
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, path, x, .. } if *path == Path::top(2) => Some((*x, v_span(item).1)),
+                _ => None,
+            })
+            .unwrap();
+        let column_left = page.body.x + doc.sections()[0].1.column_boxes()[1].0;
+        if mirrored {
+            assert!(x < column_left, "mirrored indents move the stored origin outside its owning column");
+        } else {
+            assert_eq!(x, column_left, "ordinary negative indents leave the placement origin unchanged");
+        }
+        assert_eq!(body_slot(&laid, 3), (1, bottom), "mirrored={mirrored}");
+        assert_eq!(laid.caret(&wordcraft_doc::Pos::body(3, 0)).unwrap().page, 1);
+        assert_eq!(doc, original);
+    }
+}
+
+#[test]
+fn mark_follows_indented_table() {
+    let mut doc = numbered_document(LineNumberRestart::Continuous);
+    doc.body = [0, 2, 3, 4].map(|i| doc.body[i].clone()).to_vec();
+    doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap().section.as_mut().unwrap().columns.count = 2;
+    let lead = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    lead.text = "\u{000e}Short".into();
+    lead.runs[0].len = lead.text.len();
+    let mut cell = Paragraph::with_text("Cell", Default::default());
+    cell.props = lead.props.clone();
+    let mut table = wordcraft_doc::Table::new(1, 1, 100.0);
+    table.props.indent = Some(-24.0);
+    table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(cell)];
+    doc.body.insert(1, std::sync::Arc::new(wordcraft_doc::Block::Table(table)));
+    let original = doc.clone();
+    let laid = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+    assert_eq!(laid.pages.len(), 2);
+    let page = &laid.pages[0];
+    let cell = page
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Placed::Cell { story: StoryRef::Body, table, rect, .. } if *table == Path::top(1) => Some(*rect),
+            _ => None,
+        })
+        .unwrap();
+    let (x, bottom) = page
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Placed::Lines { story: StoryRef::Body, path, x, .. } if *path == Path::top(2) => Some((*x, v_span(item).1)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(cell.x < x, "the owning column's table starts outside its left edge");
+    assert!(bottom >= cell.bottom());
+    assert_eq!(body_slot(&laid, 3), (0, bottom));
+    assert_eq!(doc, original);
+}
+
+#[test]
+fn mark_follows_aligned_break() {
+    use wordcraft_doc::section::PageVAlign;
+    for align in [PageVAlign::Center, PageVAlign::Bottom, PageVAlign::Justify] {
+        let mut doc = numbered_document(LineNumberRestart::Continuous);
+        doc.body = [0, 2, 3, 4].map(|i| doc.body[i].clone()).to_vec();
+        doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap().section.as_mut().unwrap().valign = align;
+        let laid = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+        let bottom = laid.pages[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, path, .. } if *path == Path::top(1) => Some(v_span(item).1),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(body_slot(&laid, 2), (0, bottom), "alignment={align:?}");
+    }
+}
