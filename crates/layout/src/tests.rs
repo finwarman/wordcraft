@@ -11002,14 +11002,16 @@ fn inline_piece_range_is_local() {
     }
 }
 
-#[test]
-fn kept_inline_empty_suffix() {
+fn check_empty_suffix(label: Option<para::Label>, borders: Option<Borders>) {
     use crate::table::split_row;
+    let border = Border::single(1.0);
     for kind in [para::ClKind::Object(0), para::ClKind::Marker] {
         let mut row = inline_content_row();
         let Placed::Lines { para, y, l0, l1, .. } = &mut row.items[1] else { panic!("lines") };
         let p = std::sync::Arc::make_mut(para);
         p.text_len = 0;
+        p.label = label.clone();
+        p.rp.borders = borders;
         p.rp.widow_control = false;
         let visible = p.clusters.iter().find(|c| matches!(c.kind, para::ClKind::Object(_))).unwrap().clone();
         let mut mark = visible.clone();
@@ -11043,6 +11045,18 @@ fn kept_inline_empty_suffix() {
         assert!(crate::item_bottom(*y, p, *l0, 2).unwrap() > 100.0, "only the empty suffix is past cut");
         assert!(split_row(&row, 100.0).is_none(), "kept object cannot make an empty moved suffix content: {kind:?}");
 
+        for borders in [
+            Borders { bottom: Some(border), ..Default::default() },
+            Borders { left: Some(border), ..Default::default() },
+            Borders { right: Some(border), ..Default::default() },
+        ] {
+            let Placed::Lines { para, .. } = &mut row.items[1] else { panic!("lines") };
+            Arc::make_mut(para).rp.borders = Some(borders);
+            assert!(split_row(&row, 100.0).is_some(), "a border on the moved suffix is content");
+        }
+        let Placed::Lines { para, .. } = &mut row.items[1] else { panic!("lines") };
+        Arc::make_mut(para).rp.borders = borders;
+
         // The same geometry must continue when the moved suffix contains a visible object.
         let Placed::Lines { para, .. } = &mut row.items[1] else { panic!("lines") };
         let p = std::sync::Arc::make_mut(para);
@@ -11053,6 +11067,25 @@ fn kept_inline_empty_suffix() {
         assert!(matches!(&first.items[1], Placed::Lines { l0: 0, l1: 1, .. }));
         assert_eq!(rest.items.len(), 1);
         assert!(matches!(&rest.items[0], Placed::Lines { l0: 1, l1: 2, y, .. } if *y == 0.0));
+    }
+}
+
+#[test]
+fn kept_inline_empty_suffix() {
+    check_empty_suffix(None, None);
+}
+
+#[test]
+fn kept_label_empty_suffix() {
+    let label = para::Label { text: "1.".into(), ascent: 10.0, style: 0, glyphs: vec![], runs: vec![], x: 0.0, width: 10.0 };
+    check_empty_suffix(Some(label), None);
+}
+
+#[test]
+fn kept_border_empty_suffix() {
+    let border = Border::single(1.0);
+    for borders in [Borders { top: Some(border), ..Default::default() }, Borders { between: Some(border), ..Default::default() }] {
+        check_empty_suffix(None, Some(borders));
     }
 }
 

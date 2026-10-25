@@ -939,14 +939,17 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                     _ => split,
                 };
                 let empty_mark = matches!(it, Placed::Lines { para, l1, .. }
-                if !multiple_paras && para.text_len == 0 && para.label.is_none()
+                if !multiple_paras && para.text_len == 0
+                && !(para.label.is_some() && (start..*l1).contains(&para.label_line()))
                 && !para.lines.get(start..*l1).is_some_and(|lines| lines.iter().any(|line| {
                     para.clusters.get(line.c0..line.c1).is_some_and(|clusters| clusters.iter().any(|c| {
                         matches!(c.kind, crate::para::ClKind::Object(_)) && (c.adv > 0.0 || c.obj_h > 0.0)
                     }))
                 }))
                 && para.rp.borders.is_none_or(|b| {
-                    ![b.top, b.bottom, b.left, b.right, b.between].into_iter().flatten().any(|b| b.is_visible())
+                    !(start == 0 && b.top.is_some_and(|b| b.is_visible()))
+                    && !(*l1 == para.lines.len() && b.bottom.is_some_and(|b| b.is_visible()))
+                    && ![b.left, b.right].into_iter().flatten().any(|b| b.is_visible())
                 }));
                 moved_content |= !empty_mark;
                 *m = m.min(top);
