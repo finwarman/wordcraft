@@ -651,6 +651,56 @@ fn footer_target_page(l: &DocLayout, block: usize) -> usize {
     pages[0]
 }
 
+fn quiet_footer_doc() -> Document {
+    use wordcraft_doc::{props::LineSpacing, section::SectionStart};
+    let (room, _) = footer_fit_metrics();
+    let mut doc = footer_fit_doc(FooterFitCase::Tall);
+    let boundary = lay(&doc).pages[0].body.bottom();
+    let first = doc.last_section.clone();
+    doc.last_section.start = SectionStart::Continuous;
+    let mut filler = footer_fit_para("Before");
+    filler.props.line_spacing = Some(LineSpacing::Exactly(boundary - first.margin_top - room));
+    let mut mark = footer_fit_para("");
+    mark.section = Some(Box::new(first));
+    doc.body = vec![para_block(filler), para_block(mark), para_block(footer_fit_para("After"))];
+    doc
+}
+
+#[test]
+fn quiet_footer_mark_stays() {
+    let mut failures = Vec::new();
+    for (keep_lines, keep_next) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut doc = quiet_footer_doc();
+        let mark = doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap();
+        mark.props.keep_lines = Some(keep_lines);
+        mark.props.keep_next = Some(keep_next);
+        let layout = lay(&doc);
+        let page = footer_target_page(&layout, 1);
+        if page != 0 {
+            failures.push(format!("keep_lines={keep_lines}, keep_next={keep_next}: mark moved to page {page}"));
+        }
+        assert_eq!(footer_target_page(&layout, 2), 1, "visible content still respects the physical footer");
+        assert_eq!(layout.pages.len(), 2);
+    }
+    assert!(failures.is_empty(), "a quiet closing mark must stay after the preceding content: {failures:#?}");
+}
+
+#[test]
+fn quiet_footer_state_restored() {
+    use wordcraft_doc::props::LineSpacing;
+    let mut doc = quiet_footer_doc();
+    // This mark already fits the footer floor. The following visible line fits by text
+    // height but its full box does not: leaking the temporary exemption would admit it.
+    doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().props.line_spacing = Some(LineSpacing::Exactly(1.0));
+    let layout = lay(&doc);
+    assert_eq!(footer_target_page(&layout, 1), 0);
+    assert_eq!(footer_target_page(&layout, 2), 1, "the physical footer still reserves the next line's full box");
+    let page = &layout.pages[1];
+    let (_, bottom) = extent(&page.items, StoryRef::Body).unwrap();
+    let (footer, _) = extent(&page.footer, StoryRef::Part(page.footer_story.unwrap())).unwrap();
+    assert!(bottom <= footer + 0.01, "visible body {bottom}, footer {footer}");
+}
+
 #[test]
 fn auto_footer_fit_bounds() {
     use wordcraft_doc::props::LineSpacing;

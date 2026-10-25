@@ -3660,8 +3660,10 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
         // Its (empty) line stays where the text ended, even at the bottom of a full column.
         let (y, prev, bottom, content_bottom, at) = (pb.y, pb.prev.clone(), pb.bottom, pb.content_bottom, (pb.pages.len(), pb.col));
         pb.bottom = f32::MAX / 4.0;
+        let footer_limited = std::mem::replace(&mut pb.footer_limited, false);
         place_para_in_flow(ctx, pb, p, block, body_top);
         pb.bottom = bottom;
+        pb.footer_limited = footer_limited;
         if (pb.pages.len(), pb.col) == at {
             (pb.y, pb.prev, pb.content_bottom) = (y, prev, content_bottom);
         }
