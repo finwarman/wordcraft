@@ -10840,7 +10840,7 @@ fn foreground_respects_stories() {
     let draws = display::page_display(&d, &l.pages[0], &display::DisplayOptions::default());
     let logo = draws
         .iter()
-        .position(|it| matches!(it, display::Draw::Shape { fill: Some(wordcraft_doc::fill::Fill::solid(Rgb(200, 30, 30))), .. }))
+        .position(|it| matches!(it, display::Draw::Shape { fill: Some(display::Paint::Solid(Rgb(200, 30, 30), alpha)), .. } if *alpha == 1.0))
         .unwrap();
     let mask = draws.iter().position(|it| matches!(it, display::Draw::Image { media, .. } if media == "original-body-mask")).unwrap();
     assert!(logo < mask, "header foreground remains below body masks, even at maximum relativeHeight");
