@@ -11366,3 +11366,96 @@ fn a_row_leaves_room_for_the_border_below_it() {
         }
     }
 }
+
+#[test]
+fn cell_float_draws_are_clipped() {
+    use wordcraft_doc::graphic::{Graphic, GraphicItem};
+    use wordcraft_doc::para::{Anchor, CanvasStyle, Float, GroupChild, Wrap};
+    use wordcraft_doc::props::{HeightRule, LineSpacing};
+    for turn in [TextDirection::Down, TextDirection::Up] {
+        let float = Float { wrap: Wrap::InFrontOfText, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, ..Default::default() };
+        let mut shape = picture(100.0, 100.0, float.clone());
+        if let InlineObject::Shape { fill, .. } = &mut shape {
+            *fill = Some(Fill::solid(Rgb(17, 33, 49)));
+        }
+        let canvas = InlineObject::Group {
+            w: 100.0,
+            h: 100.0,
+            float: float.clone(),
+            ch_w: 100.0,
+            ch_h: 100.0,
+            children: vec![GroupChild { x: 0.0, y: 0.0, obj: shape.clone() }],
+            canvas: Some(CanvasStyle { fill: None, stroke: None, stroke_width: 0.0 }),
+        };
+        let objects = vec![
+            canvas,
+            shape,
+            InlineObject::Image {
+                media: "synthetic".into(),
+                w: 100.0,
+                h: 100.0,
+                alt: String::new(),
+                float: float.clone(),
+                crop: [0.0; 4],
+                ole: None,
+            },
+            InlineObject::Graphic {
+                w: 100.0,
+                h: 100.0,
+                alt: String::new(),
+                float,
+                graphic: Arc::new(Graphic {
+                    w: 100.0,
+                    h: 100.0,
+                    items: vec![GraphicItem::Image { rect: [0.0, 0.0, 100.0, 100.0], media: "synthetic".into() }],
+                    ..Default::default()
+                }),
+            },
+        ];
+        for object in objects {
+            let mut d = Document::new();
+            let mut table = Table::new(1, 1, 40.0);
+            table.props.style = None;
+            table.props.fixed = true;
+            table.props.cell_margins = Some([0.0; 4]);
+            table.props.borders = Some(Borders::all(Border::single(1.0)));
+            table.rows[0].props.height = Some(20.0);
+            table.rows[0].props.height_rule = HeightRule::Exact;
+            table.rows[0].cells[0].props.text_direction = turn;
+            let mut p = Paragraph::with_text("One\nTwo\nThree\nFour", Default::default());
+            p.props.line_spacing = Some(LineSpacing::Exactly(10.0));
+            p.props.space_after = Some(0.0);
+            p.insert_object(0, object, &Default::default()).unwrap();
+            table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+            d.body = vec![Arc::new(Block::Table(table))];
+            let l = lay(&d);
+            let page = &l.pages[0];
+            let cell = page
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    Placed::Cell { rect, clip: true, .. } => Some(*rect),
+                    _ => None,
+                })
+                .unwrap();
+            let draws = display::page_display(&d, page, &Default::default());
+            let mut count = 0;
+            fn check(draws: &[display::Draw], clip: Option<wordcraft_geom::Rect>, cell: wordcraft_geom::Rect, count: &mut usize) {
+                for draw in draws {
+                    match draw {
+                        display::Draw::Clip { rect, items } => check(items, clip.or(Some(*rect)), cell, count),
+                        display::Draw::Turned { items, .. } | display::Draw::Rotated { items, .. } => check(items, clip, cell, count),
+                        display::Draw::Image { .. } | display::Draw::Shape { .. } => {
+                            assert_eq!(clip, Some(cell), "floating drawable escapes its physical cell");
+                            *count += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            check(&draws, None, cell, &mut count);
+            assert!(count > 0);
+            assert!(draws.iter().any(|d| matches!(d, display::Draw::Line { .. })), "cell borders stay outside the content clip");
+        }
+    }
+}
