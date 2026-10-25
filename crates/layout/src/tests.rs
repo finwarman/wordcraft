@@ -11771,9 +11771,12 @@ fn split_rules_stay_enclosed() {
         assert!((first.height - expected).abs() < 0.01);
         assert_eq!(first.edge, 0.0);
         assert_eq!(rest.edge, EDGE);
-        assert!(first.items.iter().any(|it| matches!(it,
-            Placed::Rule { y0, y1, .. } if *y0 == rule_y && *y1 == rule_y
-        )), "the fallback rule keeps its coordinate");
+        assert!(
+            first.items.iter().any(|it| matches!(it,
+                Placed::Rule { y0, y1, .. } if *y0 == rule_y && *y1 == rule_y
+            )),
+            "the fallback rule keeps its coordinate"
+        );
         for item in &first.items {
             match item {
                 Placed::Rule { y0, y1, .. } => assert!(y0.max(*y1) <= first.height),
