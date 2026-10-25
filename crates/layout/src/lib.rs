@@ -759,6 +759,8 @@ struct Ctx<'a> {
 struct Pin {
     story: StoryRef,
     sect: SectionProps,
+    /// Rendered header Margin boundary; absent in footers and height probes.
+    margin_top: Option<f32>,
     number: u32,
     mirror: bool,
     behind: Vec<Placed>,
@@ -778,7 +780,14 @@ fn page_anchored(f: &Float) -> bool {
 /// Run `f`, a layout of header or footer `id` for page `number` of `sect`, with the floats in its
 /// table cells that are placed on the page put there (see [`Pin`]). Returns `f`'s result and those
 /// floats' items, in page coordinates: behind the header's text, and in front.
-fn with_pin<T>(ctx: &mut Ctx, id: u32, sect: &SectionProps, number: u32, f: impl FnOnce(&mut Ctx) -> T) -> (T, Vec<Placed>, Vec<Placed>) {
+fn with_pin<T>(
+    ctx: &mut Ctx,
+    id: u32,
+    sect: &SectionProps,
+    number: u32,
+    margin_top: Option<f32>,
+    f: impl FnOnce(&mut Ctx) -> T,
+) -> (T, Vec<Placed>, Vec<Placed>) {
     let tables = ctx.doc.parts.get(&id).is_some_and(|p| p.blocks.iter().any(|b| matches!(**b, Block::Table(_))));
     if !tables {
         return (f(ctx), Vec::new(), Vec::new());
@@ -786,6 +795,7 @@ fn with_pin<T>(ctx: &mut Ctx, id: u32, sect: &SectionProps, number: u32, f: impl
     let pin = Pin {
         story: StoryRef::Part(id),
         sect: sect.clone(),
+        margin_top,
         number,
         mirror: ctx.mirror,
         behind: Vec::new(),
@@ -1295,7 +1305,8 @@ fn layout_box(
                         continue;
                     }
                     if let Some(pin) = ctx.pin.as_ref().filter(|pin| in_cell && pin.story == story && float.outside_cell && page_anchored(float)) {
-                        let page = PageFrame { sect: &pin.sect, margin_top: None, origin: (0.0, 0.0), number: pin.number, mirror: pin.mirror };
+                        let page =
+                            PageFrame { sect: &pin.sect, margin_top: pin.margin_top, origin: (0.0, 0.0), number: pin.number, mirror: pin.mirror };
                         pinned.insert(oi, float_rect(Some(page), (0.0, width), para_top, w, h, float));
                         continue;
                     }
@@ -2969,7 +2980,7 @@ fn body_top_for(ctx: &mut Ctx, sect: &SectionProps, header: Option<u32>) -> f32 
     // Placed as `headers_footers` draws it, so page-relative floats wrap the same way.
     let frame = PageFrame { sect, margin_top: None, origin: (sect.margin_left + sect.gutter, sect.header), number: 1, mirror: ctx.mirror };
     let track = std::mem::replace(&mut ctx.track_totals, false);
-    let (h, ..) = with_pin(ctx, id, sect, 1, |ctx| {
+    let (h, ..) = with_pin(ctx, id, sect, 1, None, |ctx| {
         layout_box(ctx, StoryRef::Part(id), &blocks, &[], sect.text_width(), BoxContext::Other, 0, Some(frame)).height
     });
     ctx.track_totals = track;
@@ -2985,7 +2996,7 @@ fn foot_top_for(ctx: &mut Ctx, sect: &SectionProps, footer: Option<u32>) -> f32 
     // make the body lay out again.
     let track = std::mem::replace(&mut ctx.track_totals, false);
     let (laid, ..) =
-        with_pin(ctx, id, sect, 1, |ctx| layout_box(ctx, StoryRef::Part(id), &blocks, &[], sect.text_width(), BoxContext::Other, 0, None));
+        with_pin(ctx, id, sect, 1, None, |ctx| layout_box(ctx, StoryRef::Part(id), &blocks, &[], sect.text_width(), BoxContext::Other, 0, None));
     ctx.track_totals = track;
     let top = sect.page_h - sect.footer - laid.height;
     // Flow-table strokes extend above their cell boxes. Floating decorations keep their wrap rules.
@@ -4569,7 +4580,7 @@ fn header_table_areas(ctx: &mut Ctx, pb: &PageBuilder) -> Vec<Rect> {
     let Some(part) = ctx.doc.parts.get(&id) else { return Vec::new() };
     let blocks = part.blocks.clone();
     let x = sect.margin_left + sect.gutter;
-    let frame = PageFrame { sect, margin_top: None, origin: (x, sect.header), number: page.number, mirror: ctx.mirror };
+    let frame = PageFrame { sect, margin_top: Some(page.body.y), origin: (x, sect.header), number: page.number, mirror: ctx.mirror };
     let base = defining_width(&ctx.sections, page.section, |s| s.headers, Some(id));
     let counters = std::mem::take(&mut ctx.counters);
     let boxes = std::mem::take(&mut ctx.boxes);
@@ -4870,7 +4881,7 @@ fn headers_footers(ctx: &mut Ctx, pages: &mut [Page], sections: &[(usize, &Secti
             // Only the Margin anchor follows the displaced body boundary.
             let frame = PageFrame { sect, margin_top: Some(page.body.y), origin: (x, sect.header), number: page.number, mirror: ctx.mirror };
             let base = defining_width(sections, page.section, |s| s.headers, hid);
-            let (mut items, behind, front) = with_pin(ctx, id, sect, page.number, |ctx| {
+            let (mut items, behind, front) = with_pin(ctx, id, sect, page.number, frame.margin_top, |ctx| {
                 with_pct_base(ctx, base, |c| layout_box(c, StoryRef::Part(id), &blocks, &[], w, BoxContext::Other, 0, Some(frame)).items)
             });
             for it in &mut items {
@@ -4885,11 +4896,11 @@ fn headers_footers(ctx: &mut Ctx, pages: &mut [Page], sections: &[(usize, &Secti
             let blocks = part.blocks.clone();
             let base = defining_width(sections, page.section, |s| s.footers, fid);
             // The footer's height fixes where it sits, which page-relative floats need.
-            let (h, ..) = with_pin(ctx, id, sect, page.number, |ctx| {
+            let (h, ..) = with_pin(ctx, id, sect, page.number, None, |ctx| {
                 with_pct_base(ctx, base, |c| layout_box(c, StoryRef::Part(id), &blocks, &[], w, BoxContext::Other, 0, None).height)
             });
             let frame = PageFrame { sect, margin_top: None, origin: (x, sect.page_h - sect.footer - h), number: page.number, mirror: ctx.mirror };
-            let (mut items, behind, front) = with_pin(ctx, id, sect, page.number, |ctx| {
+            let (mut items, behind, front) = with_pin(ctx, id, sect, page.number, frame.margin_top, |ctx| {
                 with_pct_base(ctx, base, |c| layout_box(c, StoryRef::Part(id), &blocks, &[], w, BoxContext::Other, 0, Some(frame)).items)
             });
             for it in &mut items {

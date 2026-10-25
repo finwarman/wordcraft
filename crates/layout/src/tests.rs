@@ -5151,12 +5151,15 @@ fn header_cell_float_placed_on_the_page() {
     let header = |d: &mut Document, outside_cell: bool| {
         let mut t = Table::new(1, 2, 468.0);
         let mut cp = wordcraft_doc::Paragraph::with_text("Right cell", Default::default());
+        // This page-centering control keeps its header within the declared margin.
+        cp.props.line_spacing = Some(wordcraft_doc::props::LineSpacing::Exactly(12.0));
+        cp.props.space_before = Some(0.0);
+        cp.props.space_after = Some(0.0);
+        let tail = wordcraft_doc::Paragraph { props: cp.props.clone(), ..Default::default() };
         cp.insert_object(0, rect_shape(360.0, 288.0, wm(outside_cell)), &Default::default()).unwrap();
         t.rows[0].cells[1].blocks = vec![wordcraft_doc::para_block(cp)];
-        let id = d.add_part(
-            wordcraft_doc::PartKind::Header,
-            vec![std::sync::Arc::new(wordcraft_doc::Block::Table(t)), wordcraft_doc::para_block(Default::default())],
-        );
+        let id =
+            d.add_part(wordcraft_doc::PartKind::Header, vec![std::sync::Arc::new(wordcraft_doc::Block::Table(t)), wordcraft_doc::para_block(tail)]);
         d.last_section.headers.default = Some(id);
     };
     header(&mut d, true);
@@ -10705,6 +10708,116 @@ fn caret_height_ignores_line_spacing() {
     for spacing in [LineSpacing::Multiple(2.0), LineSpacing::AtLeast(40.0), LineSpacing::Exactly(40.0)] {
         let wide = caret_height(Some(spacing));
         assert!((single - wide).abs() < 0.01, "{spacing:?}: single {single}, wide {wide}");
+    }
+}
+
+fn boundary_header_para() -> Paragraph {
+    let mut p = Paragraph::with_text("One\nTwo\nThree\nFour\nFive", Default::default());
+    p.props.line_spacing = Some(wordcraft_doc::props::LineSpacing::Exactly(10.0));
+    p.props.space_before = Some(0.0);
+    p.props.space_after = Some(0.0);
+    p
+}
+
+#[test]
+fn header_boundary_pinned() {
+    use wordcraft_doc::para::{Anchor, Float, FloatAlign, Wrap};
+    for anchor in [Anchor::Margin, Anchor::Page, Anchor::TopMargin] {
+        for align in [None, Some(FloatAlign::Center)] {
+            let mut doc = Document::from_text("Body");
+            doc.last_section.margin_top = 60.0;
+            doc.last_section.header = 36.0;
+            let mut cell = Paragraph::with_text("Cell", Default::default());
+            let float = Float {
+                wrap: Wrap::BehindText,
+                h_rel: Anchor::Page,
+                v_rel: anchor,
+                v_align: align,
+                outside_cell: true,
+                x: 300.0,
+                y: -20.0,
+                ..Default::default()
+            };
+            cell.insert_object(0, rect_shape(40.0, 10.0, float), &Default::default()).unwrap();
+            let mut table = Table::new(1, 1, 40.0);
+            table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(cell)];
+            let header = doc.add_part(
+                wordcraft_doc::PartKind::Header,
+                vec![wordcraft_doc::para_block(boundary_header_para()), Arc::new(Block::Table(table.clone()))],
+            );
+            let footer = doc.add_part(wordcraft_doc::PartKind::Footer, vec![Arc::new(Block::Table(table))]);
+            doc.last_section.headers.default = Some(header);
+            doc.last_section.footers.default = Some(footer);
+            let laid = lay(&doc);
+            let page = &laid.pages[0];
+            assert!(page.body.y > doc.last_section.margin_top);
+            for (items, margin) in [(&page.header, page.body.y), (&page.footer, doc.last_section.margin_top)] {
+                let (start, extent) = match anchor {
+                    Anchor::Margin => (margin, doc.last_section.page_h - margin - doc.last_section.margin_bottom),
+                    Anchor::TopMargin => (0.0, doc.last_section.margin_top),
+                    _ => (0.0, doc.last_section.page_h),
+                };
+                let expected = match align {
+                    Some(FloatAlign::Center) => start + (extent - 10.0) / 2.0,
+                    _ => start - 20.0,
+                };
+                let rects = shapes(items);
+                assert_eq!(rects.len(), 1);
+                assert!((rects[0].y - expected).abs() < 0.01, "{anchor:?} {align:?}: {:?}, expected {expected}, body {:?}", rects[0], page.body);
+                let hit = items
+                    .iter()
+                    .find_map(|item| match item {
+                        Placed::Object { rect, .. } => Some(rect),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!((hit.y - expected).abs() < 0.01);
+            }
+        }
+    }
+}
+
+#[test]
+fn header_boundary_obstacle() {
+    use wordcraft_doc::para::Anchor;
+    use wordcraft_doc::props::{HeightRule, TableFloat};
+    const FLOAT_HEIGHT: f32 = 10.0;
+    for overlap in [false, true] {
+        let mut doc = Document::from_text("Body");
+        doc.last_section.margin_top = 60.0;
+        doc.last_section.header = 36.0;
+        let mut header_table = Table::new(1, 1, 40.0);
+        header_table.rows[0].props.height = Some(FLOAT_HEIGHT);
+        header_table.rows[0].props.height_rule = HeightRule::Exact;
+        header_table.props.float = Some(TableFloat { h_rel: Anchor::Page, v_rel: Anchor::Margin, x: 300.0, y: -20.0, ..Default::default() });
+        let id = doc
+            .add_part(wordcraft_doc::PartKind::Header, vec![wordcraft_doc::para_block(boundary_header_para()), Arc::new(Block::Table(header_table))]);
+        doc.last_section.headers.default = Some(id);
+        let target = lay(&doc).pages[0].body.y - 20.0;
+        let mut body_table = Table::new(1, 1, 40.0);
+        body_table.rows[0].props.height = Some(FLOAT_HEIGHT);
+        body_table.rows[0].props.height_rule = HeightRule::Exact;
+        body_table.props.float = Some(TableFloat { h_rel: Anchor::Page, v_rel: Anchor::Page, x: 300.0, y: target, overlap, ..Default::default() });
+        doc.body.insert(0, Arc::new(Block::Table(body_table)));
+        let laid = lay(&doc);
+        let page = &laid.pages[0];
+        let cell = |items: &[Placed]| {
+            items
+                .iter()
+                .find_map(|item| match item {
+                    Placed::Cell { rect, .. } => Some(*rect),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (header, body) = (cell(&page.header), cell(&page.items));
+        assert!(page.body.y > doc.last_section.margin_top);
+        assert!((header.y - target).abs() < 0.01);
+        if overlap {
+            assert!((body.y - target).abs() < 0.01, "overlap retains requested position: {body:?}");
+        } else {
+            assert!(body.y >= header.bottom() - 0.01, "body {body:?} overlaps rendered header {header:?}");
+        }
     }
 }
 
