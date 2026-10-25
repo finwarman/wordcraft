@@ -10833,6 +10833,7 @@ fn turned_probe_keeps_box_budget() {
         let opts = LayoutOptions::default();
         let mut ctx = Ctx {
             doc: &d,
+            sections: d.sections(),
             cache: &mut cache,
             opts: &opts,
             counters: Default::default(),
@@ -10851,6 +10852,7 @@ fn turned_probe_keeps_box_budget() {
             mirror: false,
             table_keys: Vec::new(),
             pin: None,
+            floats_above: Default::default(),
             footer_wraps: Default::default(),
             header_tables: Default::default(),
             fitted: Default::default(),
