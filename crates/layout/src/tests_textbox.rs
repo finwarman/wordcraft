@@ -412,3 +412,69 @@ fn group_upright_text_stays() {
         assert_eq!(lines(&l, id)[0].2, TextDirection::Horizontal, "group {group:?}, member {member:?}");
     }
 }
+
+#[test]
+fn embedded_shape_quarter_turn() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    let mut base_tip = None;
+    for rotation in [0.0, 90.0, 270.0] {
+        let mut d = Document::from_text("Body");
+        let id = text_box(&mut d, 0, "Box", 180.0, 140.0, TextBody::default());
+        *d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().objects[0].float_mut().unwrap() =
+            Float { wrap: Wrap::InFrontOfText, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 100.0, y: 150.0, rot: rotation, ..Default::default() };
+        let float = Float {
+            wrap: Wrap::InFrontOfText,
+            h_rel: Anchor::Column,
+            v_rel: Anchor::Paragraph,
+            x: 30.0,
+            y: 20.0,
+            rot: 30.0,
+            flip_h: true,
+            ..Default::default()
+        };
+        let mut shape = super::tests::rect_shape(40.0, 20.0, float);
+        if let InlineObject::Shape { kind, .. } = &mut shape {
+            *kind = wordcraft_doc::para::ShapeKind::Arrow;
+        }
+        let pos = Pos { story: StoryRef::Part(id), path: Path::top(0), off: 0 };
+        d.insert_object(&pos, shape, &Default::default()).unwrap();
+        let l = lay(&d);
+        let (rect, spin) = l.pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Shape { rect, spin, .. } if spin.flip_h => Some((*rect, *spin)),
+                _ => None,
+            })
+            .unwrap();
+        let drawn = display::page_display(&d, &l.pages[0], &Default::default());
+        let tip = drawn
+            .iter()
+            .find_map(|it| match it {
+                display::Draw::Rotated { cx, cy, spin, items } => items.iter().find_map(|it| match it {
+                    display::Draw::Shape { rect, kind: wordcraft_doc::para::ShapeKind::Arrow, .. } => {
+                        Some(spin.apply(*cx, *cy, rect.right(), rect.y + rect.h / 2.0))
+                    }
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap();
+        println!("outer={rotation}, embedded rect={rect:?}, spin={spin:?}, drawn arrow tip={tip:?}");
+        let outer = frame_of(&l, id);
+        let (cx, cy) = (outer.x + outer.w / 2.0, outer.y + outer.h / 2.0);
+        if let Some((bx, by)) = base_tip {
+            let delta = Spin::new(rotation, false, false).apply(0.0, 0.0, bx, by);
+            let expected = (cx + delta.0, cy + delta.1);
+            assert!((tip.0 - expected.0).hypot(tip.1 - expected.1) < 0.01, "drawn tip {tip:?}, expected {expected:?}");
+        } else {
+            base_tip = Some((tip.0 - cx, tip.1 - cy));
+        }
+        assert_eq!((rect.w, rect.h), (40.0, 20.0), "keep the drawing's unrotated frame");
+        assert_eq!(spin, Spin::new(rotation + 30.0, true, false));
+        let hit = l.object(&pos, 0).unwrap();
+        assert_eq!(hit.rect, rect);
+        assert_eq!(hit.spin, spin);
+        assert!(drawn.iter().any(|it| matches!(it, display::Draw::Rotated { spin: s, .. } if *s == spin)));
+    }
+}
