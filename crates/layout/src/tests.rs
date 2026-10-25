@@ -11452,8 +11452,8 @@ fn ref_keeps_complete_cjk_face() {
             .collect::<Vec<_>>()
     };
     let wrapped = drawn(&doc);
-    let paragraph = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
-    let InlineObject::Field { instr, .. } = &mut paragraph.objects[0] else { panic!("field") };
-    *instr = "CACHED".into();
-    assert_eq!(wrapped, drawn(&doc), "space-separated REF pieces retain whole-result font selection");
+    let mut plain = ref_wrap_doc(text, RefText::Plain);
+    plain.last_section.page_w = doc.last_section.page_w;
+    assert!(!wrapped.is_empty());
+    assert_eq!(wrapped, drawn(&plain), "REF pieces retain the full text's CJK face and primary-font spaces");
 }
