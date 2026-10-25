@@ -209,6 +209,8 @@ same test with the fix reverted measured 59.6.
 
 Simple left-to-right cached REF results wrap at ordinary spaces while retaining stored text, formatting and field identity. Their East Asian fallback face is selected once for the complete result and shared by its pieces. A synthetic Word probe confirms multiword result wrapping. Results containing Thai and requesting a missing Thai font stay atomic to preserve whole-result font selection for Thai and Latin; ordinary-space wrapping of those results remains unqualified. Direction-sensitive results and odd-level host positions keep the existing atomic whole-result isolate. Wrapping those results, other field types and global refresh policy remain separate gaps.
 
+Breakable REF pieces share the fallback face selected for the complete East Asian result. Primary-font whitespace is retained.
+
 Wrapped REF continuation clicks and vertical navigation retain a transient visual line. Home and End keep legal atomic field boundaries; typing inserts before or after the whole field. Layout replacement discards the hint. Canonical source-position APIs and Pos/Selection serialization retain their existing behavior. Synthetic layout, Session and canvas controls cover this policy; no new Word comparison is claimed.
 
 TOC refresh includes heading and outline paragraphs inside tables, including nested cells. Links and page numbers retain their full paragraph paths when entries move body blocks. The existing link picker still accepts top-level heading block indices.
