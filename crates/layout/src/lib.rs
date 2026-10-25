@@ -3988,11 +3988,13 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
                 });
             // A line holding nothing but a page or column break stays at the bottom of the page
             // even when it doesn't fit: it only ends the page, and moving it would leave a blank
-            // page behind it (Word does the same).
+            // page behind it (Word does the same). A page break must still leave room for notes
+            // collected on earlier lines; its full box would otherwise force them to split.
             let only_break = matches!(l.end, LineEnd::PageBreak | LineEnd::ColumnBreak)
                 && p.text
                     .get(l.start..l.stop)
-                    .is_some_and(|t| t.chars().all(|c| matches!(c, wordcraft_doc::para::PAGE_BREAK | wordcraft_doc::para::COLUMN_BREAK)));
+                    .is_some_and(|t| t.chars().all(|c| matches!(c, wordcraft_doc::para::PAGE_BREAK | wordcraft_doc::para::COLUMN_BREAK)))
+                && (l.end != LineEnd::PageBreak || !has_notes);
             if over && l1 > l0 && !split && !(only_break && l.end == LineEnd::PageBreak) {
                 break;
             }

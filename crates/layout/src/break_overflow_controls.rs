@@ -223,3 +223,64 @@ fn parity_and_restart_stay() {
         assert_eq!(tight.caret(&Pos::body(4, 0)).unwrap().page, tight.pages.len() - 1);
     }
 }
+
+#[test]
+fn earlier_note_stays_complete() {
+    use wordcraft_doc::para::NoteKind;
+
+    #[derive(Debug)]
+    enum NoteSource {
+        SameParagraph,
+        EarlierParagraph,
+    }
+
+    let mut failures = Vec::new();
+    for source in [NoteSource::SameParagraph, NoteSource::EarlierParagraph] {
+        let mut doc = Document::new();
+        doc.last_section = section(Paper::Landscape);
+        let note_height = 4.0 * LINE_HEIGHT;
+        let filler_height = doc.last_section.text_height() - note_height - NOTE_SEP - 1.5 * LINE_HEIGHT;
+        let mut filler = paragraph("Filler");
+        filler.props.line_spacing = Some(LineSpacing::Exactly(filler_height));
+        let id = doc.add_part(wordcraft_doc::PartKind::Footnote, vec![para_block(paragraph("One\nTwo\nThree\nFour"))]);
+        let text = match source {
+            NoteSource::SameParagraph => "Reference\n\u{000C}",
+            NoteSource::EarlierParagraph => "Reference",
+        };
+        let mut reference = paragraph(text);
+        reference
+            .insert_object("Reference".len(), InlineObject::NoteRef { kind: NoteKind::Footnote, id, custom: String::new() }, &Default::default())
+            .unwrap();
+        doc.body = vec![para_block(filler), para_block(reference)];
+        if matches!(source, NoteSource::EarlierParagraph) {
+            doc.body.push(para_block(paragraph("\u{000C}")));
+        }
+        doc.body.push(para_block(paragraph("After")));
+        let original = doc.clone();
+        let laid = lay(&doc);
+        assert_eq!(laid.caret(&Pos::body(1, 0)).unwrap().page, 0, "the reference and its whole note fit before the break");
+        let note_pages: Vec<_> = laid
+            .pages
+            .iter()
+            .enumerate()
+            .filter_map(|(page, p)| {
+                p.items.iter().any(|item| matches!(item, Placed::Lines { story: StoryRef::Part(part), .. } if *part == id)).then_some(page)
+            })
+            .collect();
+        let note_lines: usize = laid
+            .pages
+            .iter()
+            .flat_map(|p| &p.items)
+            .filter_map(|item| match item {
+                Placed::Lines { story: StoryRef::Part(part), l0, l1, .. } if *part == id => Some(l1 - l0),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(note_lines, 4, "the whole note is retained");
+        if note_pages != [0] {
+            failures.push(format!("{source:?}: note on {note_pages:?} instead of [0]"));
+        }
+        assert_eq!(doc, original);
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
