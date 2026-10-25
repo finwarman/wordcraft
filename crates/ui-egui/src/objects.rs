@@ -318,6 +318,7 @@ pub fn pointer(app: &mut WordApp, ui: &Ui, resp: &egui::Response, pages: &[Rect]
             guides: Vec::new(),
             preview: None,
             copy: false,
+            drop_at: None,
         });
         return true;
     }
