@@ -244,6 +244,8 @@ pub enum Placed {
     Fill {
         rect: Rect,
         color: Rgb,
+        /// Paragraph shading owns its source; table and page backgrounds do not.
+        source: Option<(StoryRef, Path)>,
     },
     Rule {
         x0: f32,
@@ -327,19 +329,22 @@ pub enum Placed {
         /// Its paragraph's column left and top: where offsets relative to the column and the
         /// paragraph (`Anchor::Column` / `Anchor::Paragraph`) start.
         origin: wordcraft_geom::Point,
+        /// A header/footer cell float placed on the page, outside its anchor cell.
+        page_placed: bool,
     },
 }
 
 impl Placed {
-    /// Source ownership survives group and canvas placement; borders have no source.
-    fn source(&self) -> Option<(StoryRef, &Path)> {
+    /// Source ownership survives group and canvas placement. Object offsets identify pinned
+    /// page placement; paragraph shading has no object offset, backgrounds and borders no source.
+    fn source(&self) -> Option<(StoryRef, &Path, Option<usize>)> {
         let mut pending = vec![self];
         while let Some(item) = pending.pop() {
             match item {
-                Placed::Lines { story, path, .. } | Placed::Image { story, path, .. } | Placed::Graphic { story, path, .. } => {
-                    return Some((*story, path));
-                }
-                Placed::Shape { object: Some(pos), .. } => return Some((pos.story, &pos.path)),
+                Placed::Lines { story, path, .. } => return Some((*story, path, None)),
+                Placed::Fill { source: Some((story, path)), .. } => return Some((*story, path, None)),
+                Placed::Image { story, path, off, .. } | Placed::Graphic { story, path, off, .. } => return Some((*story, path, Some(*off))),
+                Placed::Shape { object: Some(pos), .. } => return Some((pos.story, &pos.path, Some(pos.off))),
                 Placed::Clip { items, .. } => pending.extend(items.iter().rev()),
                 _ => {}
             }
@@ -1569,8 +1574,8 @@ fn fit_box(items: Vec<Placed>, height: f32) -> Vec<Placed> {
                     out.push(Placed::Lines { story, path, para, l0, l1: end, x, y, turn });
                 }
             }
-            Placed::Fill { rect, color } if rect.y < limit => {
-                out.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, rect.h.min(limit - rect.y)), color });
+            Placed::Fill { rect, color, source } if rect.y < limit => {
+                out.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, rect.h.min(limit - rect.y)), color, source });
             }
             Placed::Rule { x0, y0, x1, y1, border } if y0.min(y1) < limit => {
                 out.push(Placed::Rule { x0, y0: y0.min(limit), x1, y1: y1.min(limit), border });
@@ -1659,7 +1664,11 @@ fn push_para(
     let (top, bottom) = (y - e.top - e.up, y + h + e.bottom);
     if let Some(c) = pl.rp.shading {
         let pad = pl.rp.borders.as_ref().map(|b| b.left.map(|l| l.space).unwrap_or(4.0)).unwrap_or(0.0);
-        items.push(Placed::Fill { rect: Rect::new(left - pad, top, right - left + pad * 2.0, bottom - top), color: c });
+        items.push(Placed::Fill {
+            rect: Rect::new(left - pad, top, right - left + pad * 2.0, bottom - top),
+            color: c,
+            source: Some((story, Path(path.to_vec()))),
+        });
     }
     items.push(Placed::Lines { story, path: Path(path.to_vec()), para: pl.clone(), l0, l1, x, y, turn: TextDirection::Horizontal });
     if let Some(b) = &pl.rp.borders {
@@ -1930,9 +1939,9 @@ impl NoteBox {
                         tail.push(Placed::Lines { story, path, para, l0: k, l1, x, y: ky, turn });
                     }
                 }
-                Placed::Fill { rect, color } => {
-                    head.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, cut - rect.y), color });
-                    tail.push(Placed::Fill { rect: Rect::new(rect.x, cut, rect.w, rect.y + rect.h - cut), color });
+                Placed::Fill { rect, color, source } => {
+                    head.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, cut - rect.y), color, source: source.clone() });
+                    tail.push(Placed::Fill { rect: Rect::new(rect.x, cut, rect.w, rect.y + rect.h - cut), color, source });
                 }
                 Placed::Rule { x0, y0, x1, y1, border } => {
                     head.push(Placed::Rule { x0, y0: y0.min(cut), x1, y1: y1.min(cut), border });
@@ -3567,6 +3576,7 @@ fn place_objects(
                 text_box: shown,
                 wrap: float.wrap,
                 origin: Point::new(at.col.0, at.para_y),
+                page_placed: pinned.is_some(),
             });
             // Its text (a group: its text boxes', each where the group's turn carries it; the
             // text itself stays upright), unless the box budget says no (a box inside itself,

@@ -825,7 +825,10 @@ fn page_content_key(page: &Page) -> u64 {
                 Placed::Lines { para, l0, l1, x, y, turn, .. } => {
                     (std::sync::Arc::as_ptr(para) as usize, l0, l1, x.to_bits(), y.to_bits(), turn).hash(&mut h);
                 }
-                Placed::Fill { rect, color } => format!("{rect:?}{color:?}").hash(&mut h),
+                Placed::Fill { rect, color, source } => {
+                    format!("{rect:?}{color:?}").hash(&mut h);
+                    source.hash(&mut h);
+                }
                 Placed::Rule { x0, y0, x1, y1, border } => format!("{x0}{y0}{x1}{y1}{border:?}").hash(&mut h),
                 Placed::Image { rect, media, spin, .. } => format!("{rect:?}{media}{spin:?}").hash(&mut h),
                 Placed::Shape { rect, kind, fill, stroke, stroke_width, effects, freeform, spin, extra, .. } => {
@@ -837,7 +840,8 @@ fn page_content_key(page: &Page) -> u64 {
                     format!("{spin:?}").hash(&mut h)
                 }
                 Placed::Clip { rect, spin, items } => format!("{rect:?}{spin:?}{items:?}").hash(&mut h),
-                Placed::Cell { .. } | Placed::Object { .. } => {}
+                Placed::Object { story, path, off, page_placed, .. } => (story, path, off, page_placed).hash(&mut h),
+                Placed::Cell { .. } => {}
             }
         }
     }
@@ -8506,5 +8510,67 @@ mod tests {
         let hidden = view_key(&app, false, Some(&object));
         assert_ne!(hidden, view_key(&app, false, None), "the page without the dragged object is rendered again");
         assert_eq!(hidden, view_key(&app, false, Some(&object)), "the same drag keeps the key: no re-render every frame");
+    }
+
+    #[test]
+    fn clip_metadata_changes_key() {
+        use wordcraft_doc::para::{Anchor, Float, InlineObject, Wrap};
+        use wordcraft_doc::props::{Rgb, TextDirection};
+        let mut doc = wordcraft_doc::Document::from_text("Body");
+        let mut p = wordcraft_doc::Paragraph::with_text("Cell", Default::default());
+        p.props.shading = Some(Rgb(23, 71, 131));
+        p.insert_object(
+            0,
+            InlineObject::Image {
+                media: "synthetic".into(),
+                w: 40.0,
+                h: 40.0,
+                alt: String::new(),
+                crop: [0.0; 4],
+                ole: None,
+                float: Float {
+                    wrap: Wrap::InFrontOfText,
+                    h_rel: Anchor::Page,
+                    v_rel: Anchor::Page,
+                    x: 200.0,
+                    y: 200.0,
+                    outside_cell: true,
+                    ..Default::default()
+                },
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        let mut table = wordcraft_doc::Table::new(1, 1, 80.0);
+        table.rows[0].cells[0].props.text_direction = TextDirection::Down;
+        table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+        let id = doc.add_part(wordcraft_doc::PartKind::Header, vec![std::sync::Arc::new(wordcraft_doc::Block::Table(table))]);
+        doc.last_section.headers.default = Some(id);
+        let mut session = wordcraft_engine::Session::new(doc);
+        let original = session.layout().pages[0].clone();
+        let key = page_content_key(&original);
+        let mut page = original.clone();
+        let source = page
+            .header
+            .iter_mut()
+            .find_map(|it| match it {
+                Placed::Fill { source, .. } if source.is_some() => Some(source),
+                _ => None,
+            })
+            .expect("paragraph source");
+        *source = None;
+        assert_ne!(key, page_content_key(&page), "shading ownership changes paint clipping");
+        let mut page = original.clone();
+        let marker = page
+            .header
+            .iter_mut()
+            .find_map(|it| match it {
+                Placed::Object { page_placed, .. } if *page_placed => Some(page_placed),
+                _ => None,
+            })
+            .expect("pinned object");
+        *marker = false;
+        assert_ne!(key, page_content_key(&page), "page placement changes paint clipping");
+        assert_eq!(key, page_content_key(&original), "unchanged metadata keeps the cached page");
     }
 }

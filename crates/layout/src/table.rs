@@ -729,7 +729,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             if c.vmerge != VMerge::Continue
                 && let Some(f) = c.fill
             {
-                items.push(Placed::Fill { rect, color: f });
+                items.push(Placed::Fill { rect, color: f, source: None });
             }
             // Behind-text frames count towards vertical alignment even without inline content.
             // They do not increase the row's flow height.
@@ -1008,10 +1008,10 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                 }
                 // Shading and cell areas: the part above the cut stays, the rest moves up with the
                 // continuation (a nested table's cell below the cut moves whole).
-                Placed::Fill { rect, color } => {
+                Placed::Fill { rect, color, source } => {
                     let (above, below) = split_rect(*rect, cut, geo_shift(rect.bottom(), shift));
-                    a.extend(above.map(|rect| Placed::Fill { rect, color: *color }));
-                    b.extend(below.map(|rect| Placed::Fill { rect, color: *color }));
+                    a.extend(above.map(|rect| Placed::Fill { rect, color: *color, source: source.clone() }));
+                    b.extend(below.map(|rect| Placed::Fill { rect, color: *color, source: source.clone() }));
                 }
                 Placed::Cell { rect, covered, table, row: r, cell, story, clip } => {
                     let (above, below) = split_rect(*rect, cut, geo_shift(rect.bottom(), shift));
