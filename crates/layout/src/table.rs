@@ -31,7 +31,6 @@ pub struct RowLayout {
     pub cells: Vec<CellPart>,
 }
 
-/// A cell of a [`RowLayout`].
 #[derive(Clone)]
 pub(crate) struct MergeEdge {
     pub(crate) key: (usize, usize),
@@ -47,6 +46,7 @@ pub(crate) struct CellCenter {
     content: std::ops::Range<usize>,
 }
 
+/// A cell of a [`RowLayout`].
 pub struct CellPart {
     pub(crate) merge: Option<MergeEdge>,
     pub(crate) center: Option<CellCenter>,
@@ -1021,14 +1021,24 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
         .fold(0.0f32, f32::max);
     let first_height = (kept_bottom + row.bottom).max(floor).min(cut);
     let trim_first = |r: Rect| (r.y < first_height).then(|| Rect::new(r.x, r.y, r.w, r.h.min(first_height - r.y)));
-    // Each cell resumes below its own top margin and border band.
-    let shifts: Vec<f32> = moved.iter().zip(&row.cells).map(|(&m, c)| ((if m < f32::MAX { m } else { first_moved }) - c.top).max(0.0)).collect();
+    // Fitted centers have no continuation content or movement to contribute.
+    let center_fits = |c: &CellPart| c.center.as_ref().is_some_and(|v| v.height <= plain_height + 0.01);
+    let first_moved =
+        moved.iter().zip(&row.cells).filter(|(m, c)| **m < f32::MAX && !center_fits(c)).map(|(m, _)| *m).reduce(f32::min).unwrap_or(cut);
+    // Each continuing cell resumes below its own top margin and border band.
+    let shifts: Vec<Option<f32>> = moved
+        .iter()
+        .zip(&row.cells)
+        .map(|(&m, c)| (!center_fits(c)).then(|| ((if m < f32::MAX { m } else { first_moved }) - c.top).max(0.0)))
+        .collect();
     // The continuation is as tall as the cell needing the most room (what it moves on and the
     // bottom margin, the rest of the row for turned text), and at least the rest of the row.
-    let full = (row.height - shifts.iter().copied().fold(f32::MAX, f32::min)).max(4.0);
+    let full = (row.height - shifts.iter().flatten().copied().reduce(f32::min).unwrap_or(cut)).max(4.0);
     let mut need = row.height - cut;
     for ((c, &m), &s) in row.cells.iter().zip(&moved).zip(&shifts) {
-        if m < f32::MAX {
+        if m < f32::MAX
+            && let Some(s) = s
+        {
             need = need.max(c.end.map_or(row.height, |e| e + row.bottom) - s);
         }
     }
@@ -1043,6 +1053,7 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
     let (mut a, mut b) = (Vec::new(), Vec::new());
     let mut parts = Vec::with_capacity(cells.len());
     for (((c, items), splits), &shift) in row.cells.iter().zip(&cells).zip(&splits).zip(&shifts) {
+        let shift = shift.unwrap_or(0.0);
         let start = b.len();
         let center = c.center.as_ref().filter(|v| v.height <= plain_height + 0.01);
         for (index, (it, &split)) in items.iter().zip(splits).enumerate() {
@@ -1429,6 +1440,127 @@ fn autofit(grid: &mut [f32], content: &[(f32, f32)], t: &Table, avail: f32) {
     }
     for (w, c) in grid.iter_mut().zip(content) {
         *w = if *w < c.0 { c.0 } else { *w - (*w - c.0).min(share) };
+    }
+}
+
+#[cfg(test)]
+mod split_accounting_tests {
+    use super::*;
+    use wordcraft_doc::Path;
+
+    fn center_accounting_row(moved_top: Option<f32>) -> RowLayout {
+        let image = |media: &str, y, h| Placed::Image {
+            rect: Rect::new(0.0, y, 10.0, h),
+            media: media.into(),
+            crop: [0.0; 4],
+            story: StoryRef::Body,
+            path: Path::top(0),
+            off: 0,
+            spin: Default::default(),
+        };
+        let mut items = vec![image("center", 80.0, 80.0), image("kept", 0.0, 90.0)];
+        if let Some(top) = moved_top {
+            items.push(image("moved", top, 60.0));
+        }
+        let flow_end = items.len();
+        items.push(Placed::Rule { x0: 20.0, x1: 30.0, y0: 150.0, y1: 150.0, border: Border::single(1.0) });
+        RowLayout {
+            height: 200.0,
+            min_height: 0.0,
+            bottom: 0.0,
+            edge: 0.0,
+            cells: vec![
+                CellPart {
+                    merge: None,
+                    center: Some(CellCenter { offset: 80.0, height: 80.0, content: 0..1 }),
+                    top: 2.0,
+                    items: 0..1,
+                    end: Some(160.0),
+                },
+                CellPart { merge: None, center: None, top: 5.0, items: 1..flow_end, end: Some(moved_top.map_or(90.0, |top| top + 60.0)) },
+                CellPart { merge: None, center: None, top: 10.0, items: flow_end..items.len(), end: None },
+            ],
+            items,
+        }
+    }
+
+    #[test]
+    fn center_fallback_uses_cut() {
+        let row = center_accounting_row(None);
+        let (first, rest) = split_row(&row, 100.0).unwrap();
+        assert_eq!((first.height, rest.height), (90.0, 100.0));
+        assert!(rest.height.is_finite());
+        assert!(rest.items.iter().all(|item| !matches!(item, Placed::Image { .. })));
+        assert!(rest.cells[0].center.is_none() && rest.cells[0].end.is_none());
+        let rule_y = rest
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Rule { y0, .. } => Some(*y0),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(rule_y, 60.0, "no moving content uses the cut, retaining the empty cell's top inset");
+        let center_y = first
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Image { rect, media, .. } if media == "center" => Some(rect.y),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(center_y, 5.0);
+    }
+
+    #[test]
+    fn center_only_keeps_remainder() {
+        let mut row = center_accounting_row(None);
+        row.min_height = 120.0;
+        row.items.truncate(2);
+        if let Placed::Image { rect, .. } = &mut row.items[0] {
+            rect.y = 70.0;
+            rect.h = 10.0;
+        }
+        if let Placed::Image { rect, .. } = &mut row.items[1] {
+            rect.y = 80.0;
+            rect.h = 70.0;
+        }
+        row.cells.truncate(1);
+        row.cells[0].items = 0..2;
+        row.cells[0].end = Some(150.0);
+        row.cells[0].center = Some(CellCenter { offset: 70.0, height: 80.0, content: 0..2 });
+        let (first, rest) = split_row(&row, 100.0).unwrap();
+        assert_eq!((first.height, rest.height), (100.0, 100.0));
+        assert!(rest.height.is_finite());
+        assert!(rest.items.is_empty());
+        assert!(rest.cells[0].center.is_none() && rest.cells[0].end.is_none());
+        assert_eq!(first.items.len(), 2);
+    }
+
+    #[test]
+    fn center_fallback_uses_mover() {
+        let row = center_accounting_row(Some(120.0));
+        let (first, rest) = split_row(&row, 100.0).unwrap();
+        assert_eq!((first.height, rest.height), (90.0, 90.0));
+        let images: Vec<_> = rest
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Image { media, rect, .. } => Some((media.as_str(), rect.y)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images, vec![("moved", 5.0)]);
+        assert!(rest.cells[0].center.is_none() && rest.cells[0].end.is_none());
+        let rule_y = rest
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Rule { y0, .. } => Some(*y0),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(rule_y, 40.0, "only actual continuation content supplies the empty-cell fallback shift");
     }
 }
 
