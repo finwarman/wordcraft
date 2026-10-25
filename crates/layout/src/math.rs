@@ -267,6 +267,18 @@ impl St {
     fn cramp(self) -> St {
         St { cramped: true, ..self }
     }
+    // Keep packing only on the sides exposed by this container child.
+    fn at_edges(self, edges: FracEdges) -> St {
+        use FracEdges::*;
+        let frac_edges = match (self.frac_edges, edges) {
+            (Spaced, _) | (_, Spaced) => Spaced,
+            (Tight, edge) | (edge, Tight) => edge,
+            (LeftTight, LeftTight) => LeftTight,
+            (RightTight, RightTight) => RightTight,
+            _ => Spaced,
+        };
+        St { frac_edges, ..self }
+    }
     /// Numerator / denominator style.
     fn frac(self) -> St {
         if self.display { St { display: false, frac_edges: FracEdges::Spaced, ..self } } else { self.script() }
@@ -837,7 +849,7 @@ impl Ctx {
     fn op_atoms(&mut self, n: &MNode, st: St, depth: usize) -> Vec<Bx> {
         match n {
             MNode::Nary { chr, lim_loc, grow, sub_hide, sup_hide, sub, sup, e } => {
-                let e = self.sub(2, e, st, depth);
+                let e = self.sub(2, e, st.at_edges(FracEdges::RightTight), depth);
                 let loc = lim_loc.unwrap_or(if is_integral(*chr) { LimLoc::SubSup } else { LimLoc::UndOvr });
                 let loc = if st.display { loc } else { LimLoc::SubSup };
                 let size = self.size(st);
@@ -892,8 +904,8 @@ impl Ctx {
                 vec![opb.cls(Cls::Op), e]
             }
             MNode::Func { name, e } => {
-                let name = self.sub(0, name, St { upright: true, ..st }, depth);
-                let e = self.sub(1, e, St { upright: false, ..st }, depth);
+                let name = self.sub(0, name, St { upright: true, ..st.at_edges(FracEdges::LeftTight) }, depth);
+                let e = self.sub(1, e, St { upright: false, ..st.at_edges(FracEdges::RightTight) }, depth);
                 vec![name.cls(Cls::Op), e]
             }
             _ => Vec::new(),
@@ -1157,7 +1169,8 @@ impl Ctx {
             }
             MNode::Frac { kind, num, den } => self.frac(*kind, num, den, st, d),
             MNode::Script { kind, base, sub, sup } => {
-                let b = self.sub(0, base, st, d);
+                let edges = if *kind == ScriptKind::Pre { FracEdges::RightTight } else { FracEdges::LeftTight };
+                let b = self.sub(0, base, st.at_edges(edges), d);
                 let char_base = b.glyph.is_some();
                 let sub_b = if matches!(kind, ScriptKind::Sub | ScriptKind::SubSup | ScriptKind::Pre) {
                     Some(self.sub(1, sub, st.script().cramp(), d))
@@ -1334,8 +1347,8 @@ impl Ctx {
         let em = self.em(st);
         match kind {
             FracKind::Linear => {
-                let n = self.sub(0, num, st, d);
-                let dn = self.sub(1, den, st, d);
+                let n = self.sub(0, num, st.at_edges(FracEdges::LeftTight), d);
+                let dn = self.sub(1, den, st.at_edges(FracEdges::RightTight), d);
                 let slash = self.glyphs(self.face, "/", self.size(st), st.level, self.color, (false, false)).cls(Cls::Ord);
                 hcat(vec![n, slash, dn])
             }
@@ -1891,18 +1904,24 @@ impl Ctx {
     fn matrix(&mut self, rows: &[Vec<Arg>], col_jc: &[ColJc], st: St, d: usize) -> Bx {
         let em = self.em(st);
         let mut cells: Vec<Vec<Bx>> = Vec::new();
+        let ncols = rows.iter().take(1000).map(|r| r.len().min(64)).max().unwrap_or(0);
         let mut flat = 0usize;
         for r in rows.iter().take(1000) {
             let mut row = Vec::new();
             for (ci, c) in r.iter().enumerate() {
                 if ci < 64 {
-                    row.push(self.sub(flat, c, st, d));
+                    let edges = match (ci == 0, ci + 1 == ncols) {
+                        (true, true) => FracEdges::Tight,
+                        (true, false) => FracEdges::LeftTight,
+                        (false, true) => FracEdges::RightTight,
+                        (false, false) => FracEdges::Spaced,
+                    };
+                    row.push(self.sub(flat, c, st.at_edges(edges), d));
                 }
                 flat += 1;
             }
             cells.push(row);
         }
-        let ncols = cells.iter().map(|r| r.len()).max().unwrap_or(0);
         let mut col_w = vec![0.0f32; ncols];
         for r in &cells {
             for (i, b) in r.iter().enumerate() {
@@ -2386,6 +2405,54 @@ mod tests {
         assert!((last[1].0.w - (plain - pad)).abs() < 0.001, "only the trailing margin is removed");
         assert!(bar_x(&first[0].0).abs() < 0.001, "leading bar aligns with the radical");
         assert!((bar_x(&last[1].0) - pad * 0.5).abs() < 0.001, "inner-facing bar edge retains its ordinary inset");
+    }
+
+    #[test]
+    fn radical_container_edges() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let font = db.face(wordcraft_fonts::DEFAULT_FAMILY, "Regular");
+        let face = FaceRef::of(&font);
+        let mut cx = Ctx {
+            face,
+            t: None,
+            upem: face.upem as f32,
+            base: 14.0,
+            color: Rgb::BLACK,
+            text_font: wordcraft_fonts::DEFAULT_FAMILY.into(),
+            nodes: 0,
+            path: Vec::new(),
+            node_stack: Vec::new(),
+        };
+        let st = St { level: 0, display: false, frac_edges: FracEdges::Spaced, cramped: true, upright: false };
+        let frac = || MNode::Frac { kind: FracKind::Bar, num: vec![MNode::Run(MRun::new("a"))], den: vec![MNode::Run(MRun::new("b"))] };
+        let text = || vec![MNode::Run(MRun::new("x"))];
+        let pad = cx.em(st) * 0.08;
+        let cases = [
+            ("matrix", MNode::Matrix { rows: vec![vec![vec![frac()], vec![frac()], vec![frac()]]], col_jc: vec![] }, 1.0, 1.0),
+            (
+                "nary",
+                MNode::Nary { chr: '∑', lim_loc: None, grow: false, sub_hide: true, sup_hide: true, sub: vec![], sup: vec![], e: vec![frac()] },
+                0.0,
+                1.0,
+            ),
+            ("function", MNode::Func { name: text(), e: vec![frac()] }, 0.0, 1.0),
+            ("function name", MNode::Func { name: vec![frac()], e: text() }, 1.0, 0.0),
+            ("postscript", MNode::Script { kind: ScriptKind::Sup, base: vec![frac()], sub: vec![], sup: text() }, 1.0, 0.0),
+            ("prescript", MNode::Script { kind: ScriptKind::Pre, base: vec![frac()], sub: text(), sup: text() }, 0.0, 1.0),
+            ("linear", MNode::Frac { kind: FracKind::Linear, num: vec![frac()], den: vec![frac()] }, 1.0, 1.0),
+        ];
+        let mut failures = Vec::new();
+        for (name, node, left, right) in cases {
+            let plain = cx.node(&node, st, 0).w;
+            for (edges, removed) in [(FracEdges::LeftTight, left), (FracEdges::RightTight, right), (FracEdges::Tight, left + right)] {
+                let packed = cx.node(&node, St { frac_edges: edges, ..st }, 0).w;
+                if (plain - packed - removed * pad).abs() >= 0.001 {
+                    failures.push(format!("{name} {edges:?}: removed {}, expected {}", plain - packed, removed * pad));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     #[test]
