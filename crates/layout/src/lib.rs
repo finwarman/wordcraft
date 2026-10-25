@@ -4414,7 +4414,7 @@ fn row_keeps_next(row: &table::RowLayout) -> bool {
 }
 
 fn row_can_start(row: &wordcraft_doc::Row, laid: &table::RowLayout, room: f32, page_height: f32) -> bool {
-    if laid.height <= room + 0.01 {
+    if laid.height + laid.edge <= room + 0.01 {
         return true;
     }
     if row.props.header || row.props.cant_split || (row.props.height_rule == HeightRule::Exact && row.props.height.is_some_and(|h| h > 0.0)) {

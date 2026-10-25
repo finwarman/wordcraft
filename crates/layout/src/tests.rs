@@ -12040,3 +12040,58 @@ fn a_row_leaves_room_for_the_border_below_it() {
         }
     }
 }
+
+#[test]
+fn split_rules_stay_enclosed() {
+    use crate::table::{CellPart, RowLayout, split_row};
+    const CUT: f32 = 100.0;
+    const BOTTOM: f32 = 4.0;
+    const EDGE: f32 = 7.0;
+    let image = |y| Placed::Image {
+        rect: Rect::new(5.0, y, 20.0, 10.0),
+        media: "synthetic".into(),
+        crop: [0.0; 4],
+        story: StoryRef::Body,
+        path: Path::top(0),
+        off: 0,
+        spin: Default::default(),
+    };
+    for rule_y in [80.0, 99.0] {
+        let rect = Rect::new(0.0, 0.0, 100.0, 200.0);
+        let border = Border::single(1.0);
+        let items = vec![
+            image(10.0),
+            image(150.0),
+            Placed::Fill { rect, color: wordcraft_doc::props::Rgb(200, 0, 0) },
+            Placed::Cell { rect, covered: false, table: Path::top(0), row: 0, cell: 0, story: StoryRef::Body, clip: false },
+            Placed::Rule { x0: 0.0, y0: rule_y, x1: 100.0, y1: rule_y, border },
+            Placed::Rule { x0: 0.0, y0: 200.0, x1: 100.0, y1: 200.0, border },
+        ];
+        let row = RowLayout {
+            height: 200.0,
+            min_height: 0.0,
+            bottom: BOTTOM,
+            edge: EDGE,
+            cells: vec![CellPart { merge: None, center: None, top: 2.0, items: 0..items.len(), end: Some(160.0) }],
+            items,
+        };
+        let (first, rest) = split_row(&row, CUT).unwrap();
+        let expected = (rule_y + BOTTOM).min(CUT);
+        assert!((first.height - expected).abs() < 0.01);
+        assert_eq!(first.edge, 0.0);
+        assert_eq!(rest.edge, EDGE);
+        assert!(
+            first.items.iter().any(|it| matches!(it,
+                Placed::Rule { y0, y1, .. } if *y0 == rule_y && *y1 == rule_y
+            )),
+            "the fallback rule keeps its coordinate"
+        );
+        for item in &first.items {
+            match item {
+                Placed::Rule { y0, y1, .. } => assert!(y0.max(*y1) <= first.height),
+                Placed::Fill { rect, .. } | Placed::Cell { rect, .. } => assert_eq!(rect.bottom(), first.height),
+                _ => {}
+            }
+        }
+    }
+}

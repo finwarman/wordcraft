@@ -291,6 +291,7 @@ Installed static fonts also resolve by their OpenType PostScript name (name ID 6
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | trivial | Merge published #2498 finite-rule enclosure and its regression; retain qualified paragraph ownership, centered groups and reviewer scope limits. No new runtime or native qualification. |
 | 2026-10-21 | trivial | Preserve per-cell center/merge exclusions during shading adjustment. Current-input metadata scope; original synthetic controls, no new native comparison. |
 | 2026-10-21 | trivial | Preserve distinct Border values during merged-edge deduplication. Original synthetic emitter controls; geometry bit policy unchanged. No new native comparison. |
 | 2026-10-21 | minor | Bounded paragraph shading ownership across table-row fragments; source/model coverage only |
