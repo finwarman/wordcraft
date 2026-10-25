@@ -3507,7 +3507,7 @@ fn header_wraps(ctx: &mut Ctx, pb: &PageBuilder) -> Vec<WrapArea> {
     ctx.fields = fields;
     ctx.grid = grid;
     ctx.track_totals = track;
-    for (r, _, _, _) in &mut areas {
+    for (r, _, _, _, _) in &mut areas {
         r.x += x;
         r.y += sect.header;
     }
