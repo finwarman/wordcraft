@@ -686,7 +686,14 @@ pub fn background_at(doc: &Document, page: &Page, opts: &RenderOptions, x: f32, 
 }
 
 // Sample the same inset silhouettes and paints used by the raster and PDF.
-fn soft_fill_alpha(rect: wordcraft_geom::Rect, kind: ShapeKind, corner: Option<u32>, radius: f32, fill: &wordcraft_layout::display::Paint, p: wordcraft_geom::Point) -> f32 {
+fn soft_fill_alpha(
+    rect: wordcraft_geom::Rect,
+    kind: ShapeKind,
+    corner: Option<u32>,
+    radius: f32,
+    fill: &wordcraft_layout::display::Paint,
+    p: wordcraft_geom::Point,
+) -> f32 {
     let radius = radius.min(rect.w.min(rect.h) / 2.0).max(0.0);
     let frame = kurbo::Rect::new(rect.x as f64, rect.y as f64, rect.right() as f64, rect.bottom() as f64);
     let point = kurbo::Point::new(p.x as f64, p.y as f64);
