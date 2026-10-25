@@ -3489,7 +3489,7 @@ fn header_wraps(ctx: &mut Ctx, pb: &PageBuilder) -> Vec<WrapArea> {
     let chains = std::mem::take(&mut ctx.chains);
     let fields = ctx.fields.clone();
     let grid = std::mem::take(&mut ctx.grid);
-    let track = std::mem::replace(&mut ctx.track_totals, false);
+    let used_totals = ctx.uses_totals;
     ctx.fields.page = page.number;
     let mut areas = again(ctx, 0, |ctx| {
         with_pct_base(ctx, base, |ctx| layout_box(ctx, StoryRef::Part(id), &blocks, &[], sect.text_width(), BoxContext::Other, 0, Some(frame)))
@@ -3500,7 +3500,10 @@ fn header_wraps(ctx: &mut Ctx, pb: &PageBuilder) -> Vec<WrapArea> {
     ctx.chains = chains;
     ctx.fields = fields;
     ctx.grid = grid;
-    ctx.track_totals = track;
+    // Only exclusions measured during body flow can require a total-dependent replay.
+    if areas.is_empty() {
+        ctx.uses_totals = used_totals;
+    }
     for (r, _, _, _, _) in &mut areas {
         r.x += x;
         r.y += sect.header;
@@ -4502,6 +4505,8 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
         // Each pass places the part of the row that fits, then breaks the page.
         for _ in 0..1000 {
             let cur = rest.as_ref().unwrap_or(row);
+            // Each row can meet an exclusion below the preceding row, including repeated headers.
+            below_floats(ctx, pb, pb.col_x() + tl.x, pb.col_x() + tl.x + tl.width, cur.height);
             // A fitting kept row follows the next row when that row cannot start below it.
             // Move only the prefix's start; an oversized follower cannot separate its kept rows.
             let defer_kept = pb.y + cur.height <= pb.bottom + 0.01
@@ -4549,6 +4554,7 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
                         break;
                     }
                     if let Some(h) = tl.rows.get(*hr) {
+                        below_floats(ctx, pb, pb.col_x() + tl.x, pb.col_x() + tl.x + tl.width, h.height);
                         place(pb, h);
                         header_repeats += 1;
                     }
@@ -4661,6 +4667,9 @@ fn place_floating_table(ctx: &mut Ctx, pb: &mut PageBuilder, tl: &table::TableLa
         };
         let x = float_table_x(pb, w, f, legacy, ctx.mirror);
         let mut obstacles = if f.overlap { Vec::new() } else { header_table_areas(ctx, pb) };
+        if !f.overlap {
+            obstacles.extend(header_wraps(ctx, pb).into_iter().map(|area| area.0));
+        }
         obstacles.extend_from_slice(&pb.float_tables);
         let r = clear_of_float_tables(Rect::new(x, align_in(v_area, f.y, h, f.v_align), w, h), f, legacy, h_area.0, &obstacles);
         // Like Word, a table that doesn't fit below the text before it moves to the next page with
@@ -5017,3 +5026,6 @@ mod tests_table_contact;
 mod tests_textbox;
 #[cfg(test)]
 mod tests_vertical;
+
+#[cfg(test)]
+mod tests_header_clearance;

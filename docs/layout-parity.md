@@ -237,7 +237,7 @@ Footer flow-table strokes reserve their drawn top edge, including the half-width
 
 Page-relative footer tables keep their physical wrap bounds without adding to footer text height. Body text resumes below the table. Original native controls cover empty, text-bearing and minimum-height tables. Body textbox boundaries and nested footer painting remain separate gaps.
 
-Body paragraphs and tables avoid positioned header objects. Table placement checks the first row, including objects beginning just below its top. Pictures inside header table cells remain outside this change.
+Body paragraphs and tables avoid positioned header objects. Every flow-table row, including repeated header rows, clears header exclusions. Non-overlapping floating tables include header objects in their initial obstacle list. Header totals affecting exclusions trigger bounded repagination. Pictures inside header table cells remain outside this change. Synthetic controls cover these fixes; no new native Word comparison.
 
 ## Validation fonts
 
@@ -269,6 +269,7 @@ layout suite are pending; this is not a new Word/native-IME acceptance claim.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | trivial | #1990 follow-up: header totals reflow exclusions; repeated rows and initial non-overlapping floating tables clear header objects. Synthetic controls; no new native comparison. |
 | 2026-10-25 | trivial | #1990: Paragraph-anchored floating tables recheck header wrap clearance after a page or column retry. |
 | 2026-10-25 | trivial | Arabic list labels: `arabicAlpha` and `arabicAbjad` draw the 28 Arabic letters (alphabetical and abjad order), doubling past the last letter; Hebrew, Hindi, Thai and Vietnamese still show decimal (`doc::section::tests::arabic_letters_count_in_both_orders`) |
 | 2026-10-24 | trivial | Preserve grapheme edit/wrap boundaries across independently drawn font/style pieces; original emoji regression retained, new mixed-style/bundled-font LTR/bidi controls pending managed validation |
