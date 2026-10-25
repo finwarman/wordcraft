@@ -11036,6 +11036,91 @@ fn split_merge_centers_first() {
     assert_eq!(l.pages.len(), 4);
 }
 
+fn center_label_model(lines: usize) -> Document {
+    use wordcraft_doc::props::{LineSpacing, VAlign, VMerge};
+    let mut doc = Document::new();
+    doc.last_section.page_h = 192.0;
+    doc.last_section.margin_top = 36.0;
+    doc.last_section.margin_bottom = 36.0;
+    let para = |text: &str, line_height: f32| {
+        let mut p = Paragraph::with_text(text, wordcraft_doc::CharProps { font: Some("Arial".into()), size: Some(9.0), ..Default::default() });
+        p.props = ParaProps {
+            line_spacing: Some(LineSpacing::Exactly(line_height)),
+            space_before: Some(0.0),
+            space_after: Some(0.0),
+            widow_control: Some(false),
+            ..Default::default()
+        };
+        wordcraft_doc::para_block(p)
+    };
+    let mut table = Table::new(2, 2, 300.0);
+    for (row, count) in [15, 12].into_iter().enumerate() {
+        table.rows[row].cells[1].blocks = vec![para(&vec!["Line"; count].join("\n"), 10.0)];
+        table.rows[row].cells[0].props.vmerge = if row == 0 { VMerge::Restart } else { VMerge::Continue };
+    }
+    table.rows[0].cells[0].props.valign = Some(VAlign::Center);
+    table.rows[0].cells[0].blocks = vec![para(&vec!["Label"; lines].join("\n"), 13.0)];
+    doc.body = vec![Arc::new(Block::Table(table))];
+    doc
+}
+
+#[test]
+fn split_merge_tall_accounting() {
+    const LABEL_LINES: usize = 8;
+    let flow_cells = |laid: &DocLayout| {
+        laid.pages
+            .iter()
+            .enumerate()
+            .flat_map(|(page, pg)| {
+                pg.items.iter().filter_map(move |item| match item {
+                    Placed::Cell { row, cell: 1, rect, .. } => Some((page, *row, rect.y.to_bits(), rect.h.to_bits())),
+                    _ => None,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let baseline = lay(&center_label_model(1));
+    let laid = lay(&center_label_model(LABEL_LINES));
+    let labels: Vec<_> = laid
+        .pages
+        .iter()
+        .enumerate()
+        .flat_map(|(page, pg)| {
+            pg.items.iter().filter_map(move |item| match item {
+                Placed::Lines { path, l0, l1, y, para, .. } if path.0 == [0, 0, 0, 0] => Some((page, *l0, *l1, *y, para.clone())),
+                _ => None,
+            })
+        })
+        .collect();
+    assert_eq!(labels.len(), 1, "the fitting tall label stays whole and is never duplicated");
+    let (page, l0, l1, y, para) = &labels[0];
+    assert_eq!((*page, *l0, *l1), (0, 0, LABEL_LINES));
+    let label_bottom = item_bottom(*y, para, *l0, *l1).unwrap();
+    let cell = laid.pages[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Placed::Cell { row: 0, cell: 1, rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .unwrap();
+    assert!(*y >= cell.y && label_bottom <= cell.bottom() + 0.01, "label {y}..{label_bottom}, first {cell:?}");
+    assert!(((*y + label_bottom) / 2.0 - cell.y - cell.h / 2.0).abs() <= 0.5);
+    assert_eq!(flow_cells(&laid), flow_cells(&baseline), "the fitting 104pt label must not enlarge the continuation or move later rows");
+    let flow_rect = |page: usize, row: usize| {
+        laid.pages[page]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Cell { row: actual, cell: 1, rect, .. } if *actual == row => Some(*rect),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(flow_rect(1, 0).h, 40.5);
+    assert_eq!(flow_rect(1, 1).y, 76.5);
+}
+
 #[test]
 fn split_merge_frame_centers() {
     use wordcraft_doc::para::{Anchor, Float, Wrap};
