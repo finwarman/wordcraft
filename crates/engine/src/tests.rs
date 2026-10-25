@@ -4278,6 +4278,34 @@ fn textbox_drop_anchor_scope() {
 }
 
 #[test]
+fn continuous_drop_uses_owner() {
+    use wordcraft_doc::para::Anchor;
+    use wordcraft_doc::section::{SectionProps, SectionStart};
+    for (page_bottom, owner_bottom, anchor) in [(72.0, 200.0, Anchor::Page), (200.0, 72.0, Anchor::Paragraph)] {
+        let mut doc = wordcraft_doc::Document::from_text(&vec!["Original continuous drop control."; 30].join("\n"));
+        doc.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap().section =
+            Some(Box::new(SectionProps { margin_bottom: page_bottom, ..Default::default() }));
+        doc.last_section.start = SectionStart::Continuous;
+        doc.last_section.margin_bottom = owner_bottom;
+        let mut s = Session::new(doc);
+        s.sel = crate::Selection::caret(Pos::body(1, 0));
+        run(&mut s, "insert.textBox", json!({"text": "Box"}));
+        select_box(&mut s);
+        run(&mut s, "arrange.bounds", json!({"width": 150, "height": 120}));
+        select_box(&mut s);
+        run(&mut s, "arrange.bounds", json!({"page": 0, "x": 80, "y": 500}));
+        let hit = box_area(&mut s);
+        assert_eq!(hit.page, 0);
+        let (pos, object) = crate::cmd::objects::selected(&s).unwrap();
+        assert_eq!(s.doc.section_index_of(pos.path.last()), 1);
+        assert_eq!(s.layout().pages[hit.page].section, 0);
+        assert!((hit.rect.y - 500.0).abs() < 0.01, "page bottom {page_bottom}, owner bottom {owner_bottom}: {:?}", hit.rect);
+        let (_, _, float) = object.frame().unwrap();
+        assert_eq!((float.h_rel, float.v_rel), (Anchor::Column, anchor));
+    }
+}
+
+#[test]
 fn picture_drop_stays_literal() {
     use wordcraft_doc::para::{Anchor, InlineObject};
     let mut doc = wordcraft_doc::Document::from_text(&vec!["Original picture control text."; 30].join("\n"));

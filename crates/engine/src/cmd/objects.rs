@@ -866,7 +866,7 @@ fn move_object_once(s: &mut Session, pos: &Pos, page: usize, x: f32, y: f32, (w,
     let placed = s.layout();
     let hit = placed.object(&at, page).ok_or_else(|| CmdError::Failed("the object isn't laid out".into()))?;
     let origin = hit.origin;
-    let page_y = placed.pages.get(hit.page).is_some_and(|pg| keep_drop_page_y(s, &at, hit.rect, pg.section));
+    let page_y = keep_drop_page_y(s, &at, hit.rect);
     edit_float(s, &at, |f| {
         f.h_rel = Anchor::Column;
         f.v_rel = if page_y { Anchor::Page } else { Anchor::Paragraph };
@@ -877,7 +877,7 @@ fn move_object_once(s: &mut Session, pos: &Pos, page: usize, x: f32, y: f32, (w,
 }
 
 /// Keep an explicit out-of-body drop literal without relaxing imported Paragraph/Line bounds.
-fn keep_drop_page_y(s: &Session, at: &Pos, rect: wordcraft_geom::Rect, section: usize) -> bool {
+fn keep_drop_page_y(s: &Session, at: &Pos, rect: wordcraft_geom::Rect) -> bool {
     if at.story != StoryRef::Body || s.view.mode != wordcraft_layout::ViewMode::Print || s.doc.settings.compat_mode < MODERN_TEXTBOX_MODE {
         return false;
     }
@@ -889,6 +889,9 @@ fn keep_drop_page_y(s: &Session, at: &Pos, rect: wordcraft_geom::Rect, section: 
     {
         return false;
     }
+    // Continuous sections share a page but retain their own textbox bounds.
+    let Some(&block) = at.path.0.first() else { return false };
+    let section = s.doc.section_index_of(block as usize);
     s.doc.sections().get(section).is_some_and(|(_, sect)| {
         let (top, bottom) = (sect.margin_top, sect.page_h - sect.margin_bottom);
         top.is_finite() && bottom.is_finite() && bottom >= top && (rect.y < top || rect.bottom() > bottom)
