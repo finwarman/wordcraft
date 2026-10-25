@@ -2146,9 +2146,17 @@ impl PageBuilder<'_> {
         }
         let space = (self.orig_bottom - self.notes_h() - self.y).max(0.0) * k;
         let start = self.page_items_start;
+        let behind = self.behind.last().map_or(0, |p| p.behind);
+        let decor = behind..behind.saturating_add(start);
         if let Some(pg) = self.pages.last_mut() {
-            for it in pg.items.iter_mut().skip(start) {
-                it.translate(0.0, space);
+            // A taken-back break page has already been aligned.
+            if start >= pg.items.len() {
+                return;
+            }
+            for (i, it) in pg.items.iter_mut().enumerate() {
+                if !decor.contains(&i) {
+                    it.translate(0.0, space);
+                }
             }
         }
     }
@@ -5044,3 +5052,6 @@ mod tests_table_contact;
 mod tests_textbox;
 #[cfg(test)]
 mod tests_vertical;
+
+#[cfg(test)]
+mod tests_alignment_prefix;
