@@ -231,6 +231,53 @@ const BREAK_SPACING: &str = "w:suppressSpBfAfterPgBrk";
 const COMPAT_ROOT: &str = "w:compat";
 const COMPAT_SETTING: &str = "w:compatSetting";
 
+// CT_Compat sequence after suppressSpBfAfterPgBrk (ISO 29500-1, 17.15.1.21).
+const BREAK_SPACING_SUCCESSORS: &[&str] = &[
+    "w:swapBordersFacingPages",
+    "w:convMailMergeEsc",
+    "w:truncateFontHeightsLikeWP6",
+    "w:mwSmallCaps",
+    "w:usePrinterMetrics",
+    "w:doNotSuppressParagraphBorders",
+    "w:wrapTrailSpaces",
+    "w:footnoteLayoutLikeWW8",
+    "w:shapeLayoutLikeWW8",
+    "w:alignTablesRowByRow",
+    "w:forgetLastTabAlignment",
+    "w:adjustLineHeightInTable",
+    "w:autoSpaceLikeWord95",
+    "w:noSpaceRaiseLower",
+    "w:doNotUseHTMLParagraphAutoSpacing",
+    "w:layoutRawTableWidth",
+    "w:layoutTableRowsApart",
+    "w:useWord97LineBreakRules",
+    "w:doNotBreakWrappedTables",
+    "w:doNotSnapToGridInCell",
+    "w:selectFldWithFirstOrLastChar",
+    "w:applyBreakingRules",
+    "w:doNotWrapTextWithPunct",
+    "w:doNotUseEastAsianBreakRules",
+    "w:useWord2002TableStyleRules",
+    "w:growAutofit",
+    "w:useFELayout",
+    "w:useNormalStyleForList",
+    "w:doNotUseIndentAsNumberingTabStop",
+    "w:useAltKinsokuLineBreakRules",
+    "w:allowSpaceOfSameStyleInTable",
+    "w:doNotSuppressIndentation",
+    "w:doNotAutofitConstrainedTables",
+    "w:autofitToFirstFixedWidthCell",
+    "w:underlineTabInNumList",
+    "w:displayHangulFixedWidth",
+    "w:splitPgBreakAndParaMark",
+    "w:doNotVertAlignCellWithSp",
+    "w:doNotBreakConstrainedForcedTable",
+    "w:doNotVertAlignInTxbx",
+    "w:useAnsiKerningPairs",
+    "w:cachedColBalance",
+    COMPAT_SETTING,
+];
+
 fn merge_break_spacing(orig: &str, generated: &str) -> Option<String> {
     let (_, close, original) = children(orig, COMPAT_ROOT)?;
     let (_, _, current) = children(generated, COMPAT_ROOT)?;
@@ -250,7 +297,7 @@ fn merge_break_spacing(orig: &str, generated: &str) -> Option<String> {
         cursor = child.end;
     }
     if !replaced && let Some(flag) = replacement {
-        let at = original.iter().find(|c| c.name == COMPAT_SETTING).map_or(close, |c| c.start);
+        let at = original.iter().find(|c| BREAK_SPACING_SUCCESSORS.contains(&c.name.as_str())).map_or(close, |c| c.start);
         out.push_str(orig.get(cursor..at)?);
         out.push_str(flag);
         cursor = at;
