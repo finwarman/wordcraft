@@ -9,12 +9,7 @@ use crate::para::{PARA_MARK_WIDTH, ParaLayout};
 use crate::{DocLayout, Page, Placed, cell_clip, clipped_cells};
 
 struct EquationPlacement {
-    page: usize,
-    x: f32,
-    baseline: f32,
-    top: f32,
-    bottom: f32,
-    math: std::sync::Arc<crate::math::MathLayout>,
+    geometry: EquationBox,
     clip: Option<Rect>,
 }
 
@@ -872,10 +867,10 @@ impl DocLayout {
 
     /// The equation's intrinsic width and line bounds, provided its ink intersects its cell clip.
     pub fn equation_box(&self, pos: &Pos, page_hint: usize) -> Option<EquationBox> {
-        let placed = self.equation_placement(pos, page_hint)?;
-        let bounds = Rect::new(placed.x, placed.baseline - placed.math.ascent, placed.math.width, placed.math.ascent + placed.math.descent);
-        clip_geometry(bounds, placed.clip)?;
-        Some(EquationBox { page: placed.page, x: placed.x, base: placed.baseline, top: placed.top, bottom: placed.bottom, math: placed.math })
+        let EquationPlacement { geometry, clip } = self.equation_placement(pos, page_hint)?;
+        let bounds = Rect::new(geometry.x, geometry.base - geometry.math.ascent, geometry.math.width, geometry.math.ascent + geometry.math.descent);
+        clip_geometry(bounds, clip)?;
+        Some(geometry)
     }
 
     fn equation_placement(&self, pos: &Pos, page_hint: usize) -> Option<EquationPlacement> {
@@ -901,7 +896,7 @@ impl DocLayout {
                 // A line holds its tallest piece, so it holds the equation too; `max` keeps
                 // the box around it should the line's own box come out shorter.
                 let (top, bottom) = ((base - math.ascent).min(top), (base + math.descent).max(top + l.height));
-                return Some(EquationPlacement { page: pi, x: x + cx, baseline: base, top, bottom, math, clip });
+                return Some(EquationPlacement { geometry: EquationBox { page: pi, x: x + cx, base, top, bottom, math }, clip });
             }
         }
         None
