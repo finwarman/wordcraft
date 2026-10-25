@@ -1302,7 +1302,7 @@ fn rounded_pct_total(row: &Row, columns: usize) -> Option<f32> {
     let total: Option<f64> = row.cells.iter().map(|c| c.props.width_pct.filter(|p| p.is_finite() && *p > 0.0).map(f64::from)).sum();
     match total {
         Some(sum) if PERCENT_TOTAL - sum > FLOAT_SLOP && PERCENT_TOTAL - sum <= OOXML_PCT_UNIT + FLOAT_SLOP => Some(sum as f32),
-        Some(sum) if sum > PERCENT_TOTAL + FLOAT_SLOP => None,
+        Some(sum) if (PERCENT_TOTAL - sum).abs() > FLOAT_SLOP => None,
         _ => Some(PERCENT_TOTAL as f32),
     }
 }
@@ -1464,11 +1464,16 @@ mod cell_width_tests {
 
     #[test]
     fn rounding_has_one_unit_limit() {
-        for (first, normalized) in [(18.58, true), (18.5801, true), (18.599998, false), (18.5799, false), (18.56, false), (18.62, false)] {
+        for (first, expected) in
+            [(18.58, Some(99.98)), (18.5801, Some(99.9801)), (18.599998, Some(100.0)), (18.5799, None), (18.56, None), (18.62, None)]
+        {
             let mut table = rounded_width_table();
             table.rows[0].cells[0].props.width_pct = Some(first);
             let total = rounded_pct_total(&table.rows[0], 6);
-            assert_eq!(total.is_some_and(|sum| sum < 100.0), normalized, "first {first}: {total:?}");
+            assert_eq!(total.is_some(), expected.is_some(), "first {first}: {total:?}");
+            if let (Some(actual), Some(expected)) = (total, expected) {
+                assert!((actual - expected).abs() < 0.00002, "first {first}: {actual} != {expected}");
+            }
         }
     }
 
