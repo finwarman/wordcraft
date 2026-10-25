@@ -1,5 +1,5 @@
 use super::*;
-use wordcraft_doc::props::{Border, BorderStyle, Borders, LineSpacing, VMerge};
+use wordcraft_doc::props::{Border, BorderStyle, Borders, LineSpacing, TextFrame, VMerge};
 use wordcraft_doc::{Paragraph, Rgb, Table, para_block};
 
 const CELL_WIDTH: f32 = 150.0;
@@ -8,6 +8,7 @@ const PAGE_MARGIN: f32 = 20.0;
 const PAGE_BODY: f32 = 24.0;
 const LINE_HEIGHT: f32 = 20.0;
 const RULE_WIDTH: f32 = 1.0;
+const FRAME_WRAP_NONE: &str = "none";
 const CELL_COLOR: Rgb = Rgb(200, 30, 40);
 const PARA_COLOR: Rgb = Rgb(30, 60, 200);
 
@@ -82,6 +83,16 @@ fn collision_doc(route: EdgeRoute, merge: MergeMode, case: BorderCase) -> Docume
         t.rows[1].cells[0].props.vmerge = VMerge::Continue;
     }
     let mut p = paragraph("Rule");
+    // Frame the rule independently of border flow padding so it meets the physical cell edge.
+    p.props.frame = Some(TextFrame {
+        w: Some(CELL_WIDTH),
+        y: match route {
+            EdgeRoute::CloseBottom => -RULE_WIDTH / 2.0,
+            EdgeRoute::RepeatTop => RULE_WIDTH / 2.0,
+        },
+        wrap: FRAME_WRAP_NONE.into(),
+        ..Default::default()
+    });
     let para_border = Border {
         color: Some(match case {
             BorderCase::Same => CELL_COLOR,
