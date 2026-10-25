@@ -868,6 +868,114 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
     TableLayout { x, width: total, rows: out }
 }
 
+// Attribute only the horizontal push_para prefix. Clipped side rules are not owned.
+// A following flow item separates the run from ambiguous cell/merge closing edges.
+#[derive(Clone, Copy, PartialEq)]
+enum ParaEdge {
+    Top,
+    Bottom,
+}
+
+const PARA_RULE_LIMIT: usize = 4;
+
+fn para_rule_owner(items: &[Placed], index: usize) -> Option<(usize, ParaEdge)> {
+    for distance in 1..=PARA_RULE_LIMIT {
+        let Some(owner) = index.checked_sub(distance) else { break };
+        let Some(Placed::Lines { para, l0, l1, x, y, turn: TextDirection::Horizontal, .. }) = items.get(owner) else { continue };
+        if l0 >= l1 {
+            continue;
+        }
+        let (Some(first), Some(last), Some(borders)) =
+            (para.lines.get(*l0), l1.checked_sub(1).and_then(|k| para.lines.get(k)), para.rp.borders.as_ref())
+        else {
+            continue;
+        };
+        if [borders.top, borders.bottom, borders.left, borders.right].iter().flatten().any(|b| !b.space.is_finite() || b.space < 0.0) {
+            continue;
+        }
+        let top = borders.top.filter(|b| *l0 == 0 && b.is_visible());
+        let bottom = borders.bottom.filter(|b| *l1 == para.lines.len() && b.is_visible());
+        if top.is_none() && bottom.is_none() {
+            continue;
+        }
+        // The emitter does not store width on Lines. Its first horizontal rule supplies rx;
+        // horizontal centerlines, endpoints and their ordered styles must agree.
+        let Some(Placed::Rule { x1: rx, .. }) = items.get(owner + 1) else { continue };
+        let start = para.rp.indent_left.min(para.rp.indent_left + para.rp.indent_first);
+        let left = x + if para.rp.bidi { para.rp.indent_right } else { start };
+        let lx = left - borders.left.map_or(0.0, |b| b.space);
+        let ty = y - borders.top.map_or(0.0, |b| b.space + b.width / 2.0);
+        let by = y + last.top + last.height - first.top + borders.bottom.map_or(0.0, |b| b.space + b.width / 2.0);
+        if ![lx, *rx, ty, by].iter().all(|v| v.is_finite()) || *rx <= lx {
+            continue;
+        }
+        let expected = [(top, (lx, ty, *rx, ty), ParaEdge::Top), (bottom, (lx, by, *rx, by), ParaEdge::Bottom)];
+        let mut next = owner + 1;
+        let mut found = None;
+        let mut valid = true;
+        for (border, (ex0, ey0, ex1, ey1), edge) in expected {
+            let Some(border) = border else { continue };
+            let Some(Placed::Rule { x0, y0, x1, y1, border: actual }) = items.get(next) else {
+                valid = false;
+                break;
+            };
+            if *actual != border || ![(*x0, ex0), (*y0, ey0), (*x1, ex1), (*y1, ey1)].iter().all(|(a, b)| (a - b).abs() < 0.01) {
+                valid = false;
+                break;
+            }
+            if next == index {
+                found = Some((owner, edge));
+            }
+            next += 1;
+        }
+        // Side rules may have been clipped or omitted by an earlier split. Recognize only
+        // their style and horizontal position to find the boundary, never own or rebuild them.
+        for (border, x) in [(borders.left.filter(Border::is_visible), lx), (borders.right.filter(Border::is_visible), *rx)] {
+            if let Some(border) = border
+                && let Some(Placed::Rule { x0, y0, x1, y1, border: actual }) = items.get(next)
+                && *actual == border
+                && (*x0 - x).abs() < 0.01
+                && (*x1 - x).abs() < 0.01
+                && y0.is_finite()
+                && y1.is_finite()
+                && (y0 - y1).abs() >= 0.01
+            {
+                next += 1;
+            }
+        }
+        // Do not consume a possible cell/merge closing edge substituted for a missing rule.
+        let flow_follows = matches!(
+            items.get(next),
+            Some(
+                Placed::Lines { .. }
+                    | Placed::Image { .. }
+                    | Placed::Shape { .. }
+                    | Placed::Graphic { .. }
+                    | Placed::Clip { .. }
+                    | Placed::Object { .. }
+            )
+        );
+        if valid && found.is_some() && flow_follows {
+            return found;
+        }
+    }
+    None
+}
+
+// Crossing-cut and out-of-flow bottom rules retain their existing routing/overflow.
+fn split_para_rule(items: &[Placed], splits: &[usize], index: usize, flow_bottom: f32, limit: f32) -> Option<(usize, ParaEdge)> {
+    let (owner, edge) = para_rule_owner(items, index)?;
+    let Placed::Lines { para, l0, l1, y, .. } = items.get(owner)? else { return None };
+    let split = *splits.get(owner)?;
+    if let Some(bottom) = para.rp.borders.as_ref().and_then(|b| b.bottom).filter(Border::is_visible) {
+        let extent = crate::item_bottom(*y, para, *l0, *l1)? + bottom.space + bottom.width / 2.0;
+        if extent < 0.0 || extent > flow_bottom || ((edge == ParaEdge::Bottom || split == *l1) && extent > limit) {
+            return None;
+        }
+    }
+    Some((owner, edge))
+}
+
 // Floating ink and its Object marker share this identity, including group members.
 fn draw_owner(item: &Placed) -> Option<(StoryRef, &wordcraft_doc::Path, usize)> {
     match item {
@@ -980,6 +1088,21 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
     if !kept_any || first_moved == f32::MAX {
         return None;
     }
+    // A whole moved paragraph and its top border share one cell shift, including border space.
+    for (((items, splits), c), anchor) in cells.iter().zip(&splits).zip(&row.cells).zip(&mut moved) {
+        if c.center.is_some() {
+            continue;
+        }
+        for (index, it) in items.iter().enumerate() {
+            if let Some((owner, ParaEdge::Top)) = split_para_rule(items, splits, index, row.height - row.bottom, limit)
+                && let Some(Placed::Lines { l0, .. }) = items.get(owner)
+                && splits.get(owner) == Some(l0)
+                && let Placed::Rule { y0, .. } = it
+            {
+                *anchor = anchor.min(*y0);
+            }
+        }
+    }
     // Word closes the first fragment below its last fitted content.
     // Nested boxes crossing the cut retain their geometry.
     let mut kept_bottoms = Vec::with_capacity(cells.len());
@@ -1014,17 +1137,35 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                     }
                     Placed::Object { rect, wrap, .. } if *wrap != wordcraft_doc::para::Wrap::BehindText && fits(rect.bottom()) => Some(rect.bottom()),
                     Placed::Cell { rect, table, .. } if Some(table.0.len()) > own_depth && rect.y < cut => Some(rect.bottom().min(cut)),
-                    // Interior rules stay at their original height; the row's bottom edge is rebuilt below.
-                    Placed::Rule { y0, y1, .. }
-                        if y0.is_finite() && y1.is_finite() && (y0 - y1).abs() < 0.01 && *y0 < row.height - 0.01 && *y0 <= cut =>
-                    {
-                        Some(y0.max(*y1))
-                    }
                     _ => None,
                 }
             };
             if let Some(bottom) = bottom {
                 kept_bottom = kept_bottom.max(bottom);
+            }
+        }
+        if c.center.is_none() {
+            for (index, it) in items.iter().enumerate() {
+                if let Some((owner, ParaEdge::Bottom)) = split_para_rule(items, splits, index, row.height - row.bottom, limit)
+                    && let Some(Placed::Lines { l1, .. }) = items.get(owner)
+                    && splits.get(owner) == Some(l1)
+                    && let Placed::Rule { y0, .. } = it
+                {
+                    kept_bottom = kept_bottom.max(*y0);
+                }
+            }
+        }
+        // Enclose retained fallback rule centerlines without changing ownership or routing.
+        for (index, it) in items.iter().enumerate() {
+            if let Placed::Rule { x0, y0, x1, y1, .. } = it
+                && [x0, y0, x1, y1].iter().all(|n| n.is_finite())
+                && (y0 - y1).abs() < 0.01
+                && *y0 > 0.01
+                && *y0 < row.height - 0.01
+                && *y0 <= cut
+                && (c.center.is_some() || split_para_rule(items, splits, index, row.height - row.bottom, limit).is_none())
+            {
+                kept_bottom = kept_bottom.max(*y0);
             }
         }
         if moved_top == f32::MAX
@@ -1157,6 +1298,23 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
                     b.extend(below.map(cell_at));
                 }
                 Placed::Rule { x0, y0, x1, y1, border } => {
+                    if c.center.is_none()
+                        && let Some((owner, edge)) = split_para_rule(items, splits, index, row.height - row.bottom, limit)
+                        && let Some(Placed::Lines { l0, l1, .. }) = items.get(owner)
+                    {
+                        let stays = match edge {
+                            ParaEdge::Top => splits.get(owner).is_some_and(|split| split > l0),
+                            ParaEdge::Bottom => splits.get(owner) == Some(l1),
+                        };
+                        if !stays {
+                            let mut rule = it.clone();
+                            rule.translate(0.0, -shift);
+                            b.push(rule);
+                        } else {
+                            a.push(it.clone());
+                        }
+                        continue;
+                    }
                     if (y0 - y1).abs() < 0.01 {
                         // Horizontal: the top edge stays, the bottom edge moves; both fragments close.
                         if *y0 <= 0.01 {
@@ -1616,5 +1774,395 @@ mod width_tests {
         let mut grid = [30.0, 40.0, 50.0];
         autofit(&mut grid, &[(10.0, 10.0), (20.0, 20.0), (30.0, 30.0)], &table, 120.0);
         assert_eq!(grid, [30.0, 40.0, 50.0]);
+    }
+}
+
+#[cfg(test)]
+mod para_rule_controls {
+    use super::*;
+    use wordcraft_doc::props::{BorderStyle, LineSpacing, ParaProps};
+    use wordcraft_doc::{Document, Path};
+
+    fn emitted_rules(mask: u8) -> Vec<Placed> {
+        emitted_text(mask, "Owned")
+    }
+
+    fn emitted_text(mask: u8, text: &str) -> Vec<Placed> {
+        let border = Border { space: 8.0, ..Border::single(2.0) };
+        let hidden = Border { style: BorderStyle::None, ..border };
+        let edge = |bit| Some(if mask & bit != 0 { border } else { hidden });
+        let mut doc = Document::new();
+        doc.body.clear();
+        assert!(doc.body.is_empty());
+        let mut paragraph = Paragraph::with_text(text, Default::default());
+        paragraph.props = ParaProps {
+            borders: Some(Borders { top: edge(1), bottom: edge(2), left: edge(4), right: edge(8), ..Default::default() }),
+            line_spacing: Some(LineSpacing::Exactly(20.0)),
+            widow_control: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(paragraph.text, text);
+        doc.body.push(wordcraft_doc::para_block(paragraph));
+        assert_eq!(doc.body.len(), 1);
+        let layout = crate::layout(&doc, &mut crate::LayoutCache::new(), &crate::LayoutOptions::default());
+        let para = layout
+            .pages
+            .iter()
+            .flat_map(|p| &p.items)
+            .find_map(|it| match it {
+                Placed::Lines { path, para, .. } if path.0 == [0] => Some(para.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(para.text_len, text.len());
+        assert_eq!(para.lines.len(), text.split(wordcraft_doc::para::LINE_BREAK).count());
+        let mut items = Vec::new();
+        crate::push_para(
+            &mut items,
+            StoryRef::Body,
+            &[0],
+            &para,
+            0,
+            para.lines.len(),
+            0.0,
+            60.0,
+            100.0,
+            crate::Edges::own(&para, 0, para.lines.len()),
+        );
+        items.push(Placed::Image {
+            rect: Rect::new(5.0, 150.0, 20.0, 20.0),
+            media: "synthetic".into(),
+            crop: [0.0; 4],
+            story: StoryRef::Body,
+            path: Path::top(1),
+            off: 0,
+            spin: Default::default(),
+        });
+        items
+    }
+
+    #[test]
+    fn exact_para_rule_streams() {
+        for mask in 0..16 {
+            let items = emitted_rules(mask);
+            let mut rule = 1;
+            for (bit, edge) in [(1, Some(ParaEdge::Top)), (2, Some(ParaEdge::Bottom)), (4, None), (8, None)] {
+                if mask & bit == 0 {
+                    continue;
+                }
+                let expected = edge.map(|edge| (0, edge));
+                assert!(para_rule_owner(&items, rule) == expected, "mask {mask}, rule {rule}");
+                rule += 1;
+            }
+            assert_eq!(items.len(), 2 + mask.count_ones() as usize);
+        }
+        let mut interrupted = emitted_rules(15);
+        interrupted.remove(2);
+        for index in 1..interrupted.len() {
+            assert!(para_rule_owner(&interrupted, index).is_none(), "missing bottom invalidates the complete run");
+        }
+        let mut turned = emitted_rules(15);
+        if let Placed::Lines { turn, .. } = &mut turned[0] {
+            *turn = TextDirection::Down;
+        }
+        assert!(para_rule_owner(&turned, 1).is_none());
+
+        // A matching cell/merge edge after the run makes its boundary ambiguous.
+        let mut outer = emitted_rules(3);
+        outer.insert(3, outer[1].clone());
+        assert!(para_rule_owner(&outer, 1).is_none());
+        assert!(para_rule_owner(&outer, 2).is_none());
+        assert!(para_rule_owner(&outer, 3).is_none());
+        let mut cell_boundary = emitted_rules(3);
+        cell_boundary.pop();
+        cell_boundary.push(Placed::Cell {
+            rect: Rect::new(0.0, 0.0, 100.0, 200.0),
+            covered: false,
+            table: Path::top(0),
+            row: 0,
+            cell: 0,
+            story: StoryRef::Body,
+            clip: false,
+        });
+        assert!(para_rule_owner(&cell_boundary, 1).is_none());
+        assert!(para_rule_owner(&cell_boundary, 2).is_none());
+    }
+
+    #[test]
+    fn three_fragment_rule_prefix() {
+        for mask in [3, 15] {
+            for whole_first in [false, true] {
+                let emitted = emitted_text(mask, "One\nTwo\nThree\nFour\nFive\nSix");
+                let para = emitted
+                    .iter()
+                    .find_map(|it| match it {
+                        Placed::Lines { para, .. } => Some(para.clone()),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(para.lines.len(), 6);
+                for (l0, l1, edge) in [(0, 2, Some(ParaEdge::Top)), (2, 4, None), (4, 6, Some(ParaEdge::Bottom))] {
+                    let mut range = Vec::new();
+                    crate::push_para(&mut range, StoryRef::Body, &[0], &para, l0, l1, 0.0, 20.0, 100.0, crate::Edges::own(&para, l0, l1));
+                    range.push(emitted.last().unwrap().clone());
+                    assert!(para_rule_owner(&range, 1) == edge.map(|edge| (0, edge)), "actual emitter range {l0}..{l1}");
+                }
+                let image = |y| Placed::Image {
+                    rect: Rect::new(0.0, y, 10.0, 10.0),
+                    media: "synthetic".into(),
+                    crop: [0.0; 4],
+                    story: StoryRef::Body,
+                    path: Path::top(1),
+                    off: 0,
+                    spin: Default::default(),
+                };
+                let mut items = vec![image(0.0)];
+                crate::push_para(
+                    &mut items,
+                    StoryRef::Body,
+                    &[0],
+                    &para,
+                    0,
+                    para.lines.len(),
+                    0.0,
+                    20.0,
+                    100.0,
+                    crate::Edges::own(&para, 0, para.lines.len()),
+                );
+                items.push(image(200.0));
+                let row = RowLayout {
+                    edge: 0.0,
+                    height: 240.0,
+                    min_height: 0.0,
+                    bottom: 4.0,
+                    cells: vec![CellPart { top: 2.0, items: 0..items.len(), end: None, center: None, merge: None }],
+                    items,
+                };
+                let cuts = if whole_first { [30.0, 60.0, 110.0] } else { [70.0, 55.0, 70.0] };
+                let (first, next) = split_row(&row, cuts[0]).unwrap();
+                let owner = next.items.iter().position(|it| matches!(it, Placed::Lines { .. })).unwrap();
+                let prefix = if whole_first { ParaEdge::Top } else { ParaEdge::Bottom };
+                assert!(para_rule_owner(&next.items, owner + 1) == Some((owner, prefix)), "first continuation prefix");
+                let (second, next) = split_row(&next, cuts[1]).unwrap();
+                let owner = next.items.iter().position(|it| matches!(it, Placed::Lines { .. })).unwrap();
+                assert!(
+                    para_rule_owner(&next.items, owner + 1) == Some((owner, ParaEdge::Bottom)),
+                    "second continuation bottom prefix despite clipped sides"
+                );
+                let (third, tail) = split_row(&next, cuts[2]).unwrap();
+                let lines = |part: &RowLayout| {
+                    part.items
+                        .iter()
+                        .filter_map(|it| match it {
+                            Placed::Lines { l0, l1, .. } => Some(*l0..*l1),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                };
+                if whole_first {
+                    assert!(lines(&first).is_empty());
+                    assert_eq!(lines(&second), vec![0..2]);
+                    assert_eq!(lines(&third), vec![2..6]);
+                } else {
+                    assert_eq!(lines(&first), vec![0..2]);
+                    assert_eq!(lines(&second), vec![2..4]);
+                    assert_eq!(lines(&third), vec![4..6]);
+                }
+                assert!(lines(&tail).is_empty());
+                assert_eq!([&first, &second, &third].into_iter().flat_map(lines).flatten().collect::<Vec<_>>(), (0..6).collect::<Vec<_>>());
+                let horizontal = |part: &RowLayout| {
+                    part.items
+                        .iter()
+                        .filter_map(|it| match it {
+                            Placed::Rule { y0, y1, .. } if y0 == y1 => Some(*y0),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(horizontal(&first), if whole_first { vec![] } else { vec![11.0] });
+                assert_eq!(horizontal(&second), if whole_first { vec![2.0] } else { vec![] });
+                let bottom = if whole_first { 91.0 } else { 51.0 };
+                assert_eq!(horizontal(&third), vec![bottom]);
+                assert!(horizontal(&tail).is_empty());
+                assert_eq!(third.height, bottom + 4.0, "recovered bottom prefix extends retained extent once");
+                let last_bottom = third
+                    .items
+                    .iter()
+                    .find_map(|it| match it {
+                        Placed::Lines { para, l0, l1, y, .. } => crate::item_bottom(*y, para, *l0, *l1),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(bottom - last_bottom, 8.0 + 2.0 / 2.0, "bottom spacing survives both continuations");
+                for border in [&first, &second, &third].into_iter().flat_map(|part| &part.items).filter_map(|it| match it {
+                    Placed::Rule { border, .. } => Some(border),
+                    _ => None,
+                }) {
+                    assert_eq!(border.width, 2.0, "no stroke-half-width trimming");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn centered_rule_fallback() {
+        let items = emitted_rules(3);
+        let row = RowLayout {
+            edge: 0.0,
+            height: 200.0,
+            min_height: 0.0,
+            bottom: 4.0,
+            cells: vec![CellPart {
+                top: 2.0,
+                items: 0..items.len(),
+                end: None,
+                merge: None,
+                center: Some(CellCenter { offset: 0.0, height: 300.0, content: 0..items.len() }),
+            }],
+            items,
+        };
+        // Oversized center groups use the existing ordinary geometry, without new ownership.
+        // Keep a preceding fitting item so the row can split.
+        let mut row = row;
+        row.items.insert(
+            0,
+            Placed::Image {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                media: "synthetic".into(),
+                crop: [0.0; 4],
+                story: StoryRef::Body,
+                path: Path::top(2),
+                off: 0,
+                spin: Default::default(),
+            },
+        );
+        row.cells[0].items.end += 1;
+        let (first, rest) = split_row(&row, 70.0).unwrap();
+        let rules = |part: &RowLayout| {
+            part.items
+                .iter()
+                .filter_map(|it| match it {
+                    Placed::Rule { y0, y1, .. } if y0 == y1 => Some(*y0),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first.height, 55.0);
+        assert_eq!(rules(&first), vec![51.0]);
+        assert_eq!(rules(&rest), vec![31.0]);
+        let line_y = rest
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Lines { y, .. } => Some(*y),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(line_y, 2.0);
+
+        // A genuinely fitting grouped paragraph keeps the existing center override.
+        row.min_height = 40.0;
+        row.cells[0].center = Some(CellCenter { offset: 52.0, height: 36.0, content: 1..4 });
+        let (first, rest) = split_row(&row, 70.0).unwrap();
+        assert_eq!(first.height, 40.0);
+        assert_eq!(rules(&first), vec![1.0, 39.0]);
+        assert!(rules(&rest).is_empty());
+        let line_y = first
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Lines { y, .. } => Some(*y),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(line_y, 10.0);
+    }
+
+    fn centered_frame_row() -> RowLayout {
+        let mut items = emitted_rules(3);
+        items.insert(
+            0,
+            Placed::Image {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                media: "synthetic".into(),
+                crop: [0.0; 4],
+                story: StoryRef::Body,
+                path: Path::top(2),
+                off: 0,
+                spin: Default::default(),
+            },
+        );
+        let rect = Rect::new(0.0, 0.0, 100.0, 200.0);
+        items.push(Placed::Fill { rect, color: wordcraft_doc::props::Rgb(220, 220, 220) });
+        items.push(Placed::Cell { rect, covered: false, table: Path::top(0), row: 0, cell: 0, story: StoryRef::Body, clip: false });
+        RowLayout {
+            edge: 0.0,
+            height: 200.0,
+            min_height: 0.0,
+            bottom: 4.0,
+            cells: vec![CellPart {
+                top: 2.0,
+                items: 0..items.len(),
+                end: None,
+                merge: None,
+                center: Some(CellCenter { offset: 0.0, height: 300.0, content: 0..items.len() }),
+            }],
+            items,
+        }
+    }
+
+    #[test]
+    fn center_rule_frame_bounds() {
+        let row = centered_frame_row();
+        let (first, rest) = split_row(&row, 70.0).unwrap();
+        for item in &first.items {
+            if let Placed::Rule { y0, y1, .. } = item
+                && y0 == y1
+            {
+                assert!(*y0 <= first.height, "retained centerline {y0} outside first frame {}", first.height);
+            }
+        }
+        assert_eq!(first.height, 55.0);
+        let rules = |part: &RowLayout| {
+            part.items
+                .iter()
+                .filter_map(|item| match item {
+                    Placed::Rule { y0, y1, border, .. } if y0 == y1 => Some((*y0, border.width)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rules(&first), [(51.0, 2.0)]);
+        assert_eq!(rules(&rest), [(31.0, 2.0)]);
+        assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 2.0)));
+        let frames: Vec<_> = first
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Cell { rect, .. } | Placed::Fill { rect, .. } => Some(rect.bottom()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames, [55.0, 55.0]);
+    }
+
+    #[test]
+    fn fitting_rule_frame_unchanged() {
+        let mut row = centered_frame_row();
+        row.min_height = 40.0;
+        row.cells[0].center = Some(CellCenter { offset: 52.0, height: 36.0, content: 1..4 });
+        let (first, rest) = split_row(&row, 70.0).unwrap();
+        assert_eq!(first.height, 40.0);
+        let rules: Vec<_> = first
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Rule { y0, y1, .. } if y0 == y1 => Some(*y0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rules, [1.0, 39.0]);
+        assert!(!rest.items.iter().any(|item| matches!(item, Placed::Rule { .. })));
+        assert!(first.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 10.0)));
     }
 }
