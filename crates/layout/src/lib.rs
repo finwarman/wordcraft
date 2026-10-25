@@ -5063,3 +5063,6 @@ mod tests_border_dedup;
 
 #[cfg(test)]
 mod tests_border_key;
+
+#[cfg(test)]
+mod tests_shading;
