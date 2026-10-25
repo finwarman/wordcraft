@@ -11711,12 +11711,15 @@ fn a_row_leaves_room_for_the_border_below_it() {
 fn clipped_caret_can_navigate() {
     use wordcraft_doc::props::{HeightRule, LineSpacing};
     let mut d = Document::from_text("After");
+    // Keep the next visible paragraph below the retained source lines.
+    d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.space_before = Some(100.0);
     let mut table = Table::new(1, 1, 200.0);
     table.props.style = None;
     table.props.cell_margins = Some([0.0; 4]);
-    table.rows[0].props.height = Some(12.0);
+    table.rows[0].props.height = Some(10.0);
     table.rows[0].props.height_rule = HeightRule::Exact;
-    let mut p = Paragraph::with_text("One\nTwo\nThree\nFour", Default::default());
+    let mut p =
+        Paragraph::with_text("One\nTwo\nThree\nFour", CharProps { font: Some(WRAP_TEST_FONT.into()), size: Some(10.0), ..Default::default() });
     p.props.line_spacing = Some(LineSpacing::Exactly(10.0));
     p.props.space_after = Some(0.0);
     table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
@@ -11728,9 +11731,11 @@ fn clipped_caret_can_navigate() {
     assert_eq!(l.page_of(&pos), Some(0), "hidden content retains its page");
     let (up, _) = l.vertical(&pos, None, -1, 0).unwrap();
     assert_eq!(up.path, pos.path);
-    assert_eq!(up.off, 4, "move to the adjacent hidden line");
-    let (down, _) = l.vertical(&up, None, 1, 0).unwrap();
-    assert_eq!(down, pos);
+    assert_eq!(up.off, 0, "hidden origins can reach the previous visible line");
+    assert!(l.caret(&up).is_some());
+    let (down, _) = l.vertical(&pos, None, 1, 0).unwrap();
+    assert_eq!(down.path, Path::top(1), "hidden origins can reach the following visible paragraph");
+    assert!(l.caret(&down).is_some());
 }
 
 #[test]
