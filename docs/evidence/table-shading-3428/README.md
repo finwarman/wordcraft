@@ -4,11 +4,21 @@ These synthetic page renders compare main `b70c746f` with renderer code at `1051
 The example is recorded separately by hash. Linux ARM64, Rust 1.99, bundled Source Sans 3,
 400 x 200 pt pages, 2 px per pt. No Word-generated files or customer inputs are included.
 
-Reproduce at either source revision with the same example:
+The example was added after both renderer revisions. Copy the recorded model into
+separate detached worktrees, then run it against each renderer:
 
 ```sh
-cargo run -p wordcraft-render --example table_shading -- /tmp/table-shading
+git show c90a62dfe9156c31c551de57b1051cffe73cc6ef:crates/render/examples/table_shading.rs > /tmp/table_shading.rs
+for revision in b70c746f9bb70f830c5377f7710fc31dd3e8f195 1051bb2f; do
+  checkout="/tmp/table-shading-$revision"
+  git worktree add --detach "$checkout" "$revision"
+  cp /tmp/table_shading.rs "$checkout/crates/render/examples/table_shading.rs"
+  (cd "$checkout" && cargo run --locked -p wordcraft-render --example table_shading -- "/tmp/table-shading-output-$revision")
+done
 ```
+
+Use the same Rust toolchain and fonts for both runs. The copied example must match
+the model hash in `renders.json`.
 
 | Model/page | Before | After |
 |---|---|---|
