@@ -231,19 +231,12 @@ pub enum Placed {
     /// Lines `l0..l1` of a paragraph; `y` is the top of line `l0`; `x` the column's left edge.
     /// Turned lines (a table cell's text direction) run as `turn` says from the page point
     /// (`x`, `y`): see [`turn_point`].
-    Lines {
-        story: StoryRef,
-        path: Path,
-        para: Arc<ParaLayout>,
-        l0: usize,
-        l1: usize,
-        x: f32,
-        y: f32,
-        turn: TextDirection,
-    },
+    Lines { story: StoryRef, path: Path, para: Arc<ParaLayout>, l0: usize, l1: usize, x: f32, y: f32, turn: TextDirection },
     Fill {
         rect: Rect,
         color: Rgb,
+        /// Paragraph shading owns its source; table and page backgrounds do not.
+        source: Option<(StoryRef, Path)>,
     },
     Rule {
         x0: f32,
@@ -251,17 +244,11 @@ pub enum Placed {
         x1: f32,
         y1: f32,
         border: Border,
+        /// Paragraph borders own their source; table and page borders do not.
+        source: Option<(StoryRef, Path)>,
     },
     /// A picture in `rect`, turned about the rect's centre by `spin` (as are shapes and charts).
-    Image {
-        rect: Rect,
-        media: String,
-        crop: [f32; 4],
-        story: StoryRef,
-        path: Path,
-        off: usize,
-        spin: Spin,
-    },
+    Image { rect: Rect, media: String, crop: [f32; 4], story: StoryRef, path: Path, off: usize, spin: Spin },
     Shape {
         rect: Rect,
         kind: wordcraft_doc::para::ShapeKind,
@@ -283,22 +270,11 @@ pub enum Placed {
     },
     /// A floating chart or diagram, drawn from its items inside `rect`. The object is the U+FFFC at
     /// byte `off` of paragraph `path` (its alt text).
-    Graphic {
-        rect: Rect,
-        graphic: Arc<wordcraft_doc::graphic::Graphic>,
-        story: StoryRef,
-        path: Path,
-        off: usize,
-        spin: Spin,
-    },
+    Graphic { rect: Rect, graphic: Arc<wordcraft_doc::graphic::Graphic>, story: StoryRef, path: Path, off: usize, spin: Spin },
     /// `items` clipped to `rect`: a floating Drawing Canvas's members, kept inside its frame.
     /// `rect` is the unturned frame and `items` sit in it; `spin` turns the clipped whole about
     /// the frame's centre.
-    Clip {
-        rect: Rect,
-        spin: Spin,
-        items: Vec<Placed>,
-    },
+    Clip { rect: Rect, spin: Spin, items: Vec<Placed> },
     /// A table cell's area (for hit testing and cell selection). A vertically merged cell is
     /// one `Cell` as tall as all its rows; its continuation rows get a `covered` `Cell` (their
     /// own row's height) so the rows keep a box each, but it isn't a cell of its own on screen.
@@ -1620,11 +1596,11 @@ fn fit_lines(items: Vec<Placed>, height: f32, fit: LineFit) -> Vec<Placed> {
                     out.push(Placed::Lines { story, path, para, l0, l1: end, x, y, turn });
                 }
             }
-            Placed::Fill { rect, color } if rect.y < limit => {
-                out.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, rect.h.min(limit - rect.y)), color });
+            Placed::Fill { rect, color, source } if rect.y < limit => {
+                out.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, rect.h.min(limit - rect.y)), color, source });
             }
-            Placed::Rule { x0, y0, x1, y1, border } if y0.min(y1) < limit => {
-                out.push(Placed::Rule { x0, y0: y0.min(limit), x1, y1: y1.min(limit), border });
+            Placed::Rule { x0, y0, x1, y1, border, source } if y0.min(y1) < limit => {
+                out.push(Placed::Rule { x0, y0: y0.min(limit), x1, y1: y1.min(limit), border, source });
             }
             Placed::Image { rect, .. }
             | Placed::Shape { rect, .. }
@@ -1710,7 +1686,11 @@ fn push_para(
     let (top, bottom) = (y - e.top - e.up, y + h + e.bottom);
     if let Some(c) = pl.rp.shading {
         let pad = pl.rp.borders.as_ref().map(|b| b.left.map(|l| l.space).unwrap_or(4.0)).unwrap_or(0.0);
-        items.push(Placed::Fill { rect: Rect::new(left - pad, top, right - left + pad * 2.0, bottom - top), color: c });
+        items.push(Placed::Fill {
+            rect: Rect::new(left - pad, top, right - left + pad * 2.0, bottom - top),
+            color: c,
+            source: Some((story, Path(path.to_vec()))),
+        });
     }
     items.push(Placed::Lines { story, path: Path(path.to_vec()), para: pl.clone(), l0, l1, x, y, turn: TextDirection::Horizontal });
     if let Some(b) = &pl.rp.borders {
@@ -1719,17 +1699,17 @@ fn push_para(
         // The top and bottom lines lie beyond their distance from the text.
         if let Some(t) = b.top.filter(|t| e.top > 0.0 && t.is_visible()) {
             let ty = y - t.space - t.width / 2.0;
-            items.push(Placed::Rule { x0: lx, y0: ty, x1: rx, y1: ty, border: t });
+            items.push(Placed::Rule { x0: lx, y0: ty, x1: rx, y1: ty, border: t, source: Some((story, Path(path.to_vec()))) });
         }
         if let Some(t) = b.bottom.filter(|t| e.bottom > 0.0 && t.is_visible()) {
             let by = y + h + t.space + t.width / 2.0;
-            items.push(Placed::Rule { x0: lx, y0: by, x1: rx, y1: by, border: t });
+            items.push(Placed::Rule { x0: lx, y0: by, x1: rx, y1: by, border: t, source: Some((story, Path(path.to_vec()))) });
         }
         if let Some(t) = b.left.filter(Border::is_visible) {
-            items.push(Placed::Rule { x0: lx, y0: top, x1: lx, y1: bottom, border: t });
+            items.push(Placed::Rule { x0: lx, y0: top, x1: lx, y1: bottom, border: t, source: Some((story, Path(path.to_vec()))) });
         }
         if let Some(t) = b.right.filter(Border::is_visible) {
-            items.push(Placed::Rule { x0: rx, y0: top, x1: rx, y1: bottom, border: t });
+            items.push(Placed::Rule { x0: rx, y0: top, x1: rx, y1: bottom, border: t, source: Some((story, Path(path.to_vec()))) });
         }
     }
     y + h
@@ -1878,7 +1858,7 @@ fn separator_rules(blocks: &Blocks, items: &[Placed]) -> Vec<Placed> {
                 }
                 let (Some(a), Some(b)) = (line.cl_left(k), line.cl_right(k)) else { continue };
                 let ry = y + line.top - first.top + line.height / 2.0;
-                rules.push(Placed::Rule { x0: x + a.min(b), y0: ry, x1: x + a.max(b), y1: ry, border: Border::single(0.5) });
+                rules.push(Placed::Rule { x0: x + a.min(b), y0: ry, x1: x + a.max(b), y1: ry, border: Border::single(0.5), source: None });
             }
         }
     }
@@ -1981,13 +1961,13 @@ impl NoteBox {
                         tail.push(Placed::Lines { story, path, para, l0: k, l1, x, y: ky, turn });
                     }
                 }
-                Placed::Fill { rect, color } => {
-                    head.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, cut - rect.y), color });
-                    tail.push(Placed::Fill { rect: Rect::new(rect.x, cut, rect.w, rect.y + rect.h - cut), color });
+                Placed::Fill { rect, color, source } => {
+                    head.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, cut - rect.y), color, source: source.clone() });
+                    tail.push(Placed::Fill { rect: Rect::new(rect.x, cut, rect.w, rect.y + rect.h - cut), color, source });
                 }
-                Placed::Rule { x0, y0, x1, y1, border } => {
-                    head.push(Placed::Rule { x0, y0: y0.min(cut), x1, y1: y1.min(cut), border });
-                    tail.push(Placed::Rule { x0, y0: y0.max(cut), x1, y1: y1.max(cut), border });
+                Placed::Rule { x0, y0, x1, y1, border, source } => {
+                    head.push(Placed::Rule { x0, y0: y0.min(cut), x1, y1: y1.min(cut), border, source: source.clone() });
+                    tail.push(Placed::Rule { x0, y0: y0.max(cut), x1, y1: y1.max(cut), border, source });
                 }
                 // Not split (cuts avoid them): stays above.
                 other => head.push(other),
@@ -2020,7 +2000,7 @@ fn page_border_rules(s: &SectionProps) -> Vec<Placed> {
         let (x0, x1, y0, y1) = (sp(&b.left), s.page_w - sp(&b.right), sp(&b.top), s.page_h - sp(&b.bottom));
         for (e, a, bb) in [(b.top, (x0, y0), (x1, y0)), (b.bottom, (x0, y1), (x1, y1)), (b.left, (x0, y0), (x0, y1)), (b.right, (x1, y0), (x1, y1))] {
             if let Some(e) = e.filter(Border::is_visible) {
-                v.push(Placed::Rule { x0: a.0, y0: a.1, x1: bb.0, y1: bb.1, border: e });
+                v.push(Placed::Rule { x0: a.0, y0: a.1, x1: bb.0, y1: bb.1, border: e, source: None });
             }
         }
     }
@@ -2107,7 +2087,7 @@ impl PageBuilder<'_> {
                 None => {
                     let len = if cont { self.sect.text_width() } else { NOTE_SEP_W };
                     let sy = top + NOTE_SEP / 2.0;
-                    pg.items.push(Placed::Rule { x0: x, y0: sy, x1: x + len, y1: sy, border: Border::single(0.5) });
+                    pg.items.push(Placed::Rule { x0: x, y0: sy, x1: x + len, y1: sy, border: Border::single(0.5), source: None });
                 }
             }
             for (n, ny) in placed {
@@ -2231,7 +2211,7 @@ impl PageBuilder<'_> {
                         // Midway across the space between neighbours (leftwards in an RTL section).
                         let mid = if bx >= ax { (ax + aw + bx) / 2.0 } else { (bx + bw + ax) / 2.0 };
                         let x = s.margin_left + s.gutter + mid;
-                        decor.push(Placed::Rule { x0: x, y0: body_top, x1: x, y1: bottom, border: Border::single(0.5) });
+                        decor.push(Placed::Rule { x0: x, y0: body_top, x1: x, y1: bottom, border: Border::single(0.5), source: None });
                     }
                 }
             }
@@ -2905,7 +2885,7 @@ fn place_endnotes(ctx: &mut Ctx, pb: &mut PageBuilder, ids: Vec<u32>, block: usi
         pb.y += 12.0;
         let (x, ry) = (pb.col_x(), pb.y);
         if let Some(pg) = pb.page() {
-            pg.items.push(Placed::Rule { x0: x, y0: ry, x1: x + NOTE_SEP_W, y1: ry, border: Border::single(0.5) });
+            pg.items.push(Placed::Rule { x0: x, y0: ry, x1: x + NOTE_SEP_W, y1: ry, border: Border::single(0.5), source: None });
         }
         pb.y += 8.0;
     }
@@ -3063,7 +3043,7 @@ fn foot_top_for(ctx: &mut Ctx, sect: &SectionProps, footer: Option<u32>) -> f32 
     laid.items
         .iter()
         .filter_map(|item| match item {
-            Placed::Rule { x0, x1, y0, y1, border }
+            Placed::Rule { x0, x1, y0, y1, border, .. }
                 if border.is_visible()
                     && (y0 - y1).abs() < 0.01
                     && flow_cells.iter().any(|r| (r.y - y0).abs() < 0.01 && *x0 <= r.x + 0.01 && *x1 >= r.right() - 0.01) =>

@@ -574,8 +574,14 @@ fn stories_display(doc: &Document, stories: &[&Vec<Placed>], opts: &DisplayOptio
             if hidden.as_ref().is_some_and(|h| h.hides(it)) {
                 continue;
             }
-            if let Placed::Lines { story, path, .. } = it
-                && let Some(rect) = cell_clip(&clips, *story, &path.0, index)
+            let source = match it {
+                Placed::Lines { story, path, .. }
+                | Placed::Fill { source: Some((story, path)), .. }
+                | Placed::Rule { source: Some((story, path)), .. } => Some((*story, path)),
+                _ => None,
+            };
+            if let Some((story, path)) = source
+                && let Some(rect) = cell_clip(&clips, story, &path.0, index)
             {
                 let mut inner = Vec::new();
                 item(doc, it, opts, a, &mut inner);
@@ -777,8 +783,8 @@ fn item(doc: &Document, it: &Placed, opts: &DisplayOptions, alpha: f32, out: &mu
 /// effects follow all the turns it is drawn inside.
 fn item_in(doc: &Document, it: &Placed, opts: &DisplayOptions, alpha: f32, outer: Spin, out: &mut Vec<Draw>) {
     match it {
-        Placed::Fill { rect, color } => out.push(Draw::Fill { rect: *rect, color: *color, alpha, text_bg: false }),
-        Placed::Rule { x0, y0, x1, y1, border } => out.push(rule(*x0, *y0, *x1, *y1, border, alpha)),
+        Placed::Fill { rect, color, .. } => out.push(Draw::Fill { rect: *rect, color: *color, alpha, text_bg: false }),
+        Placed::Rule { x0, y0, x1, y1, border, .. } => out.push(rule(*x0, *y0, *x1, *y1, border, alpha)),
         Placed::Image { rect, media, crop, spin, .. } => spun(
             *spin,
             *rect,
@@ -2138,7 +2144,7 @@ mod cell_clip_tests {
             story: StoryRef::Body,
             clip: true,
         };
-        let rule = Placed::Rule { x0: 0.0, y0: 0.0, x1: 1.0, y1: 0.0, border: Border::single(0.5) };
+        let rule = Placed::Rule { x0: 0.0, y0: 0.0, x1: 1.0, y1: 0.0, border: Border::single(0.5), source: None };
         let mut items = [rule.clone(), cell(10.0), rule, cell(100.0)];
         let clips = clipped_cells(&items);
         let path = [0, 0, 0, 0];

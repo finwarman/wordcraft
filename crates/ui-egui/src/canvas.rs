@@ -840,8 +840,14 @@ fn page_content_key(page: &Page) -> u64 {
                 Placed::Lines { para, l0, l1, x, y, turn, .. } => {
                     (std::sync::Arc::as_ptr(para) as usize, l0, l1, x.to_bits(), y.to_bits(), turn).hash(&mut h);
                 }
-                Placed::Fill { rect, color } => format!("{rect:?}{color:?}").hash(&mut h),
-                Placed::Rule { x0, y0, x1, y1, border } => format!("{x0}{y0}{x1}{y1}{border:?}").hash(&mut h),
+                Placed::Fill { rect, color, source } => {
+                    format!("{rect:?}{color:?}").hash(&mut h);
+                    source.hash(&mut h);
+                }
+                Placed::Rule { x0, y0, x1, y1, border, source } => {
+                    format!("{x0}{y0}{x1}{y1}{border:?}").hash(&mut h);
+                    source.hash(&mut h);
+                }
                 Placed::Image { rect, media, spin, .. } => format!("{rect:?}{media}{spin:?}").hash(&mut h),
                 Placed::Shape { rect, kind, fill, stroke, stroke_width, effects, freeform, spin, extra, .. } => {
                     format!("{rect:?}{kind:?}{fill:?}{stroke:?}{stroke_width}{effects:?}{spin:?}{extra:?}").hash(&mut h);
@@ -8619,6 +8625,32 @@ mod math_clip_tests {
         assert_eq!(math_ime_rect(target, None), target);
         for edge in [Rect::from_min_max(pos2(50.0, 65.0), pos2(50.0, 75.0)), Rect::from_min_max(pos2(50.0, 65.0), pos2(51.0, 65.0))] {
             assert_eq!(math_ime_rect(edge, Some(cell())), edge);
+        }
+    }
+
+    #[test]
+    fn decoration_owner_changes_key() {
+        use wordcraft_doc::props::{Border, Rgb};
+        use wordcraft_doc::{Path, StoryRef};
+        let rect = wordcraft_geom::Rect::new(0.0, 0.0, 40.0, 60.0);
+        for item in [
+            Placed::Fill { rect, color: Rgb::BLACK, source: None },
+            Placed::Rule { x0: 0.0, y0: 0.0, x1: 0.0, y1: 60.0, border: Border::single(1.0), source: None },
+        ] {
+            let original = Page { items: vec![item], ..Default::default() };
+            let key = page_content_key(&original);
+            let mut keys = vec![key];
+            for source in [(StoryRef::Body, Path::top(0)), (StoryRef::Body, Path::top(1)), (StoryRef::Part(0), Path::top(0))] {
+                let mut changed = original.clone();
+                match &mut changed.items[0] {
+                    Placed::Fill { source: owner, .. } | Placed::Rule { source: owner, .. } => *owner = Some(source),
+                    _ => panic!("decoration fixture"),
+                }
+                let next = page_content_key(&changed);
+                assert!(!keys.contains(&next), "owner-only mutation must invalidate cell paint");
+                keys.push(next);
+            }
+            assert_eq!(key, page_content_key(&original), "unchanged source retains the paint cache");
         }
     }
 }
