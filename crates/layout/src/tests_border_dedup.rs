@@ -1,5 +1,5 @@
 use super::*;
-use wordcraft_doc::props::{Border, BorderStyle, Borders, LineSpacing, VMerge};
+use wordcraft_doc::props::{Border, BorderStyle, Borders, LineSpacing, TextFrame, VMerge};
 use wordcraft_doc::{Paragraph, Rgb, Table, para_block};
 
 const CELL_WIDTH: f32 = 150.0;
@@ -8,6 +8,7 @@ const PAGE_MARGIN: f32 = 20.0;
 const PAGE_BODY: f32 = 24.0;
 const LINE_HEIGHT: f32 = 20.0;
 const RULE_WIDTH: f32 = 1.0;
+const FRAME_WRAP_NONE: &str = "none";
 const CELL_COLOR: Rgb = Rgb(200, 30, 40);
 const PARA_COLOR: Rgb = Rgb(30, 60, 200);
 
@@ -107,6 +108,26 @@ fn collision_doc(route: EdgeRoute, merge: MergeMode, case: BorderCase) -> Docume
     d
 }
 
+fn framed_collision_doc(route: EdgeRoute, merge: MergeMode, case: BorderCase) -> Document {
+    let mut d = collision_doc(route, merge, case);
+    let path = match route {
+        EdgeRoute::CloseBottom => Path(vec![0, 0, 0, 0]),
+        EdgeRoute::RepeatTop => Path(vec![0, 1, 1, 0]),
+    };
+    let p = d.para_mut(StoryRef::Body, &path).unwrap();
+    // Frame the rule independently of border flow padding so it meets the physical cell edge.
+    p.props.frame = Some(TextFrame {
+        w: Some(CELL_WIDTH),
+        y: match route {
+            EdgeRoute::CloseBottom => -RULE_WIDTH / 2.0,
+            EdgeRoute::RepeatTop => RULE_WIDTH / 2.0,
+        },
+        wrap: FRAME_WRAP_NONE.into(),
+        ..Default::default()
+    });
+    d
+}
+
 fn model_layout(d: &Document) -> DocLayout {
     layout(d, &mut LayoutCache::new(), &LayoutOptions::default())
 }
@@ -143,8 +164,8 @@ fn rules_at(l: &DocLayout, page: usize, geometry: EdgeBits) -> Vec<Border> {
 }
 
 fn assert_border_collision(route: EdgeRoute, case: BorderCase) {
-    let reference = model_layout(&collision_doc(route, MergeMode::Separate, case));
-    let joined = model_layout(&collision_doc(route, MergeMode::Joined, case));
+    let reference = model_layout(&framed_collision_doc(route, MergeMode::Separate, case));
+    let joined = model_layout(&framed_collision_doc(route, MergeMode::Joined, case));
     assert_eq!(reference.pages.len(), 2);
     assert_eq!(joined.pages.len(), 2);
     let page = match route {
@@ -195,5 +216,53 @@ fn merge_repeat_keeps_border() {
 fn merge_equal_border_once() {
     for route in [EdgeRoute::CloseBottom, EdgeRoute::RepeatTop] {
         assert_border_collision(route, BorderCase::Same);
+    }
+}
+
+#[test]
+fn unframed_rules_stay_separate() {
+    // Border flow padding keeps default paragraph rules away from the cell edge.
+    // Keep this model unframed rather than inheriting the collision fixture's offsets.
+    for route in [EdgeRoute::CloseBottom, EdgeRoute::RepeatTop] {
+        for case in [BorderCase::Same, BorderCase::DifferentColor] {
+            let d = collision_doc(route, MergeMode::Separate, case);
+            let path = match route {
+                EdgeRoute::CloseBottom => Path(vec![0, 0, 0, 0]),
+                EdgeRoute::RepeatTop => Path(vec![0, 1, 1, 0]),
+            };
+            assert!(d.para(StoryRef::Body, &path).unwrap().props.frame.is_none());
+            let l = model_layout(&d);
+            assert_eq!(l.pages.len(), 2);
+            let page = match route {
+                EdgeRoute::CloseBottom => 0,
+                EdgeRoute::RepeatTop => 1,
+            };
+            let geometry = reference_geometry(&l, route);
+            let edge_y = f32::from_bits(geometry.2);
+            let para_y = match route {
+                EdgeRoute::CloseBottom => edge_y - RULE_WIDTH / 2.0,
+                EdgeRoute::RepeatTop => edge_y + RULE_WIDTH + RULE_WIDTH / 2.0,
+            };
+            let para_geometry = (geometry.0, geometry.1, para_y.to_bits(), para_y.to_bits());
+            assert_ne!(para_geometry, geometry, "default flow must not manufacture a collision");
+            let expected_cell = cell_border(route);
+            let expected_para = Border {
+                color: Some(match case {
+                    BorderCase::Same => CELL_COLOR,
+                    BorderCase::DifferentColor => PARA_COLOR,
+                }),
+                ..expected_cell
+            };
+            assert_eq!(rules_at(&l, page, geometry), [expected_cell]);
+            assert_eq!(rules_at(&l, page, para_geometry), [expected_para]);
+            for page in &l.pages {
+                for item in &page.items {
+                    if let Placed::Cell { rect, .. } = item {
+                        assert!(rect.y >= PAGE_MARGIN);
+                        assert!(rect.bottom() <= PAGE_MARGIN + PAGE_BODY);
+                    }
+                }
+            }
+        }
     }
 }
