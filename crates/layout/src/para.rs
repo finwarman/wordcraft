@@ -2597,7 +2597,7 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
         let picture_only = matches!(rp.line_spacing, LineSpacing::Multiple(m) if m >= 1.0)
             && grid.is_none()
             && obj_asc > asc
-            && pl.label.is_none()
+            && (pl.label.is_none() || lines.len() != label_line_index(&lines, &pl.clusters))
             && picture_clusters_only(pl, c0, c1);
         let text_natural = asc + desc;
         let (text_asc, text_desc) = (asc.max(obj_asc), desc);
@@ -3134,6 +3134,14 @@ fn resolve_tab(pl: &mut ParaLayout, pending: &mut Option<(usize, TabStop, f32)>,
     }
 }
 
+// Share the visible label line between line measurement and drawing.
+fn label_line_index(lines: &[Line], clusters: &[Cluster]) -> usize {
+    usize::from(lines.first().is_some_and(|l| {
+        l.end == LineEnd::PageBreak
+            && clusters.get(l.c0..l.c1).is_some_and(|cs| cs.iter().all(|c| matches!(c.kind, ClKind::PageBreak | ClKind::Marker)))
+    }))
+}
+
 impl ParaLayout {
     /// Returns whether `off` is a legal caret and edit boundary, that is, not the interior start of a
     /// joined grapheme cluster.
@@ -3165,12 +3173,7 @@ impl ParaLayout {
     /// The line the list label is drawn on: the first, unless the paragraph opens with a page
     /// break, when Word draws it with the text on the next page.
     pub fn label_line(&self) -> usize {
-        let opens_with_break = self.lines.len() > 1
-            && self.lines.first().is_some_and(|l| {
-                l.end == LineEnd::PageBreak
-                    && self.clusters.get(l.c0..l.c1).is_some_and(|cs| cs.iter().all(|c| matches!(c.kind, ClKind::PageBreak | ClKind::Marker)))
-            });
-        usize::from(opens_with_break)
+        if self.lines.len() > 1 { label_line_index(&self.lines, &self.clusters) } else { 0 }
     }
     /// x of byte offset `off` within line `li` (clamped to the line).
     pub fn x_of(&self, li: usize, off: usize) -> Option<f32> {

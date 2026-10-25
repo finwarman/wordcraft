@@ -11761,3 +11761,104 @@ fn a_row_leaves_room_for_the_border_below_it() {
         }
     }
 }
+
+#[test]
+fn labelled_picture_continuation() {
+    use wordcraft_doc::props::{LineSpacing, NumRef};
+    let mut heights = Vec::new();
+    for numbered in [false, true] {
+        let mut d = Document::new();
+        let num = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+        let chr = wordcraft_doc::CharProps { font: Some("Source Sans 3".into()), size: Some(10.0), ..Default::default() };
+        let mut p = Paragraph::with_text(&format!("Label{}", wordcraft_doc::para::LINE_BREAK), chr.clone());
+        p.props.line_spacing = Some(LineSpacing::Multiple(1.0));
+        if numbered {
+            p.props.numbering = Some(NumRef { num, level: 0 });
+        }
+        p.insert_object(p.len(), picture(144.0, 144.0, Default::default()), &chr).unwrap();
+        d.body = vec![wordcraft_doc::para_block(p)];
+        let l = lay(&d);
+        let para = l.pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Lines { story: StoryRef::Body, para, .. } => Some(para),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(para.lines.len(), 2);
+        assert_eq!(para.label.is_some(), numbered);
+        assert_eq!(para.lines[0].end, LineEnd::LineBreak);
+        let line = &para.lines[1];
+        assert!((line.baseline - line.top - 144.0).abs() < 0.01);
+        heights.push(line.height);
+    }
+    println!("unlabelled/labelled continuation heights: {heights:?}");
+    assert!((heights[0] - heights[1]).abs() < 0.01, "the label is on the first line: {heights:?}");
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PictureStart {
+    FirstLine,
+    PageBreak,
+}
+
+fn check_label_picture(start: PictureStart) {
+    use wordcraft_doc::props::{LineSpacing, NumRef};
+    for multiple in [1.0, 1.15, 2.0] {
+        let mut d = Document::new();
+        let num = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+        let chr = wordcraft_doc::CharProps { font: Some("Source Sans 3".into()), size: Some(10.0), ..Default::default() };
+        let text = match start {
+            PictureStart::FirstLine => String::new(),
+            PictureStart::PageBreak => wordcraft_doc::para::PAGE_BREAK.to_string(),
+        };
+        let mut p = Paragraph::with_text(&text, chr.clone());
+        p.props.line_spacing = Some(LineSpacing::Multiple(multiple));
+        p.props.numbering = Some(NumRef { num, level: 0 });
+        p.insert_object(p.len(), picture(144.0, 144.0, Default::default()), &chr).unwrap();
+        d.body = vec![wordcraft_doc::para_block(p)];
+        let l = lay(&d);
+        let (page, para) = l
+            .pages
+            .iter()
+            .enumerate()
+            .find_map(|(page, p)| {
+                p.items.iter().find_map(|it| match it {
+                    Placed::Lines { story: StoryRef::Body, para, l0, l1, .. } if (*l0..*l1).contains(&para.label_line()) => Some((page, para)),
+                    _ => None,
+                })
+            })
+            .unwrap();
+        let label_line = para.label_line();
+        match start {
+            PictureStart::FirstLine => assert_eq!((page, label_line), (0, 0)),
+            PictureStart::PageBreak => {
+                assert_eq!((page, label_line), (1, 1));
+                assert_eq!(para.lines[0].end, LineEnd::PageBreak);
+                assert!(
+                    para.clusters[para.lines[0].c0..para.lines[0].c1]
+                        .iter()
+                        .all(|c| matches!(c.kind, para::ClKind::PageBreak | para::ClKind::Marker))
+                );
+            }
+        }
+        assert!(para.label.is_some());
+        let line = &para.lines[label_line];
+        let picture = para.clusters[line.c0..line.c1].iter().find(|c| c.obj_h > 0.0).unwrap();
+        let style = &para.styles[picture.style as usize];
+        let expected = (144.0 + style.descent).max((style.ascent + style.descent) * multiple);
+        println!("{start:?}, multiple={multiple}, label_line={label_line}, height={}, expected={expected}", line.height);
+        assert!((line.height - expected).abs() < 0.01, "the visible label line retains descent: {start:?}");
+    }
+}
+
+#[test]
+fn first_label_picture_floor() {
+    check_label_picture(PictureStart::FirstLine);
+}
+
+#[test]
+fn page_label_picture_floor() {
+    check_label_picture(PictureStart::PageBreak);
+}
