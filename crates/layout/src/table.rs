@@ -1270,6 +1270,11 @@ fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
             if !width.is_finite() || width <= 0.0 {
                 return;
             }
+            if cell.props.width_pct.is_some()
+                && cell.props.width.is_some_and(|absolute| !absolute.is_finite() || (absolute - width).abs() > WIDTH_EPSILON)
+            {
+                return;
+            }
             g = g.saturating_add(cell.span());
             x += width;
             let Some(edge) = edges.get_mut(g) else { return };
@@ -1295,14 +1300,18 @@ fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
 fn rounded_pct_total(row: &Row, columns: usize) -> Option<f32> {
     const PERCENT_TOTAL: f64 = 100.0;
     const OOXML_PCT_UNIT: f64 = 1.0 / 50.0;
-    const FLOAT_SLOP: f64 = f32::EPSILON as f64 * PERCENT_TOTAL;
     if row.cells.iter().fold(0usize, |n, c| n.saturating_add(c.span())) != columns {
         return Some(PERCENT_TOTAL as f32);
     }
-    let total: Option<f64> = row.cells.iter().map(|c| c.props.width_pct.filter(|p| p.is_finite() && *p > 0.0).map(f64::from)).sum();
+    let total = row.cells.iter().try_fold((0.0, 0.0), |(sum, error), cell| {
+        let pct = cell.props.width_pct.filter(|p| p.is_finite() && *p > 0.0)?;
+        // Only the representation error of the supplied f32 values may cross the unit bound.
+        let step = if pct.next_up().is_finite() { f64::from(pct.next_up()) - f64::from(pct) } else { f64::from(pct) - f64::from(pct.next_down()) };
+        Some((sum + f64::from(pct), error + step / 2.0))
+    });
     match total {
-        Some(sum) if PERCENT_TOTAL - sum > FLOAT_SLOP && PERCENT_TOTAL - sum <= OOXML_PCT_UNIT + FLOAT_SLOP => Some(sum as f32),
-        Some(sum) if (PERCENT_TOTAL - sum).abs() > FLOAT_SLOP => None,
+        Some((sum, error)) if PERCENT_TOTAL - sum > error && PERCENT_TOTAL - sum <= OOXML_PCT_UNIT + error => Some(sum as f32),
+        Some((sum, error)) if (PERCENT_TOTAL - sum).abs() > error => None,
         _ => Some(PERCENT_TOTAL as f32),
     }
 }
@@ -1464,15 +1473,36 @@ mod cell_width_tests {
 
     #[test]
     fn rounding_has_one_unit_limit() {
-        for (first, expected) in
-            [(18.58, Some(99.98)), (18.5801, Some(99.9801)), (18.599998, Some(100.0)), (18.5799, None), (18.56, None), (18.62, None)]
-        {
+        for (first, expected) in [
+            (18.58, Some(99.98)),
+            (18.5801, Some(99.9801)),
+            (18.599998, Some(100.0)),
+            (18.57999, None),
+            (18.5799, None),
+            (18.56, None),
+            (18.62, None),
+        ] {
             let mut table = rounded_width_table();
             table.rows[0].cells[0].props.width_pct = Some(first);
             let total = rounded_pct_total(&table.rows[0], 6);
             assert_eq!(total.is_some(), expected.is_some(), "first {first}: {total:?}");
             if let (Some(actual), Some(expected)) = (total, expected) {
                 assert!((actual - expected).abs() < 0.00002, "first {first}: {actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_preferences_must_agree() {
+        for offset in [0.0, 2.0, f32::NAN] {
+            let mut table = rounded_width_table();
+            table.rows[0].cells[0].props.width = Some(468.0 * 18.58 / 99.98 + offset);
+            let mut grid = table.grid.clone();
+            apply_cell_widths(&table, &mut grid);
+            if offset == 0.0 {
+                assert!((grid[0] - 468.0 * 18.58 / 99.98).abs() < 0.01);
+            } else {
+                assert_eq!(grid, table.grid, "conflicting or invalid absolute width keeps the grid");
             }
         }
     }
