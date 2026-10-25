@@ -1958,7 +1958,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         && (resp.hovered() || resp.dragged())
         && let Some(p) = ui.input(|i| i.pointer.latest_pos())
     {
-        let opts = page_render_options(app, dim_body);
+        let opts = page_render_options(app, &layout, dim_body);
         let bg = if on_visible_page(&rects, &geo.bands, p) {
             opts.paper_of(&app.session.doc)
         } else {
@@ -3733,7 +3733,7 @@ fn caret_color_at(app: &mut WordApp, layout: &std::sync::Arc<DocLayout>, page: u
 /// dragging, such as an inline picture's insertion cursor.
 pub(crate) fn caret_color_on(app: &WordApp, layout: &DocLayout, page: usize, x: f32, y: f32) -> Color32 {
     let Some(p) = layout.pages.get(page) else { return Color32::BLACK };
-    caret_contrast(wordcraft_render::background_at(&app.session.doc, p, &page_render_options(app, dims_body(app, layout)), x, y))
+    caret_contrast(wordcraft_render::background_at(&app.session.doc, p, &page_render_options(app, layout, dims_body(app, layout)), x, y))
 }
 
 /// Render options for page rasters shown on screen: on macOS, text is darkened the way the system
@@ -4181,7 +4181,7 @@ mod tests {
                 kind: ShapeKind::TextBox,
                 w: 180.0,
                 h: 60.0,
-                fill: Some(Rgb::BLACK),
+                fill: Some(wordcraft_doc::fill::Fill::solid(Rgb::BLACK)),
                 stroke: None,
                 stroke_width: 0.0,
                 float: Float { wrap: Wrap::InFrontOfText, rot: 90.0, ..Default::default() },
@@ -4215,37 +4215,38 @@ mod tests {
         use wordcraft_doc::props::Rgb;
         let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::from_text("Hello WordCraft")), Default::default());
         a.run("design.pageColor", json!({"color": "#102040"})).unwrap();
-        let paper = |a: &WordApp| page_render_options(a, false).paper_of(&a.session.doc);
+        let layout = a.session.layout();
+        let paper = |a: &WordApp| page_render_options(a, &layout, false).paper_of(&a.session.doc);
         assert_eq!(paper(&a), Rgb(0x10, 0x20, 0x40), "Print Layout shows the page color");
-        let print_key = view_key(&a, false, None);
+        let print_key = view_key(&a, false, None, None);
         a.run("view.readMode", json!({})).unwrap();
         assert_eq!(paper(&a), Rgb::WHITE, "None: white, the page color ignored");
-        let none_key = view_key(&a, false, None);
+        let none_key = view_key(&a, false, None, None);
         a.run("view.readPageColor", json!({"value": "sepia"})).unwrap();
         assert_eq!(paper(&a), wordcraft_render::SEPIA_PAPER);
-        assert!(!page_render_options(&a, false).dark, "Sepia keeps the text's colors");
-        let sepia_key = view_key(&a, false, None);
+        assert!(!page_render_options(&a, &layout, false).dark, "Sepia keeps the text's colors");
+        let sepia_key = view_key(&a, false, None, None);
         a.run("view.readPageColor", json!({"value": "inverse"})).unwrap();
-        assert!(page_render_options(&a, false).dark);
+        assert!(page_render_options(&a, &layout, false).dark);
         let d = wordcraft_render::DARK_PAPER;
         assert_eq!(paper(&a), Rgb(d, d, d));
-        let inverse_key = view_key(&a, false, None);
+        let inverse_key = view_key(&a, false, None, None);
         let keys = [print_key, none_key, sepia_key, inverse_key];
         for (i, k) in keys.iter().enumerate() {
             assert!(!keys[..i].contains(k), "each paper has its own view key");
         }
         a.run("view.printLayout", json!({})).unwrap();
         assert_eq!(paper(&a), Rgb(0x10, 0x20, 0x40), "leaving Read Mode brings the page color back");
-        assert!(!page_render_options(&a, false).dark);
+        assert!(!page_render_options(&a, &layout, false).dark);
         // With Switch Modes on, Read Mode's paper still follows the Page color: None is white and Sepia is sepia.
         a.session.view.dark_mode = true;
         a.run("view.readMode", json!({})).unwrap();
-        assert!(!page_render_options(&a, false).dark);
+        assert!(!page_render_options(&a, &layout, false).dark);
         assert_eq!(paper(&a), Rgb::WHITE);
         a.run("view.readPageColor", json!({"value": "sepia"})).unwrap();
         assert_eq!(paper(&a), wordcraft_render::SEPIA_PAPER);
         a.run("view.printLayout", json!({})).unwrap();
-        assert!(page_render_options(&a, false).dark, "Print Layout keeps Switch Modes");
+        assert!(page_render_options(&a, &layout, false).dark, "Print Layout keeps Switch Modes");
     }
 
     /// #299: the caret's colour is worked out only when the caret is drawn: with text selected
