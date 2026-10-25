@@ -261,7 +261,7 @@ Installed static fonts also resolve by their OpenType PostScript name (name ID 6
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-25 | trivial | #2013: Relocated section marks retain the preceding paragraph column and width. |
+| 2026-10-25 | trivial | #2013: Relocated section marks retain the preceding paragraph column and width; their vertical position uses the recorded break bottom on unshifted pages, with the existing body fallback after page alignment. |
 | 2026-10-23 | trivial | cu20we: preserve and render outline caps across DOCX/VML, screen and PDF; synthetic regressions; readiness estimates unchanged |
 | 2026-10-23 | trivial | cu20we: paragraph-relative box floats use the pre-spacing origin; header/footer/cell/text-box regressions; readiness estimates unchanged |
 | 2026-10-24 | trivial | Exact-spacing table contact uses the specified line height in row selection and word skipping; large/small mark regressions in modes 11/12/14/15 (#3977); shape estimates unchanged |

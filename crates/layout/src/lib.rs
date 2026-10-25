@@ -3638,33 +3638,24 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
         && let Some(page) = pb.pages.len().checked_sub(2)
     {
         // The structural section mark stays with the preceding break, without filling its new page.
-        let (column_x, width) = pb
-            .para_end
-            .filter(|(count, _, _)| *count == page + 1)
-            .and_then(|(_, column, _)| pb.cols.get(column))
-            .copied()
-            .unwrap_or((0.0, pb.col_w()));
+        let owner = pb.para_end.filter(|(count, _, _)| *count == page + 1);
+        let (column_x, width) = owner.and_then(|(_, column, _)| pb.cols.get(column)).copied().unwrap_or((0.0, pb.col_w()));
         let pl = ctx.para_labelled(p, width, None, &[], None);
         let prev = &mut pb.pages[page];
-        let y = prev
-            .items
-            .iter()
-            .filter(|it| matches!(it, Placed::Lines { story: StoryRef::Body, .. } | Placed::Cell { story: StoryRef::Body, .. }))
-            .map(v_span)
-            .map(|(_, bottom)| bottom)
-            .fold(prev.body.y, f32::max);
-        push_para(
-            &mut prev.items,
-            StoryRef::Body,
-            &[block as u32],
-            &pl,
-            0,
-            pl.lines.len(),
-            prev.body.x + column_x,
-            y,
-            width,
-            Edges::own(&pl, 0, pl.lines.len()),
-        );
+        let x = prev.body.x + column_x;
+        // Page alignment can move the body after its paragraph end was recorded.
+        let y = owner
+            .filter(|_| ctx.sections.get(prev.section).is_some_and(|(_, sect)| sect.valign == wordcraft_doc::section::PageVAlign::Top))
+            .map(|(_, _, end)| end)
+            .unwrap_or_else(|| {
+                prev.items
+                    .iter()
+                    .filter(|it| matches!(it, Placed::Lines { story: StoryRef::Body, .. } | Placed::Cell { story: StoryRef::Body, .. }))
+                    .map(v_span)
+                    .map(|(_, bottom)| bottom)
+                    .fold(prev.body.y, f32::max)
+            });
+        push_para(&mut prev.items, StoryRef::Body, &[block as u32], &pl, 0, pl.lines.len(), x, y, width, Edges::own(&pl, 0, pl.lines.len()));
         return;
     }
     if !pb.web && ctx.quiet_marks.binary_search(&block).is_ok() {
