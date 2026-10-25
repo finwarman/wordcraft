@@ -10890,7 +10890,7 @@ fn split_row_keeps_foreground() {
     let row = RowLayout {
         height: 200.0,
         items: vec![line, second, Placed::Fill { rect: Rect::new(0.0, 150.0, 100.0, 20.0), color: Rgb(200, 0, 0) }],
-        foreground: vec![Foreground { range: 1..3, z: 7 }],
+        foreground: vec![Foreground { range: 1..3, z: 7, floor: 7 }],
         bottom: 0.0,
         edge: 0.0,
         cells: vec![CellPart { top: 0.0, items: 0..3, end: Some(170.0) }],
@@ -10899,6 +10899,7 @@ fn split_row_keeps_foreground() {
     assert!(a.foreground.is_empty());
     assert_eq!(b.foreground.len(), 1);
     assert_eq!((b.foreground[0].range.clone(), b.foreground[0].z), (0..2, 7));
+    assert_eq!(b.foreground[0].floor, 7);
 }
 
 #[test]
@@ -11431,13 +11432,30 @@ fn unranked_follows_known_rank() {
     use wordcraft_doc::para::{Anchor, Float};
     let mut d = Document::from_text("First\nSecond\nThird");
     let float = |z| Float { z, wrap: Wrap::InFrontOfText, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 90.0, ..Default::default() };
-    let high = text_box(&mut d, 0, "High", 80.0, 40.0, float(7));
-    let unknown = text_box(&mut d, 1, "Unranked", 80.0, 40.0, float(0));
-    let low = text_box(&mut d, 2, "Low", 80.0, 40.0, float(2));
+    let high = text_box_at(&mut d, &Pos::body(0, 0), "High", 80.0, 40.0, float(7));
+    let unknown = text_box_at(&mut d, &Pos::body(1, 0), "Unranked", 80.0, 40.0, float(0));
+    let low = text_box_at(&mut d, &Pos::body(2, 0), "Low", 80.0, 40.0, float(2));
     let layout = lay(&d);
     let order: Vec<_> = layout.pages[0].items.iter().filter_map(|it| match it {
         Placed::Object { text_box: Some(id), .. } => Some(*id),
         _ => None,
     }).collect();
     assert_eq!(order, [low, high, unknown]);
+}
+
+#[test]
+fn behind_rank_sets_fallback() {
+    use wordcraft_doc::para::{Anchor, Float};
+    let mut d = Document::from_text("Anchor");
+    let float = |z, wrap| Float { z, wrap, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 90.0, ..Default::default() };
+    // The helper inserts at offset zero, so insert in reverse anchor order.
+    let low = text_box(&mut d, 0, "Low", 80.0, 40.0, float(2, Wrap::InFrontOfText));
+    let unknown = text_box(&mut d, 0, "Unranked", 80.0, 40.0, float(0, Wrap::InFrontOfText));
+    let back = text_box(&mut d, 0, "Behind", 80.0, 40.0, float(7, Wrap::BehindText));
+    let layout = lay(&d);
+    let order: Vec<_> = layout.pages[0].items.iter().filter_map(|it| match it {
+        Placed::Object { text_box: Some(id), .. } => Some(*id),
+        _ => None,
+    }).collect();
+    assert_eq!(order, [back, low, unknown]);
 }

@@ -1339,7 +1339,7 @@ fn layout_box(
                     let at = ObjFrame { page: frame, col: (0.0, width), para_y: para_top, table_chr: table.map(|t| &t.chr), pinned: Some(&pinned) };
                     let ObjectPlacement { behind: back, inline, front } =
                         place_objects(ctx, story, &path, p, &pl, (0, pl.lines.len()), (0.0, y + lead), &at, &floats, depth);
-                    for placed in back.iter().chain(inline.iter()).chain(front.iter().flat_map(|(_, items)| items)) {
+                    for placed in back.iter().chain(inline.iter()).chain(front.iter().flat_map(|(_, _, items)| items)) {
                         if let Placed::Object { rect, spin, wrap, .. } = placed
                             && !matches!(wrap, Wrap::Inline | Wrap::BehindText | Wrap::InFrontOfText)
                         {
@@ -3513,7 +3513,7 @@ struct ObjFrame<'a> {
 struct ObjectPlacement {
     behind: Vec<Placed>,
     inline: Vec<Placed>,
-    front: Vec<(u32, Vec<Placed>)>,
+    front: Vec<(u32, u32, Vec<Placed>)>,
 }
 
 /// The pictures, shapes and text boxes in lines `l0..l1` of paragraph `p` (story `story`, at
@@ -3630,15 +3630,15 @@ fn place_objects(
                 };
                 layer.extend(items);
             }
-            if !foreground.is_empty() {
-                front.push((float.z, foreground));
-            }
             let z = if floating && float.z > 0 {
                 z_top = z_top.max(float.z);
                 float.z
             } else {
                 z_top
             };
+            if !foreground.is_empty() {
+                front.push((float.z, z_top, foreground));
+            }
             // Placed on the page from a header or footer cell: drawn with the header, once.
             if pinned.is_some() {
                 let f = front.split_off(front_start.min(front.len()));
@@ -3667,20 +3667,22 @@ fn place_objects(
 struct Foreground {
     range: std::ops::Range<usize>,
     z: u32,
+    /// Earlier paragraph-local ranks, including behind-text drawings.
+    floor: u32,
 }
 
 /// Keep each object's frame and text together until its story is complete.
-fn append_foreground(items: &mut Vec<Placed>, ranges: &mut Vec<Foreground>, behind: usize, front: Vec<(u32, Vec<Placed>)>) {
-    for (z, group) in front {
+fn append_foreground(items: &mut Vec<Placed>, ranges: &mut Vec<Foreground>, behind: usize, front: Vec<(u32, u32, Vec<Placed>)>) {
+    for (z, floor, group) in front {
         let start = items.len().saturating_sub(behind);
-        ranges.push(Foreground { range: start..start.saturating_add(group.len()), z });
+        ranges.push(Foreground { range: start..start.saturating_add(group.len()), z, floor });
         items.extend(group);
     }
 }
 
 /// Carry table-cell groups into their owning story without changing item order.
 fn extend_foreground(out: &mut Vec<Foreground>, groups: &[Foreground], offset: usize) {
-    out.extend(groups.iter().map(|g| Foreground { range: g.range.start.saturating_add(offset)..g.range.end.saturating_add(offset), z: g.z }));
+    out.extend(groups.iter().map(|g| Foreground { range: g.range.start.saturating_add(offset)..g.range.end.saturating_add(offset), z: g.z, floor: g.floor }));
 }
 
 fn remap_foreground(groups: &[Foreground], map: &[std::ops::Range<usize>]) -> Vec<Foreground> {
@@ -3689,7 +3691,7 @@ fn remap_foreground(groups: &[Foreground], map: &[std::ops::Range<usize>]) -> Ve
         .filter_map(|g| {
             let mut kept = map.get(g.range.clone())?.iter().filter(|r| !r.is_empty());
             let first = kept.next()?;
-            Some(Foreground { range: first.start..kept.next_back().unwrap_or(first).end, z: g.z })
+            Some(Foreground { range: first.start..kept.next_back().unwrap_or(first).end, z: g.z, floor: g.floor })
         })
         .collect()
 }
@@ -3711,7 +3713,7 @@ fn order_foreground(items: &mut Vec<Placed>, ranges: &[Foreground], behind: usiz
     // Unknown ranks keep document order above ranks already encountered, as on main.
     let mut z_top = 0;
     let mut front: Vec<_> = ranges.iter().map(|g| {
-        z_top = z_top.max(g.z);
+        z_top = z_top.max(g.z).max(g.floor);
         (if g.z == 0 { z_top } else { g.z }, Vec::new())
     }).collect();
     for (item, group) in std::mem::take(items).into_iter().zip(marked) {
