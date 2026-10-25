@@ -11457,3 +11457,90 @@ fn ref_keeps_complete_cjk_face() {
     assert!(!wrapped.is_empty());
     assert_eq!(wrapped, drawn(&plain), "REF pieces retain the full text's CJK face and primary-font spaces");
 }
+
+#[test]
+fn ref_visual_lines() {
+    let doc = ref_wrap_doc(&"Alpha Beta ".repeat(12), RefText::Field);
+    let layout = Arc::new(lay(&doc));
+    let mut checked = 0;
+    for (page, placed) in layout.pages.iter().enumerate() {
+        for item in &placed.items {
+            let Placed::Lines { para, l0, l1, x, y, .. } = item else { continue };
+            for li in *l0..*l1 {
+                let line = &para.lines[li];
+                let top = y + line.top - para.lines[*l0].top;
+                let target = layout.hit_visual(page, x + line.left, top + line.height / 2.0, StoryRef::Body).unwrap();
+                assert_eq!(target.position(), &Pos::body(0, 0));
+                let caret = layout.caret_visual(target.position(), Some(&target), page).unwrap();
+                assert_eq!(caret.page, page);
+                assert!(caret.top >= top && caret.top < top + line.height, "line={li}: {caret:?}");
+                for edge in [crate::VisualEdge::Leading, crate::VisualEdge::Trailing] {
+                    let end = layout.line_edge_visual(target.position(), Some(&target), page, edge).unwrap();
+                    let expected = if edge == crate::VisualEdge::Leading { 0 } else { wordcraft_doc::para::OBJ.len_utf8() };
+                    assert_eq!(end.position().off, expected);
+                    assert!(doc.body[0].as_para().unwrap().text.is_char_boundary(end.position().off));
+                    let caret = layout.caret_visual(end.position(), Some(&end), page).unwrap();
+                    assert_eq!(caret.page, page);
+                    assert!(caret.top >= top && caret.top < top + line.height);
+                }
+                let other = Arc::new((*layout).clone());
+                assert_eq!(other.caret_visual(target.position(), Some(&target), page), other.caret_on(target.position(), page));
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 4);
+    assert_eq!(layout.caret(&Pos::body(0, 0)).unwrap().page, 0);
+    assert_eq!(layout.caret(&Pos::body(0, 3)).unwrap().page, layout.pages.len() - 1);
+}
+
+#[test]
+fn ref_visual_navigation() {
+    let doc = ref_wrap_doc(&"Alpha Beta ".repeat(12), RefText::Field);
+    let layout = Arc::new(lay(&doc));
+    let mut current = layout.hit_visual(0, 20.0, 21.0, StoryRef::Body).unwrap();
+    let mut seen = vec![layout.caret_visual(current.position(), Some(&current), 0).unwrap()];
+    let mut goal = None;
+    while let Some((next, gx)) = layout.vertical_visual(current.position(), Some(&current), goal, 1, seen.last().unwrap().page) {
+        let caret = layout.caret_visual(next.position(), Some(&next), 0).unwrap();
+        assert!(!seen.contains(&caret), "navigation must not repeat a shared source offset");
+        seen.push(caret);
+        current = next;
+        goal = Some(gx);
+    }
+    let lines: usize = layout
+        .pages
+        .iter()
+        .flat_map(|p| &p.items)
+        .filter_map(|it| match it {
+            Placed::Lines { l0, l1, .. } => Some(l1 - l0),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(seen.len(), lines);
+    for expected in seen.iter().rev().skip(1) {
+        let (next, gx) = layout.vertical_visual(current.position(), Some(&current), goal, -1, 0).unwrap();
+        assert_eq!(&layout.caret_visual(next.position(), Some(&next), 0).unwrap(), expected);
+        current = next;
+        goal = Some(gx);
+    }
+}
+
+#[test]
+fn ref_visual_legacy_paths() {
+    for direction in [TextDirection::Horizontal, TextDirection::Down, TextDirection::Up] {
+        let mut doc = ref_wrap_doc("Alpha Beta Gamma", RefText::Field);
+        doc.last_section.text_direction = direction;
+        let layout = Arc::new(lay(&doc));
+        let caret = layout.caret(&Pos::body(0, 0)).unwrap();
+        let (x, y) = (caret.x + caret.width / 2.0, caret.top + caret.height / 2.0);
+        let visual = layout.hit_visual(caret.page, x, y, StoryRef::Body).unwrap();
+        assert_eq!(Some(visual.position()), layout.hit(caret.page, x, y, StoryRef::Body).as_ref());
+        assert_eq!(layout.caret_visual(visual.position(), Some(&visual), caret.page), layout.caret_on(visual.position(), caret.page));
+    }
+    let doc = ref_wrap_doc("אב גד", RefText::Field);
+    let layout = Arc::new(lay(&doc));
+    let caret = layout.caret(&Pos::body(0, 0)).unwrap();
+    let visual = layout.hit_visual(caret.page, caret.x, caret.top + caret.height / 2.0, StoryRef::Body).unwrap();
+    assert_eq!(layout.caret_visual(visual.position(), Some(&visual), caret.page), layout.caret_on(visual.position(), caret.page));
+}
