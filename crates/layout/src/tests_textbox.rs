@@ -855,3 +855,32 @@ fn auto_fit_uses_fitted_bounds() {
     assert!((object.rect.y - 474.5).abs() < 0.01, "{:?}", object.rect);
     assert!(object.rect.h < 100.0);
 }
+
+#[test]
+fn body_box_dist_top_wrap() {
+    use wordcraft_doc::props::LineSpacing;
+    let (mut doc, id) = body_box_model(MODERN_BOX_MODE, 650.0, BOUNDARY_BOX_H);
+    let prior = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    prior.text = "Earlier text wraps here".into();
+    prior.runs[0].len = prior.text.len();
+    prior.props.line_spacing = Some(LineSpacing::Exactly(20.0));
+    let zero = lay(&doc);
+    let count = |laid: &DocLayout| -> usize {
+        laid.pages
+            .iter()
+            .flat_map(|page| &page.items)
+            .filter_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, path, l0, l1, .. } if *path == Path::top(0) => Some(l1 - l0),
+                _ => None,
+            })
+            .sum()
+    };
+    assert_eq!(count(&zero), 1);
+    doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().objects[0].float_mut().unwrap().dist_top = 550.0;
+    let original = doc.clone();
+    let laid = lay(&doc);
+    let rect = frame_of(&laid, id);
+    assert_eq!(rect, frame_of(&zero, id), "the corrected frame must stay fixed while its wrap distance changes");
+    assert!(count(&laid) > 1, "the distance above the corrected frame must wrap earlier text");
+    assert_eq!(doc, original);
+}

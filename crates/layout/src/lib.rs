@@ -3568,7 +3568,7 @@ fn anchor_floats(
             ctx.floats_above.insert((block, oi), above);
             if let Some(area) = area {
                 if corrected
-                    && r.y < y0 - before - 0.01
+                    && area.0.y < y0 - before - 0.01
                     && area.0.x < col_x + width
                     && area.0.right() > col_x
                     && pb.pages.last().is_some_and(|page| {
