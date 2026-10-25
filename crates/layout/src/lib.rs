@@ -3638,7 +3638,12 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
         && let Some(page) = pb.pages.len().checked_sub(2)
     {
         // The structural section mark stays with the preceding break, without filling its new page.
-        let width = pb.col_w();
+        let (column_x, width) = pb
+            .para_end
+            .filter(|(count, _, _)| *count == page + 1)
+            .and_then(|(_, column, _)| pb.cols.get(column))
+            .copied()
+            .unwrap_or((0.0, pb.col_w()));
         let pl = ctx.para_labelled(p, width, None, &[], None);
         let prev = &mut pb.pages[page];
         let y = prev
@@ -3655,7 +3660,7 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
             &pl,
             0,
             pl.lines.len(),
-            prev.body.x,
+            prev.body.x + column_x,
             y,
             width,
             Edges::own(&pl, 0, pl.lines.len()),

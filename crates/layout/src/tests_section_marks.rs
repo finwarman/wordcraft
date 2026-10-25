@@ -362,3 +362,34 @@ fn mark_stays_above_footnote() {
     assert!((body_slot(&laid, 3).1 - body_bottom).abs() < 0.01, "mark must start at body bottom {body_bottom}, not footnote {note_top}");
     assert!(caret.top + caret.height < note_top);
 }
+
+#[test]
+fn mark_keeps_break_column() {
+    for (columns, widths) in [(1, vec![]), (2, vec![]), (3, vec![]), (2, vec![(100.0, 36.0), (332.0, 0.0)])] {
+        let mut doc = numbered_document(LineNumberRestart::Continuous);
+        doc.body = [0, 2, 3, 4].map(|i| doc.body[i].clone()).to_vec();
+        let section = doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap().section.as_mut().unwrap();
+        section.columns.count = columns;
+        section.columns.widths = widths;
+        let lead = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+        lead.text = format!("{}Lead", "\u{000e}".repeat((columns - 1) as usize));
+        lead.runs[0].len = lead.text.len();
+        let laid = layout(&doc, &mut LayoutCache::new(), &LayoutOptions::default());
+        let find = |block| {
+            laid.pages[0]
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    Placed::Lines { path, x, para, .. } if *path == Path::top(block) => Some((*x, para.lines[0].right)),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(laid.pages.len(), 2);
+        let break_geometry = find(1);
+        assert_eq!(find(2), break_geometry, "columns={columns}");
+        let caret = laid.caret(&wordcraft_doc::Pos::body(2, 0)).unwrap();
+        assert_eq!(caret.page, 0);
+        assert_eq!(caret.x, break_geometry.0);
+    }
+}

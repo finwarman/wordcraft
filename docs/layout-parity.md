@@ -22,6 +22,8 @@ The numbering correction is separate from structural-mark placement. Pagination 
 
 A relocated section mark derives its vertical position only from body lines and cells, as body_floor does. `tests_section_marks::mark_stays_above_footnote` places a real footnote before the manual break and checks the mark caret immediately after the last body line, above the footnote. This is an internal ownership invariant, not a native Word caret observation.
 
+Relocated section marks retain the preceding paragraph column and width. Synthetic caret controls cover one, two and three columns, including unequal widths. These are layout ownership checks, without a new native Word comparison.
+
 ## Checklist
 
 ✅ matches Word as far as our tests show · 🟡 implemented, differs or untested against Word · ❌ missing
@@ -260,6 +262,7 @@ Installed static fonts also resolve by their OpenType PostScript name (name ID 6
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-25 | minor | The pure page-break overflow exemption requires no earlier footnotes on the page. Notes from the current or preceding paragraph stay complete; existing no-note, column-break and section controls remain. Synthetic regressions; no new native comparison. |
+| 2026-10-25 | trivial | #2013: Relocated section marks retain the preceding paragraph column and width. |
 | 2026-10-23 | trivial | cu20we: preserve and render outline caps across DOCX/VML, screen and PDF; synthetic regressions; readiness estimates unchanged |
 | 2026-10-23 | trivial | cu20we: paragraph-relative box floats use the pre-spacing origin; header/footer/cell/text-box regressions; readiness estimates unchanged |
 | 2026-10-24 | trivial | Exact-spacing table contact uses the specified line height in row selection and word skipping; large/small mark regressions in modes 11/12/14/15 (#3977); shape estimates unchanged |
