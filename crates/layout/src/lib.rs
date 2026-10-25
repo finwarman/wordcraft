@@ -1694,6 +1694,8 @@ struct PageBuilder<'a> {
     /// The previous paragraph ended with a page break (its mark stayed with the break): the next
     /// paragraph, first on the new page, gets no space before (Word).
     after_break_mark: bool,
+    /// The column origin and width where that break was placed, before a section can change them.
+    break_column: Option<(f32, f32)>,
     /// The next section starts on a new page: this section's closing mark, when empty, needs no
     /// room (Word leaves it on a full page rather than starting a page for it).
     next_starts_page: bool,
@@ -2114,16 +2116,18 @@ impl PageBuilder<'_> {
             }
         }
     }
+    fn empty_break_page(&self) -> bool {
+        self.after_break_mark
+            && self.at_top()
+            && self.notes.is_empty()
+            && self.pages.len() > 1
+            && self.pages.last().is_some_and(|p| p.items.len() == self.page_items_start)
+    }
     /// Takes back the page a page break has just started while nothing is on it, so a page start
     /// that follows (a next-page section) doesn't leave it blank: Word keeps the break's mark on
     /// the page before, and starts one page.
     fn take_back_break_page(&mut self) -> bool {
-        let empty = self.after_break_mark
-            && self.at_top()
-            && self.notes.is_empty()
-            && self.pages.len() > 1
-            && self.pages.last().is_some_and(|p| p.items.len() == self.page_items_start);
-        if !empty {
+        if !self.empty_break_page() {
             return false;
         }
         self.pages.pop();
@@ -2404,6 +2408,7 @@ fn layout_pass(
         orig_bottom: 0.0,
         prev: None,
         after_break_mark: false,
+        break_column: None,
         next_starts_page: false,
         restart_at: None,
         excl: Vec::new(),
@@ -3624,7 +3629,7 @@ fn para_notes(doc: &Document, p: &Paragraph, pl: &ParaLayout) -> Vec<(usize, u32
 /// section starting a new page retains its paragraph line.
 fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, body_top: f32) {
     if !pb.web
-        && pb.after_break_mark
+        && pb.empty_break_page()
         && pb.next_starts_page
         && p.section.is_some()
         && only_bookmarks(p)
@@ -3633,10 +3638,12 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
     {
         // The structural section mark stays with the preceding break, without filling its new page.
         let owner = pb.para_end.filter(|(count, _, _)| *count == page + 1);
-        let (column_x, width) = owner.and_then(|(_, column, _)| pb.cols.get(column)).copied().unwrap_or((0.0, pb.col_w()));
+        let (x, width) = owner.and(pb.break_column).unwrap_or_else(|| {
+            let prev = &pb.pages[page];
+            (prev.body.x, prev.body.w)
+        });
         let pl = ctx.para_labelled(p, width, None, &[], None);
         let prev = &mut pb.pages[page];
-        let x = prev.body.x + column_x;
         // Page alignment can move the body after its paragraph end was recorded.
         let y = owner
             .filter(|_| ctx.sections.get(prev.section).is_some_and(|(_, sect)| sect.valign == wordcraft_doc::section::PageVAlign::Top))
@@ -4138,6 +4145,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
             });
         match forced_break {
             Some(LineEnd::PageBreak) if mark_with_break => {
+                pb.break_column = Some((pb.col_x(), pb.col_w()));
                 pb.new_page(block, body_top);
                 pb.after_break_mark = true;
             }
@@ -4397,6 +4405,7 @@ fn row_can_start(row: &wordcraft_doc::Row, laid: &table::RowLayout, room: f32, p
 
 fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, block: usize, body_top: f32) {
     pb.prev = None;
+    pb.after_break_mark = false;
     let width = pb.col_w();
     let mut tl = table::layout_table(ctx, StoryRef::Body, t, &[block as u32], width, 1);
     if let Some(f) = t.props.float.filter(|_| !pb.web) {

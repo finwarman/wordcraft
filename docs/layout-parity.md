@@ -22,7 +22,7 @@ The numbering correction is separate from structural-mark placement. Pagination 
 
 A relocated section mark derives its vertical position only from body lines and cells, as body_floor does. `tests_section_marks::mark_stays_above_footnote` places a real footnote before the manual break and checks the mark caret immediately after the last body line, above the footnote. This is an internal ownership invariant, not a native Word caret observation.
 
-Relocated section marks retain the preceding paragraph column and width. Synthetic caret controls cover one, two and three columns, including unequal widths. These are layout ownership checks, without a new native Word comparison.
+Relocated section marks retain the column origin and width recorded at the preceding break, even when a later continuous section changes the columns. A section mark cannot relocate across an intervening flow or floating table. Synthetic caret controls cover one, two and three columns, including unequal widths. These are layout ownership checks, without a new native Word comparison.
 
 ## Checklist
 
@@ -273,6 +273,7 @@ layout suite are pending; this is not a new Word/native-IME acceptance claim.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | trivial | #2013 follow-up: section marks retain the recorded break column across section changes and cannot move back across intervening tables. Reuses the #3795 repair; no new native comparison. |
 | 2026-10-25 | trivial | #2013: Relocated section marks retain the preceding paragraph column and width; their vertical position uses the recorded break bottom on unshifted pages, with the existing body fallback after page alignment. |
 | 2026-10-25 | trivial | Arabic list labels: `arabicAlpha` and `arabicAbjad` draw the 28 Arabic letters (alphabetical and abjad order), doubling past the last letter; Hebrew, Hindi, Thai and Vietnamese still show decimal (`doc::section::tests::arabic_letters_count_in_both_orders`) |
 | 2026-10-24 | trivial | Preserve grapheme edit/wrap boundaries across independently drawn font/style pieces; original emoji regression retained, new mixed-style/bundled-font LTR/bidi controls pending managed validation |
