@@ -39,7 +39,11 @@ pub fn parse_page_range(spec: &str, total: usize) -> Result<Vec<usize>, String> 
             continue;
         }
         let page = |t: &str| -> Result<usize, String> {
-            let n: usize = t.parse().map_err(|_| format!("`{item}` isn't a page or a range like 2-4"))?;
+            let not_a_page = || format!("`{item}` isn't a page or a range like 2-4");
+            if !t.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(not_a_page());
+            }
+            let n: usize = t.parse().map_err(|_| not_a_page())?;
             if n == 0 || n > total {
                 return Err(format!("page {n} doesn't exist; the document has {total} page{}", if total == 1 { "" } else { "s" }));
             }
@@ -156,8 +160,14 @@ impl Session {
     pub fn print_pdf(&self, v: &Value) -> Result<(Vec<u8>, PrintPlan), CmdError> {
         // Print Markup (File › Print) decides whether tracked changes and comments print.
         let markup = crate::cmd::file::export_options(self, v);
-        let lay = self.export_layout_with(markup.markup);
-        let plan = plan(v, lay.pages.len(), self.current_pages(&lay))?;
+        let lo = wordcraft_layout::LayoutOptions {
+            view: wordcraft_layout::ViewMode::Print,
+            comment_balloons: markup.markup && markup.comments,
+            ..Default::default()
+        };
+        let output = crate::print_fields::prepare(&self.doc, &lo).map_err(CmdError::Failed)?;
+        let lay = &output.layout;
+        let plan = plan(v, lay.pages.len(), self.current_pages(lay))?;
         let paper = paper(v)?.map(|(_, w, h)| (w, h));
         let opts = wordcraft_pdf::PdfOptions {
             pages: Some(plan.pages.clone()),
@@ -168,7 +178,7 @@ impl Session {
             paper,
             ..Default::default()
         };
-        let bytes = wordcraft_pdf::export_layout(&self.doc, &lay, &opts).map_err(|e| CmdError::Failed(e.to_string()))?;
+        let bytes = wordcraft_pdf::export_layout(&output.doc, lay, &opts).map_err(|e| CmdError::Failed(e.to_string()))?;
         Ok((bytes, plan))
     }
 }
@@ -194,7 +204,7 @@ mod tests {
         assert_eq!(parse_page_range("5,1-2,2", 6), Ok(vec![0, 1, 4]), "document order, no repeats");
         assert_eq!(parse_page_range("4-", 6), Ok(vec![3, 4, 5]));
         assert_eq!(parse_page_range("-2", 6), Ok(vec![0, 1]));
-        for bad in ["", " , ", "0", "7", "3-1", "a", "1-2-3", "99999999999999999999999", "-", "1..3", &"1,".repeat(400)] {
+        for bad in ["", " , ", "0", "7", "3-1", "a", "1-2-3", "99999999999999999999999", "-", "1..3", "+3", "1-+3", "+2-+4", &"1,".repeat(400)] {
             assert!(parse_page_range(bad, 6).is_err(), "`{bad}` is refused");
         }
         assert!(parse_page_range("1", 0).is_err());
