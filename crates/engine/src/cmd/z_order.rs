@@ -46,7 +46,7 @@ fn scan_block(block: &Block, depth: usize, budget: &mut Budget, ranks: &mut Vec<
                 budget.take()?;
                 if let Some((_, _, f)) = obj.frame().filter(|_| floating(obj)) {
                     ranks.try_reserve(1).map_err(|_| limit())?;
-                    ranks.push(f.z_order);
+                    ranks.push(f.z);
                 }
             }
         }
@@ -115,6 +115,7 @@ fn reserve(doc: &mut Document, incoming: &[u32]) -> Result<Vec<u32>, CmdError> {
         }
     }
     let mut old = document_ranks(doc)?;
+    old.retain(|rank| *rank != 0);
     let max = old.iter().copied().max().unwrap_or(0);
     let normalize = max.checked_add(count).is_none();
     let start = if normalize {
@@ -140,9 +141,9 @@ fn reserve(doc: &mut Document, incoming: &[u32]) -> Result<Vec<u32>, CmdError> {
     if normalize {
         doc.objects_mut(&floating, &mut |obj| {
             if let Some(f) = obj.float_mut()
-                && let Some(rank) = old.binary_search(&f.z_order).ok().and_then(|i| u32::try_from(i).ok()).and_then(|i| i.checked_add(1))
+                && let Some(rank) = old.binary_search(&f.z).ok().and_then(|i| u32::try_from(i).ok()).and_then(|i| i.checked_add(1))
             {
-                f.z_order = rank;
+                f.z = rank;
             }
         });
     }
@@ -153,10 +154,10 @@ pub(super) fn object(doc: &mut Document, obj: &mut InlineObject, intent: Intent)
     if matches!(intent, Intent::Preserve) || !floating(obj) {
         return Ok(());
     }
-    let rank = obj.frame().map_or(0, |(_, _, f)| f.z_order);
+    let rank = obj.frame().map_or(0, |(_, _, f)| f.z);
     let assigned = reserve(doc, &[rank])?;
     if let Some(f) = obj.float_mut() {
-        f.z_order = assigned.first().copied().ok_or_else(limit)?;
+        f.z = assigned.first().copied().ok_or_else(limit)?;
     }
     Ok(())
 }
@@ -174,7 +175,7 @@ fn assign_block(block: &mut Block, ranks: &mut impl Iterator<Item = u32>) -> Res
                 if floating(obj)
                     && let Some(f) = obj.float_mut()
                 {
-                    f.z_order = ranks.next().ok_or_else(limit)?;
+                    f.z = ranks.next().ok_or_else(limit)?;
                     changed = true;
                 }
             }

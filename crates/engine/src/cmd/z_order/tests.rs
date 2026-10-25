@@ -4,15 +4,15 @@ use serde_json::json;
 use wordcraft_doc::para::{Anchor, Float, GroupChild, ShapeKind};
 use wordcraft_doc::{Paragraph, PartKind, Path, StoryRef, Table, para_block};
 
-fn drawing(z_order: u32, wrap: Wrap) -> InlineObject {
+fn drawing(z: u32, wrap: Wrap) -> InlineObject {
     InlineObject::Shape {
         kind: ShapeKind::Rectangle,
         w: 80.0,
         h: 40.0,
-        fill: Some(wordcraft_doc::Rgb(20, 40, 60)),
+        fill: Some(wordcraft_doc::fill::Fill::solid(wordcraft_doc::Rgb(20, 40, 60))),
         stroke: None,
         stroke_width: 0.0,
-        float: Float { z_order, wrap, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 90.0, ..Default::default() },
+        float: Float { z, wrap, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 72.0, y: 90.0, ..Default::default() },
         story: None,
         freeform: None,
         effects: Default::default(),
@@ -158,13 +158,13 @@ fn preserve_and_group_scope() {
     let mut doc = document(&[u32::MAX]);
     let mut existing = drawing(4, Wrap::InFrontOfText);
     object(&mut doc, &mut existing, Intent::Preserve).unwrap();
-    assert_eq!(existing.frame().unwrap().2.z_order, 4);
+    assert_eq!(existing.frame().unwrap().2.z, 4);
     assert_eq!(document_ranks(&doc).unwrap(), [u32::MAX]);
     let child = drawing(u32::MAX, Wrap::InFrontOfText);
     let group = InlineObject::Group {
         w: 80.0,
         h: 40.0,
-        float: Float { wrap: Wrap::InFrontOfText, z_order: 2, ..Default::default() },
+        float: Float { wrap: Wrap::InFrontOfText, z: 2, ..Default::default() },
         ch_w: 80.0,
         ch_h: 40.0,
         children: vec![GroupChild { x: 0.0, y: 0.0, obj: child.clone() }],
@@ -244,4 +244,11 @@ fn fresh_connector_and_inline_drag() {
     assert_eq!(document_ranks(&s.doc).unwrap(), [42, 43, 44]);
     let back = wordcraft_docx::read(&wordcraft_docx::write(&s.doc).unwrap()).unwrap();
     assert_eq!(document_ranks(&back).unwrap(), [42, 43, 44]);
+}
+
+#[test]
+fn unranked_keeps_zero_on_overflow() {
+    let mut doc = document(&[0, u32::MAX, 4]);
+    assert_eq!(reserve(&mut doc, &[1]).unwrap(), [3]);
+    assert_eq!(document_ranks(&doc).unwrap(), [0, 2, 1]);
 }
