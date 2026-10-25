@@ -185,6 +185,13 @@ before/after overlap still needs #108; the uniform first-baseline offset, page
 boundaries, tables, text boxes and notes were not compared with Word in this study.
 No overall parity estimate changes from these probes.
 
+For `w:suppressSpBfAfterPgBrk`, archived Word Mac compatibility-mode 15 probes with 6 pt
+before-spacing and preceding after-spacing of 0/2/6/10 pt produced relative text-top
+offsets of 5.76/3.84/0/0 pt. Existing synthetic controls retain 6/4/0/0 pt. This
+predecessor-spacing interaction differs from the [official API remarks](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.suppressspacingbeforeafterpagebreak?view=openxml-3.0.1),
+which say before-spacing is ignored when the break line has no content. The native
+Word build was not recorded. No new Word run; other builds and platforms remain unverified.
+
 ## Performance
 
 | Measure | WordCraft | Word | Kind |
