@@ -46,7 +46,7 @@ fn make_row(height: f32, borders: Option<Borders>, sibling: &str) -> RowLayout {
     let offset = (ROW_HEIGHT - height) / 2.0;
     let para = generated_para("Marker", height, borders);
     let mut items = Vec::new();
-    crate::push_para(&mut items, StoryRef::Body, &[0], &para, 0, 1, 0.0, offset, 100.0);
+    crate::push_para(&mut items, StoryRef::Body, &[0], &para, 0, 1, 0.0, offset, 100.0, crate::Edges::own(&para, 0, 1));
     items.push(Placed::Image {
         rect: Rect::new(50.0, offset + 2.0, 12.0, height - 4.0),
         media: IMAGE_MEDIA.into(),
@@ -62,7 +62,7 @@ fn make_row(height: f32, borders: Option<Borders>, sibling: &str) -> RowLayout {
 
     let para = generated_para(sibling, LINE_HEIGHT, None);
     let sibling_height = para.lines.len() as f32 * LINE_HEIGHT;
-    crate::push_para(&mut items, StoryRef::Body, &[1], &para, 0, para.lines.len(), 110.0, 0.0, 100.0);
+    crate::push_para(&mut items, StoryRef::Body, &[1], &para, 0, para.lines.len(), 110.0, 0.0, 100.0, crate::Edges::own(&para, 0, para.lines.len()));
     let end = items.len();
     RowLayout { edge: 0.0, height: ROW_HEIGHT, min_height: 0.0, items, bottom: 4.0, cells: vec![group, make_cell(group_end..end, sibling_height)] }
 }

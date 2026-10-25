@@ -934,8 +934,8 @@ fn para_rule_prefix(items: &[Placed], index: usize, cell: Option<&CellPart>) -> 
         let start = para.rp.indent_left.min(para.rp.indent_left + para.rp.indent_first);
         let left = x + if para.rp.bidi { para.rp.indent_right } else { start };
         let lx = left - borders.left.map_or(0.0, |b| b.space);
-        let ty = y - borders.top.map_or(0.0, |b| b.space);
-        let by = y + last.top + last.height - first.top + borders.bottom.map_or(0.0, |b| b.space);
+        let ty = y - borders.top.map_or(0.0, |b| b.space + b.width / 2.0);
+        let by = y + last.top + last.height - first.top + borders.bottom.map_or(0.0, |b| b.space + b.width / 2.0);
         if ![lx, *rx, ty, by].iter().all(|v| v.is_finite()) || *rx <= lx {
             continue;
         }
@@ -1072,7 +1072,7 @@ fn split_para_rule(items: &[Placed], splits: &[usize], index: usize, cell: &Cell
     let Placed::Lines { para, l0, l1, y, .. } = items.get(owner)? else { return None };
     let split = *splits.get(owner)?;
     if let Some(bottom) = para.rp.borders.as_ref().and_then(|b| b.bottom).filter(Border::is_visible) {
-        let extent = crate::item_bottom(*y, para, *l0, *l1)? + bottom.space;
+        let extent = crate::item_bottom(*y, para, *l0, *l1)? + bottom.space + bottom.width / 2.0;
         if extent < 0.0 || extent > flow_bottom || ((edge == ParaEdge::Bottom || split == *l1) && extent > limit) {
             return None;
         }
@@ -2028,7 +2028,18 @@ mod para_rule_controls {
         assert_eq!(para.text_len, text.len());
         assert_eq!(para.lines.len(), text.split(wordcraft_doc::para::LINE_BREAK).count());
         let mut items = Vec::new();
-        crate::push_para(&mut items, StoryRef::Body, &[0], &para, 0, para.lines.len(), 0.0, 60.0, 100.0);
+        crate::push_para(
+            &mut items,
+            StoryRef::Body,
+            &[0],
+            &para,
+            0,
+            para.lines.len(),
+            0.0,
+            60.0,
+            100.0,
+            crate::Edges::own(&para, 0, para.lines.len()),
+        );
         items.push(Placed::Image {
             rect: Rect::new(5.0, 150.0, 20.0, 20.0),
             media: "synthetic".into(),
@@ -2103,7 +2114,7 @@ mod para_rule_controls {
                 assert_eq!(para.lines.len(), 6);
                 for (l0, l1, edge) in [(0, 2, Some(ParaEdge::Top)), (2, 4, None), (4, 6, Some(ParaEdge::Bottom))] {
                     let mut range = Vec::new();
-                    crate::push_para(&mut range, StoryRef::Body, &[0], &para, l0, l1, 0.0, 20.0, 100.0);
+                    crate::push_para(&mut range, StoryRef::Body, &[0], &para, l0, l1, 0.0, 20.0, 100.0, crate::Edges::own(&para, l0, l1));
                     range.push(emitted.last().unwrap().clone());
                     assert!(para_rule_owner(&range, 1) == edge.map(|edge| (0, edge)), "actual emitter range {l0}..{l1}");
                 }
@@ -2117,7 +2128,18 @@ mod para_rule_controls {
                     spin: Default::default(),
                 };
                 let mut items = vec![image(0.0)];
-                crate::push_para(&mut items, StoryRef::Body, &[0], &para, 0, para.lines.len(), 0.0, 20.0, 100.0);
+                crate::push_para(
+                    &mut items,
+                    StoryRef::Body,
+                    &[0],
+                    &para,
+                    0,
+                    para.lines.len(),
+                    0.0,
+                    20.0,
+                    100.0,
+                    crate::Edges::own(&para, 0, para.lines.len()),
+                );
                 items.push(image(200.0));
                 let row = RowLayout {
                     edge: 0.0,
@@ -2168,9 +2190,9 @@ mod para_rule_controls {
                         })
                         .collect::<Vec<_>>()
                 };
-                assert_eq!(horizontal(&first), if whole_first { vec![] } else { vec![12.0] });
+                assert_eq!(horizontal(&first), if whole_first { vec![] } else { vec![11.0] });
                 assert_eq!(horizontal(&second), if whole_first { vec![2.0] } else { vec![] });
-                let bottom = if whole_first { 90.0 } else { 50.0 };
+                let bottom = if whole_first { 91.0 } else { 51.0 };
                 assert_eq!(horizontal(&third), vec![bottom]);
                 assert!(horizontal(&tail).is_empty());
                 assert_eq!(third.height, bottom + 4.0, "recovered bottom prefix extends retained extent once");
@@ -2182,7 +2204,7 @@ mod para_rule_controls {
                         _ => None,
                     })
                     .unwrap();
-                assert_eq!(bottom - last_bottom, 8.0, "bottom spacing survives both continuations");
+                assert_eq!(bottom - last_bottom, 8.0 + 2.0 / 2.0, "bottom spacing survives both continuations");
                 for border in [&first, &second, &third].into_iter().flat_map(|part| &part.items).filter_map(|it| match it {
                     Placed::Rule { border, .. } => Some(border),
                     _ => None,
@@ -2257,7 +2279,7 @@ mod para_rule_controls {
             })
             .collect();
         assert_eq!(lines.len(), 1);
-        let expected: Vec<_> = lines.iter().map(|(page, y)| (*page, y - top.space)).collect();
+        let expected: Vec<_> = lines.iter().map(|(page, y)| (*page, y - top.space - top.width / 2.0)).collect();
         assert!(
             rules == expected && rules.iter().all(|(page, y)| *page != 0 || *y <= close) && closing_rules == [close],
             "terminal top rules {rules:?}, owner lines {lines:?}, first cell ends at {close}, closing rules {closing_rules:?}"
@@ -2438,14 +2460,14 @@ mod para_rule_controls {
             // The terminal paragraph's top rule belongs below the continuation's cell inset.
             // Its eight-point spacing must survive without leaving ink below the first close.
             actual.push((closing.is_some(), first.height, rules(&first), rules(&rest), line_y));
-            let mut rest_rules = vec![(2.0, 2.0), (38.0, 2.0)];
+            let mut rest_rules = vec![(2.0, 2.0), (40.0, 2.0)];
             let first_rules = if closing.is_some() {
-                rest_rules.push((150.0, 1.0));
+                rest_rules.push((151.0, 1.0));
                 vec![(14.0, 1.0)]
             } else {
                 vec![]
             };
-            expected.push((closing.is_some(), 14.0, first_rules, rest_rules, 10.0));
+            expected.push((closing.is_some(), 14.0, first_rules, rest_rules, 11.0));
         }
         assert_eq!(actual, expected);
     }
@@ -2493,9 +2515,9 @@ mod para_rule_controls {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(first.height, 56.0);
-        assert_eq!(rules(&first), vec![52.0]);
-        assert_eq!(rules(&rest), vec![30.0]);
+        assert_eq!(first.height, 55.0);
+        assert_eq!(rules(&first), vec![51.0]);
+        assert_eq!(rules(&rest), vec![31.0]);
         let line_y = rest
             .items
             .iter()
@@ -2511,7 +2533,7 @@ mod para_rule_controls {
         row.cells[0].center = Some(CellCenter { kind: CenterKind::Merge, offset: 52.0, height: 36.0, content: 1..4 });
         let (first, rest) = split_row(&row, 70.0).unwrap();
         assert_eq!(first.height, 40.0);
-        assert_eq!(rules(&first), vec![2.0, 38.0]);
+        assert_eq!(rules(&first), vec![1.0, 39.0]);
         assert!(rules(&rest).is_empty());
         let line_y = first
             .items
@@ -2568,7 +2590,7 @@ mod para_rule_controls {
                 assert!(*y0 <= first.height, "retained centerline {y0} outside first frame {}", first.height);
             }
         }
-        assert_eq!(first.height, 56.0);
+        assert_eq!(first.height, 55.0);
         let rules = |part: &RowLayout| {
             part.items
                 .iter()
@@ -2578,8 +2600,8 @@ mod para_rule_controls {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(rules(&first), [(52.0, 2.0)]);
-        assert_eq!(rules(&rest), [(30.0, 2.0)]);
+        assert_eq!(rules(&first), [(51.0, 2.0)]);
+        assert_eq!(rules(&rest), [(31.0, 2.0)]);
         assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 2.0)));
         let frames: Vec<_> = first
             .items
@@ -2589,7 +2611,7 @@ mod para_rule_controls {
                 _ => None,
             })
             .collect();
-        assert_eq!(frames, [56.0, 56.0]);
+        assert_eq!(frames, [55.0, 55.0]);
     }
 
     #[test]
@@ -2607,7 +2629,7 @@ mod para_rule_controls {
                 _ => None,
             })
             .collect();
-        assert_eq!(rules, [2.0, 38.0]);
+        assert_eq!(rules, [1.0, 39.0]);
         assert!(!rest.items.iter().any(|item| matches!(item, Placed::Rule { .. })));
         assert!(first.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 10.0)));
     }
