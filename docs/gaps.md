@@ -125,7 +125,7 @@ Footer page-table height and body wrapping are corrected. Other pagination gaps 
 
 ## Explicit SAVEDATE updates
 
-An explicit field update formats `docProps/core.xml` Modified metadata for SAVEDATE, including its date picture. UTC `Z` timestamps with optional fractional seconds are supported. Missing, invalid or other-offset timestamps, unsupported calendar switches and locked fields retain cached text. Without a picture, the existing `M/d/yyyy` default remains. Opening and ordinary PDF conversion keep SAVEDATE cached. Local timezone and locale inference remain unsupported.
+An explicit field update formats `docProps/core.xml` Modified metadata for SAVEDATE, including its date picture and capitalization switches. UTC `Z` timestamps with optional fractional seconds are supported. Missing, invalid or other-offset timestamps, unsupported calendar switches and locked fields retain cached text. Without a picture, the existing `M/d/yyyy` default remains. Opening and ordinary PDF conversion keep SAVEDATE cached. Local timezone and locale inference remain unsupported.
 
 Small follow-ups from the 2026-10-25 field, table and AutoFormat batch (#4232):
 

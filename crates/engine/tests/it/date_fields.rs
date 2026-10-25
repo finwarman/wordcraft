@@ -130,6 +130,17 @@ fn savedate_uses_modified() {
 }
 
 #[test]
+fn savedate_applies_case_switches() {
+    for (switches, expected) in [("Upper", "TUESDAY"), ("Lower", "tuesday"), ("Lower \\* FirstCap", "Tuesday"), ("Caps", "Tuesday")] {
+        let body = format!("<w:p>{}</w:p>", field(&format!(r#"SAVEDATE \@ "dddd" \* {switches}"#), "cached", false));
+        let mut session = wordcraft_engine::Session::new(open_core(&body, "2000-02-29T13:04:05Z"));
+        session.run("references.updateFields", &serde_json::json!({})).unwrap();
+        assert_eq!(fields(&session.doc)[0].1, expected, "{switches}");
+        assert_eq!(session.doc.core.modified, "2000-02-29T13:04:05Z");
+    }
+}
+
+#[test]
 fn savedate_keeps_bad_meta_cache() {
     for stamp in [
         "",

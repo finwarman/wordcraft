@@ -1045,7 +1045,7 @@ pub fn update_fields_in(s: &mut Session, all: bool) -> Result<(), CmdError> {
                     if !['h', 's', 'u'].into_iter().any(|sw| has_switch(instr, sw))
                         && let Some(text) = format_savedate(&s.doc.core.modified, &pic)
                     {
-                        updates.push((k, text));
+                        updates.push((k, text_result(instr, text)));
                     }
                 }
                 "REF" | "PAGEREF" => {
