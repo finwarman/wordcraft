@@ -4680,6 +4680,10 @@ fn place_floating_table(ctx: &mut Ctx, pb: &mut PageBuilder, tl: &table::TableLa
         };
         if attempt == 0 && moves && !pb.at_top() {
             pb.advance(block, body_top);
+            if f.v_rel == Anchor::Paragraph {
+                let x = float_table_x(pb, w, f, legacy, ctx.mirror);
+                below_floats(ctx, pb, x, x + w, h);
+            }
             continue;
         }
         if let Some(pg) = pb.page() {

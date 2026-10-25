@@ -10878,8 +10878,7 @@ fn header_wrap_rechecks_top() {
     }
 }
 
-#[test]
-fn moved_table_clears_header() {
+fn check_moved_table(float: Option<wordcraft_doc::props::TableFloat>) {
     use wordcraft_doc::para::{Anchor, Float, Wrap};
     use wordcraft_doc::props::{HeightRule, LineSpacing};
     for wrap in [Wrap::Square, Wrap::TopAndBottom, Wrap::BehindText, Wrap::InFrontOfText] {
@@ -10896,6 +10895,7 @@ fn moved_table_clears_header() {
         lead.props.space_before = Some(0.0);
         lead.props.space_after = Some(0.0);
         let mut table = Table::new(2, 1, 180.0);
+        table.props.float = float;
         table.rows[0].props.header = true;
         table.rows[0].props.height = Some(40.0);
         table.rows[0].props.height_rule = HeightRule::Exact;
@@ -10930,6 +10930,17 @@ fn moved_table_clears_header() {
         };
         assert!((top - expected).abs() < 0.01, "{wrap:?}: table top {top}, expected {expected}");
     }
+}
+
+#[test]
+fn moved_table_clears_header() {
+    check_moved_table(None);
+}
+
+#[test]
+fn retried_float_clears_header() {
+    use wordcraft_doc::para::Anchor;
+    check_moved_table(Some(wordcraft_doc::props::TableFloat { h_rel: Anchor::Column, v_rel: Anchor::Paragraph, ..Default::default() }));
 }
 
 /// #2048: a picture anchored in a later paragraph but placed higher up the page (fixed on the
