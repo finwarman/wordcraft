@@ -1298,7 +1298,7 @@ fn layout_box(
                     let float_y = if float.v_rel == Anchor::Paragraph { para_top } else { y };
                     let r = float_rect(frame, (0.0, width), float_y, w, h, float);
                     let outline = ctx.wrap_outline(o);
-                    excl.extend(wrap_area(r, float, outline.as_deref().map(|v| v.as_slice())));
+                    excl.extend(wrap_area(r, float, outline.as_deref().map(Vec::as_slice)));
                     floats.insert(oi, r);
                 }
                 let rel = rel_exclusions(&excl, 0.0, y);
@@ -2518,8 +2518,10 @@ fn layout_pass(
                 pb.sect = prev;
                 pb.sect_idx = si - 1;
                 let (ph, pf) = (linked(&sections, si - 1, |s| s.headers), linked(&sections, si - 1, |s| s.footers));
-                let top = body_top_for(&mut ctx, prev, ph.default, si - 1);
-                pb.foot_top = foot_top_for(&mut ctx, prev, pf.default);
+                let hb = defining_width(&sections, si - 1, |s| s.headers, ph.default);
+                let fb = defining_width(&sections, si - 1, |s| s.footers, pf.default);
+                let top = with_pct_base(&mut ctx, hb, |c| body_top_for(c, prev, ph.default, si - 1));
+                pb.foot_top = with_pct_base(&mut ctx, fb, |c| foot_top_for(c, prev, pf.default));
                 pb.new_page(block, top);
                 pb.sect = sect;
                 pb.sect_idx = si;
@@ -3075,8 +3077,8 @@ impl PageFrame<'_> {
     /// Alignment `a` across the page: inside and outside become right and left on an even page.
     fn h_align(frame: Option<&Self>, a: Option<FloatAlign>) -> Option<FloatAlign> {
         match a {
-            Some(FloatAlign::Inside) if frame.is_some_and(|f| f.even()) => Some(FloatAlign::End),
-            Some(FloatAlign::Outside) if frame.is_some_and(|f| f.even()) => Some(FloatAlign::Start),
+            Some(FloatAlign::Inside) if frame.is_some_and(Self::even) => Some(FloatAlign::End),
+            Some(FloatAlign::Outside) if frame.is_some_and(Self::even) => Some(FloatAlign::Start),
             a => a,
         }
     }
@@ -3395,7 +3397,7 @@ fn anchor_floats(
             // Positions relative to the paragraph start above its space before (Word for Windows).
             let mut r = float_rect(Some(frame), (col_x, width), y0 - before, w, h, float);
             let outline = ctx.wrap_outline(o);
-            let outline = outline.as_deref().map(|v| v.as_slice());
+            let outline = outline.as_deref().map(Vec::as_slice);
             let mut area = wrap_area(r, float, outline);
             if pb.settle && text_before {
                 let seed = early.and_then(|v| v.iter().find(|(b, k, _)| (*b, *k) == (block, oi))).map(|(_, _, a)| a);
@@ -4982,3 +4984,6 @@ mod tests_table_contact;
 mod tests_textbox;
 #[cfg(test)]
 mod tests_vertical;
+
+#[cfg(test)]
+mod tests_filler_pct;
