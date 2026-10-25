@@ -3196,11 +3196,12 @@ fn float_rect(frame: Option<PageFrame>, col: (f32, f32), y0: f32, w: f32, h: f32
 const MODERN_FLOAT_MODE: u32 = 15;
 
 /// Native boundary proof covers unturned body textboxes; absolute modern anchors may overflow.
-fn body_float_bounds(o: &InlineObject, sect: &SectionProps, float: &Float, mode: u32) -> Option<(f32, f32)> {
-    if o.text_box().is_none() || float.spin().deg != 0.0 || matches!(float.wrap, Wrap::Inline | Wrap::BehindText | Wrap::InFrontOfText) {
+fn body_float_bounds(doc: &Document, o: &InlineObject, sect: &SectionProps, float: &Float) -> Option<(f32, f32)> {
+    let is_box = o.text_box().and_then(|id| doc.parts.get(&id)).is_some_and(|part| part.kind == wordcraft_doc::PartKind::TextBox);
+    if !is_box || float.spin().deg != 0.0 || matches!(float.wrap, Wrap::Inline | Wrap::BehindText | Wrap::InFrontOfText) {
         return None;
     }
-    let bounds = if mode < MODERN_FLOAT_MODE {
+    let bounds = if doc.settings.compat_mode < MODERN_FLOAT_MODE {
         (0.0, sect.page_h)
     } else if matches!(float.v_rel, Anchor::Paragraph | Anchor::Line) {
         (sect.margin_top, sect.page_h - sect.margin_bottom)
@@ -3210,12 +3211,12 @@ fn body_float_bounds(o: &InlineObject, sect: &SectionProps, float: &Float, mode:
     (bounds.0.is_finite() && bounds.1.is_finite() && bounds.1 >= bounds.0).then_some(bounds)
 }
 
-fn oversized_body_float(o: &InlineObject, h: f32, sect: &SectionProps, mode: u32) -> bool {
-    if mode < MODERN_FLOAT_MODE {
+fn oversized_body_float(doc: &Document, o: &InlineObject, h: f32, sect: &SectionProps) -> bool {
+    if doc.settings.compat_mode < MODERN_FLOAT_MODE {
         return false;
     }
     let Some((_, _, float)) = floating(o) else { return false };
-    body_float_bounds(o, sect, float, mode).is_some_and(|(top, bottom)| h.clamp(1.0, 4000.0) > bottom - top)
+    body_float_bounds(doc, o, sect, float).is_some_and(|(top, bottom)| h.clamp(1.0, 4000.0) > bottom - top)
 }
 
 /// Where an object of `size` starts on one axis of `area` (start, extent): at `offset` from the
@@ -3528,7 +3529,6 @@ fn anchor_floats(
         let top = y0 - before;
         let text_before = top > pb.top + 0.5 || pb.col > 0;
         let frame = PageFrame { sect: pb.sect, origin: (0.0, 0.0), number: pb.number, mirror: ctx.mirror };
-        let mode = ctx.doc.settings.compat_mode;
         let mut anchor_height = None;
         // An object left out of the layout (hidden, or deleted in the final text) is not placed, so
         // it takes no room either.
@@ -3544,9 +3544,9 @@ fn anchor_floats(
             let mut r = float_rect(Some(frame), (col_x, width), y0 - before, w, h, float);
             let original_y = r.y;
             if ctx.opts.view == ViewMode::Print
-                && let Some((top, bottom)) = body_float_bounds(o, pb.sect, float, mode)
+                && let Some((top, bottom)) = body_float_bounds(ctx.doc, o, pb.sect, float)
             {
-                r.y = if oversized_body_float(o, r.h, pb.sect, mode) {
+                r.y = if oversized_body_float(ctx.doc, o, r.h, pb.sect) {
                     let height = *anchor_height.get_or_insert_with(|| {
                         let eq_start = ctx.eq_count;
                         let pl = ctx.para_labelled(p, width, None, &[], label.clone());
@@ -4006,9 +4006,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     // A frame taller than the body starts on a fresh column, after its anchor line.
     if ctx.opts.view == ViewMode::Print
         && !pb.at_top()
-        && float_rects
-            .iter()
-            .any(|(&i, rect)| p.objects.get(i).is_some_and(|o| oversized_body_float(o, rect.h, pb.sect, ctx.doc.settings.compat_mode)))
+        && float_rects.iter().any(|(&i, rect)| p.objects.get(i).is_some_and(|o| oversized_body_float(ctx.doc, o, rect.h, pb.sect)))
     {
         pb.advance(block, body_top);
     }

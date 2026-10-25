@@ -1,8 +1,10 @@
 # Wrapping body textboxes at page boundaries
 
-> **Last updated:** 2026-10-21 · **Change:** trivial (later-anchor wraps on paragraph continuations, #2731; previously trivial: bounded body-textbox placement and wrap replay, #2731).
+> **Last updated:** 2026-10-25 · **Change:** trivial (preserve explicit modern drops across body margins, #3169; retain bounded textbox placement, #2731).
 
 In Print view, unturned wrapping textboxes anchored in top-level body paragraphs use their fitted frame before placement. Compatibility modes below 15 keep fitting frames within the physical page. In modern modes, fitting Paragraph/Line anchors stay between the text area's top and bottom margins. Modern Page/Margin anchors retain absolute placement and may overflow.
+
+Explicit modern body-textbox drops across either body margin retain a vertical Page anchor, using the fitted frame to decide. In-body drops return to Paragraph anchoring. This preserves the literal drop coordinates required by #3169 without relaxing imported Paragraph/Line bounds. Pictures and shapes without a valid TextBox story keep their existing placement; a story reference alone does not qualify for textbox bounds. Legacy physical-page bounds remain. These are model and engine controls, with no new native or corpus qualification.
 
 A modern Paragraph/Line frame taller than the text area starts after its anchor line, on a fresh column when needed. It keeps its full frame height. Oversized wrapping and paragraph continuation retain the split policy; its cache key stays separate from ordinary wrapping. Non-textbox floats, turned boxes, inline and Front/Behind objects retain their existing behavior.
 
@@ -18,5 +20,6 @@ The reader, source markers, hit/line ownership, descendant own-paint policy and 
 
 | Date | Change |
 |---|---|
+| 2026-10-25 | Explicit modern drops across body margins retain vertical Page anchoring; textbox bounds require a TextBox part. Imported bounds and historical native limits remain. |
 | 2026-10-21 | Continued body paragraphs receive later-anchor wrap areas on their new page (#2731). A private replay boundary preserves the placed prefix; relays that change the resume byte or top retain fallback, including some contour and full-width cases. |
 | 2026-10-21 | Bounded body textbox placement and backward wrap replay; inherited native geometry limits retained. |
