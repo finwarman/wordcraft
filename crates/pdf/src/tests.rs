@@ -2219,7 +2219,7 @@ fn ltvert_pdf_has_disjoint_bands() {
         story: None,
         freeform: None,
         effects: Default::default(),
-        extra: wordcraft_doc::connector::ShapeExtra { pattern: Some(pattern), ..Default::default() },
+        extra: wordcraft_doc::connector::ShapeExtra { pattern: Some(Box::new(pattern)), ..Default::default() },
     };
     let mut d = Document::new();
     let mut p = Paragraph::new();

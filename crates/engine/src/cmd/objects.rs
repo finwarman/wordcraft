@@ -1976,7 +1976,7 @@ mod tests {
         s.run("insert.shape", &json!({"kind":"rectangle"})).unwrap();
         with_obj(&mut s, |o| {
             if let InlineObject::Shape { extra, .. } = o {
-                extra.pattern = Some(pattern);
+                extra.pattern = Some(Box::new(pattern));
             }
         })
         .unwrap();
@@ -1987,7 +1987,7 @@ mod tests {
         );
         s.run("edit.undo", &json!({})).unwrap();
         let (_, o) = selected(&s).unwrap();
-        assert!(matches!(o,InlineObject::Shape{extra,..} if extra.pattern==Some(pattern)));
+        assert!(matches!(o,InlineObject::Shape{extra,..} if extra.pattern.as_deref()==Some(&pattern)));
     }
 
     #[test]
@@ -2003,7 +2003,7 @@ mod tests {
             s.run("insert.shape", &json!({"kind": "rectangle"})).unwrap();
             with_obj(&mut s, |o| {
                 if let InlineObject::Shape { extra, .. } = o {
-                    extra.pattern = Some(pattern);
+                    extra.pattern = Some(Box::new(pattern));
                 }
             })
             .unwrap();

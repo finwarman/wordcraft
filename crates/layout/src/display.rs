@@ -1665,7 +1665,7 @@ fn shape_draws(
             stroke_width,
             effects,
             corner: extra.corner,
-            pattern: extra.pattern,
+            pattern: extra.pattern.as_deref().copied(),
             dash: extra.dash.pattern(stroke_width),
             cap: extra.cap,
         });

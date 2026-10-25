@@ -1093,7 +1093,7 @@ impl Writer<'_> {
         }
         let alpha = geom.map_or(1.0, |f| f.alpha);
         let ink = geom.is_some_and(|f| f.is_ink());
-        if let Some(pattern) = extra.pattern.filter(|_| !ink && !kind.is_open()) {
+        if let Some(pattern) = extra.pattern.as_deref().filter(|_| !ink && !kind.is_open()) {
             w.open("a:pattFill", &[("prst", pattern.kind.ooxml())]);
             for (tag, color) in [("a:fgClr", pattern.foreground), ("a:bgClr", pattern.background)] {
                 w.open(tag, &[]);
