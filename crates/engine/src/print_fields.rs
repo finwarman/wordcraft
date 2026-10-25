@@ -939,6 +939,27 @@ mod tests {
     }
 
     #[test]
+    fn print_pdf_respects_markup() {
+        let mut doc = Document::new();
+        doc.revisions.push(wordcraft_doc::Revision::new(wordcraft_doc::RevisionKind::Delete, "Author", ""));
+        let mut deleted = Paragraph::with_text(&"DeletedMarker ".repeat(800), CharProps { del: Some(0), ..Default::default() });
+        deleted.insert_text(deleted.len(), " VisibleMarker", &CharProps::default()).unwrap();
+        doc.body = vec![para_block(deleted)];
+        let session = crate::Session::new(doc);
+        let before = serde_json::to_value(&session.doc).unwrap();
+        let shown_pages = session.export_layout_with(true).pages.len();
+        assert!(shown_pages > 1, "the control must expose deleted-text pagination");
+        for markup in [false, true] {
+            let (bytes, plan) = session.print_pdf(&serde_json::json!({"markup": markup})).unwrap();
+            assert_eq!(plan.chosen, if markup { shown_pages } else { 1 }, "deleted text must not reserve printed pages");
+            let text = pdf_text(&bytes).concat();
+            assert!(text.contains("VisibleMarker"));
+            assert_eq!(text.contains("DeletedMarker"), markup, "print markup controls deleted text");
+            assert_eq!(serde_json::to_value(&session.doc).unwrap(), before);
+        }
+    }
+
+    #[test]
     fn print_pdf_labels_and_targets() {
         use hayro_syntax::object::{Array, Dict};
         let mut doc = reflow_control();

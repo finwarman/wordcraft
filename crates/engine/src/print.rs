@@ -163,6 +163,7 @@ impl Session {
         let (filename, filepath) = self.resolved_filenames();
         let lo = wordcraft_layout::LayoutOptions {
             view: wordcraft_layout::ViewMode::Print,
+            hide_deleted: !markup.markup,
             comment_balloons: markup.markup && markup.comments,
             numeral: markup.numeral,
             filename: Some(filename.into()),
