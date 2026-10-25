@@ -281,6 +281,7 @@ Installed static fonts also resolve by their OpenType PostScript name (name ID 6
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | trivial | Merge published #2498 finite-rule enclosure and its regression; retain qualified paragraph ownership, centered groups and reviewer scope limits. No new runtime or native qualification. |
 | 2026-10-21 | trivial | Enclose finite retained fallback horizontal-rule centerlines in fitted first-fragment bounds. Preserve owner routing, line splits, ink and fitting centered groups. Independent model bounds controls; no new native Word claim. |
 | 2026-10-21 | trivial | Isolate qualified horizontal paragraph-border ownership, fragment routing and bounded terminal-cell extension from merged-edge closure. Preserve original emitter/spacing/terminal/fallback controls and limits; no new native Word comparison. |
 | 2026-10-20 | trivial | Terminal horizontal paragraph-border prefixes in validated plain top-level body cells share owner routing and top-border spacing. Centered, merged, nested, clipped and ambiguous cases retain fallbacks; original layout controls, no new native Word claim. |

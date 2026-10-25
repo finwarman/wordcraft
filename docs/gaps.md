@@ -145,6 +145,7 @@ Small follow-ups from the 2026-10-25 field, table and AutoFormat batch (#4232):
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | trivial | Merge published #2498 finite-rule enclosure and its regression; retain qualified paragraph ownership, centered groups and reviewer scope limits. No new runtime or native qualification. |
 | 2026-10-21 | trivial | Preserve distinct Border values during merged-edge deduplication. Original synthetic emitter controls; geometry bit policy unchanged. No new native comparison. |
 | 2026-10-21 | trivial | Use exact continuation bottom-rule coordinates for bitwise merged-edge deduplication (#2498). Original synthetic split/place proof; no new native comparison. |
 | 2026-10-25 | trivial | Small follow-ups from the field, table and AutoFormat batch (#4232) |
