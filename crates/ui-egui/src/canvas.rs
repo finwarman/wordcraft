@@ -2736,14 +2736,14 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
         }
         // Alt+drag selects a column (block) of text.
         if mods.alt && !mods.shift && !mods.command {
-            set_visual_caret(app, target.clone(), SelectionMode::Replace);
+            set_visual_caret(app, target.clone(), SelectionMode::Replace, (page, x, y));
             app.session.page_hint = page;
             app.canvas.column_drag = Some(((page, x, y), (page, x, y)));
             app.canvas.dragging = true;
             return;
         }
         app.canvas.column_drag = None;
-        set_visual_caret(app, target, if mods.shift { SelectionMode::Extend } else { SelectionMode::Replace });
+        set_visual_caret(app, target, if mods.shift { SelectionMode::Extend } else { SelectionMode::Replace }, (page, x, y));
         // Double-click selects a word, triple-click a paragraph, Ctrl/⌘+click a sentence; holding
         // the button and dragging then extends by whole units (Word, #549).
         let unit = match clicks {
@@ -2799,7 +2799,7 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
         {
             let pj = serde_json::to_value(target.position()).unwrap_or_default();
             if app.session.run("caret.set", &json!({"pos": pj, "extend": true})).is_ok() {
-                app.session.retain_visual(target);
+                retain_pointer_hit(app, (page, x, y), story);
             }
             app.session.page_hint = page;
             app.canvas.caret_visible_since = crate::now_ms();
@@ -3282,9 +3282,18 @@ fn context_suggestions(app: &mut WordApp) {
     app.canvas.context_synonyms = app.session.run("review.thesaurus", &json!({})).ok().and_then(|v| v.get("synonyms").cloned());
 }
 
-fn set_visual_caret(app: &mut WordApp, target: wordcraft_layout::VisualPos, mode: SelectionMode) {
+fn set_visual_caret(app: &mut WordApp, target: wordcraft_layout::VisualPos, mode: SelectionMode, point: (usize, f32, f32)) {
+    let story = target.position().story;
     let pos = serde_json::to_value(target.position()).unwrap_or_default();
     if app.run("caret.set", json!({"pos": pos, "extend": mode == SelectionMode::Extend})).is_ok() {
+        retain_pointer_hit(app, point, story);
+    }
+}
+
+fn retain_pointer_hit(app: &mut WordApp, (page, x, y): (usize, f32, f32), story: StoryRef) {
+    // The command may end typing. Hit the final layout without reusing an old owner.
+    let layout = app.session.layout();
+    if let Some(target) = layout.hit_visual(page, x, y, story) {
         app.session.retain_visual(target);
     }
 }
@@ -8550,6 +8559,56 @@ mod tests {
         doc.last_section.margin_top = 40.0;
         doc.last_section.margin_bottom = 40.0;
         WordApp::new(wordcraft_engine::Session::new(doc), Default::default())
+    }
+
+    #[test]
+    fn ref_pointer_canvas_typing() {
+        let mut app = ref_visual_app();
+        app.session.doc.body.insert(0, wordcraft_doc::para_block(wordcraft_doc::Paragraph::new()));
+        app.session.touch();
+        app.run("text.insert", json!({"text": "draft"})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1000.0, 650.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(8);
+        let before = h.state_mut().session.layout();
+        let rev = h.state().session.rev();
+        let (x, y) = before.pages[0]
+            .items
+            .iter()
+            .find_map(|it| {
+                let Placed::Lines { path, para, l0, l1, x, y, .. } = it else { return None };
+                if *path != Pos::body(1, 0).path || l1 - l0 < 4 {
+                    return None;
+                }
+                Some((x + para.lines[l0 + 2].left + 1.0, y + para.lines[l0 + 2].top - para.lines[*l0].top + 6.0))
+            })
+            .unwrap();
+        let screen = page_to_screen(h.state_mut(), 0, x, y).unwrap();
+        h.event(egui::Event::PointerMoved(screen));
+        h.event(egui::Event::PointerButton { pos: screen, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        h.step();
+        let after = h.state_mut().session.layout();
+        assert!(!std::sync::Arc::ptr_eq(&before, &after), "ending typing changes the snapshot owner");
+        assert_eq!(h.state().session.rev(), rev);
+        assert_eq!(h.state().session.sel.focus, Pos::body(1, 0));
+        let target = after.hit_visual(0, x, y, StoryRef::Body).unwrap();
+        let expected = after.caret_visual(target.position(), Some(&target), 0).unwrap();
+        let actual = h.state().session.caret_geometry(&after, &h.state().session.sel.focus).unwrap();
+        assert_eq!(actual, expected, "the real pointer path retains the continuation after typing ends");
+        let caret = caret_screen(h.state_mut()).unwrap().0;
+        let expected_screen = page_to_screen(h.state_mut(), 0, expected.x, expected.top).unwrap();
+        assert!((caret.y - expected_screen.y).abs() < 0.1);
+        h.event(egui::Event::PointerButton { pos: screen, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        h.run_steps(3);
+        let ime = h.output().platform_output.ime.as_ref().unwrap().cursor_rect;
+        let caret = caret_screen(h.state_mut()).unwrap().0;
+        assert!((ime.min.y - caret.y).abs() < 0.1);
     }
 
     #[test]

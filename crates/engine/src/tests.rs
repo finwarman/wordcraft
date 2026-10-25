@@ -10855,6 +10855,73 @@ fn ref_visual_command_navigation() {
     assert_eq!(ref_visual_caret(&mut s), s.layout().caret(&Pos::body(0, 0)).unwrap());
 }
 
+#[derive(Clone, Copy, Debug)]
+enum PointerRoute {
+    StaleOwner,
+    Coordinates,
+}
+
+fn ref_pointer_typing(route: PointerRoute) {
+    let mut s = ref_visual_session();
+    s.doc.body.push(wordcraft_doc::para_block(wordcraft_doc::Paragraph::new()));
+    run(&mut s, "caret.set", json!({"pos": Pos::body(1, 0)}));
+    run(&mut s, "text.insert", json!({"text": "draft"}));
+    let before = s.layout();
+    let rev = s.rev();
+    run(&mut s, "format.state", json!({}));
+    run(&mut s, "text.insert", json!({"text": ""}));
+    assert!(s.run("caret.set", &json!({"pos": false})).is_err());
+    assert!(std::sync::Arc::ptr_eq(&before, &s.layout()), "no-op and failed commands preserve the typing snapshot");
+    let (page, x, y) = ref_visual_points(&mut s)[2];
+    let target = before.hit_visual(page, x, y, StoryRef::Body).unwrap();
+    match route {
+        PointerRoute::StaleOwner => {
+            run(&mut s, "caret.set", json!({"pos": target.position()}));
+            s.retain_visual(target);
+        }
+        PointerRoute::Coordinates => {
+            run(&mut s, "caret.set", json!({"page":page,"x":x,"y":y}));
+        }
+    }
+    let after = s.layout();
+    assert_eq!(s.rev(), rev, "pointer selection does not edit the document");
+    assert!(!std::sync::Arc::ptr_eq(&before, &after), "ending typing replaces the layout snapshot");
+    let expected = after.hit_visual(page, x, y, StoryRef::Body).unwrap();
+    let expected = after.caret_visual(expected.position(), Some(&expected), page).unwrap();
+    assert_eq!(s.sel.focus, Pos::body(0, 0));
+    match route {
+        PointerRoute::StaleOwner => {
+            let canonical = after.caret(&s.sel.focus).unwrap();
+            assert_ne!(canonical, expected, "the continuation differs from the source start");
+            assert_eq!(ref_visual_caret(&mut s), canonical, "an old token must still be rejected");
+        }
+        PointerRoute::Coordinates => {
+            assert_eq!(ref_visual_caret(&mut s), expected, "{route:?}: pointer must retain its line after typing ends");
+            run(&mut s, "format.state", json!({}));
+            run(&mut s, "text.insert", json!({"text": ""}));
+            assert!(s.run("caret.set", &json!({"pos": false})).is_err());
+            assert_eq!(ref_visual_caret(&mut s), expected, "no-op and failed commands retain the new hint");
+            let stale = after.hit_visual(page, x, y, StoryRef::Body).unwrap();
+            s.view.mode = wordcraft_layout::ViewMode::Web;
+            s.view.web_width = 110.0;
+            let reflowed = s.layout();
+            assert!(!std::sync::Arc::ptr_eq(&after, &reflowed));
+            s.retain_visual(stale);
+            assert_eq!(ref_visual_caret(&mut s), reflowed.caret(&s.sel.focus).unwrap(), "real reflow still rejects the old owner");
+        }
+    }
+}
+
+#[test]
+fn ref_pointer_stale_typing() {
+    ref_pointer_typing(PointerRoute::StaleOwner);
+}
+
+#[test]
+fn ref_pointer_coord_typing() {
+    ref_pointer_typing(PointerRoute::Coordinates);
+}
+
 #[test]
 fn ref_visual_invalidation() {
     let mut s = ref_visual_session();
