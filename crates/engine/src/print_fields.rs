@@ -45,6 +45,11 @@ pub(crate) fn prepare(doc: &Document, opts: &LayoutOptions) -> Result<PrintCopy,
     Ok(prepare_with(doc, opts, RefLimits::default()))
 }
 
+/// Require settled cross-references when validating an explicitly refreshed TOC.
+pub(crate) fn prepare_strict(doc: &Document, opts: &LayoutOptions) -> Result<PrintCopy, String> {
+    refresh_copy(doc, opts, RefLimits::default())
+}
+
 fn prepare_with(doc: &Document, opts: &LayoutOptions, limits: RefLimits) -> PrintCopy {
     match refresh_copy(doc, opts, limits) {
         Ok(copy) => copy,
@@ -1104,6 +1109,42 @@ mod tests {
         let actual = std::fs::read(&path).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(actual, expected_png);
+    }
+
+    #[test]
+    fn unsettled_refs_fail_strict() {
+        let mut doc = Document::new();
+        let props = CharProps::default();
+        let mut para = Paragraph::new();
+        for (name, target, cache) in [("First", "Second", "a"), ("Second", "First", "b")] {
+            para.insert_object(para.len(), InlineObject::BookmarkStart { name: name.into() }, &props).unwrap();
+            para.insert_object(para.len(), field(&format!("REF {target}"), cache, FieldFlags::Clean), &props).unwrap();
+            para.insert_object(para.len(), InlineObject::BookmarkEnd { name: name.into() }, &props).unwrap();
+        }
+        doc.body = vec![para_block(para)];
+        let before = serde_json::to_value(&doc).unwrap();
+        let opts = Default::default();
+        // Updates in one paragraph are simultaneous: two one-character caches swap on
+        // every pass. The three dependency passes cannot settle, without growing text.
+        let error = super::prepare_strict(&doc, &opts).err().expect("strict preparation must reject unsettled references");
+        assert_eq!(error, "Print REF dependencies did not converge");
+        let cached = super::prepare(&doc, &opts).unwrap();
+        assert_eq!(serde_json::to_value(&cached.doc).unwrap(), before, "legacy printing keeps the complete cached document");
+        assert_eq!(serde_json::to_value(&doc).unwrap(), before, "neither entry point mutates the live document");
+    }
+
+    #[test]
+    fn strict_refresh_settles() {
+        let doc = control();
+        let before = serde_json::to_value(&doc).unwrap();
+        let opts = Default::default();
+        let strict = super::prepare_strict(&doc, &opts).unwrap();
+        let legacy = super::prepare(&doc, &opts).unwrap();
+        assert_eq!(shown(&strict.layout, 1), ["Current target heading"]);
+        assert_eq!(shown(&strict.layout, 4), ["2"]);
+        assert_eq!(serde_json::to_value(&strict.doc).unwrap(), serde_json::to_value(&legacy.doc).unwrap());
+        assert_eq!(strict.layout.pages.len(), legacy.layout.pages.len());
+        assert_eq!(serde_json::to_value(&doc).unwrap(), before);
     }
 
     #[test]

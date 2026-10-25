@@ -512,3 +512,33 @@ fn outline_selector_keeps_range() {
         assert_eq!(entries.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>(), expected, "{instruction}");
     }
 }
+
+#[test]
+fn unsettled_refs_are_atomic() {
+    let mut doc = control();
+    let props = CharProps::default();
+    let mut para = Paragraph::new();
+    for (name, target, cache) in [("First", "Second", "a"), ("Second", "First", "b")] {
+        para.insert_object(para.len(), InlineObject::BookmarkStart { name: name.into() }, &props).unwrap();
+        para.insert_object(
+            para.len(),
+            InlineObject::Field {
+                instr: format!("REF {target}"),
+                result: cache.into(),
+                locked: false,
+                dirty: false,
+                code: false,
+                form: String::new(),
+            },
+            &props,
+        )
+        .unwrap();
+        para.insert_object(para.len(), InlineObject::BookmarkEnd { name: name.into() }, &props).unwrap();
+    }
+    doc.body.push(para_block(para));
+    let before = serde_json::to_value(&doc).unwrap();
+    let mut session = Session::new(doc);
+    let error = session.run("references.updateToc", &json!({"forPdf": true})).expect_err("TOC refresh must reject unsettled references");
+    assert!(error.to_string().contains("Print REF dependencies did not converge"), "{error}");
+    assert_eq!(serde_json::to_value(&session.doc).unwrap(), before, "failed settlement rolls back TOC regeneration and reference changes");
+}

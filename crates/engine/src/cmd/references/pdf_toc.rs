@@ -270,7 +270,7 @@ pub(super) fn refresh(s: &mut Session, v: &Value) -> CmdResult {
     let markup = crate::cmd::file::export_options(s, v);
     let opts =
         wordcraft_layout::LayoutOptions { hide_deleted: !markup.markup, comment_balloons: markup.markup && markup.comments, ..Default::default() };
-    let print = crate::print_fields::prepare(&s.doc, &opts).map_err(CmdError::Failed)?;
+    let print = crate::print_fields::prepare_strict(&s.doc, &opts).map_err(CmdError::Failed)?;
     let printed = Session::new(print.doc);
     let entries = toc_entries(&printed, &table.code);
     let Some((start, end)) = toc_range(&printed) else { return Err(failed("refreshed TOC is missing")) };
