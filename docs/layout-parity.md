@@ -207,7 +207,7 @@ is a lookup rather than another pass over it. The answer and the layout are the 
 times the word costs about eighteen times the time, not the sixty-four a quadratic would; the
 same test with the fix reverted measured 59.6.
 
-Simple left-to-right cached REF results wrap at ordinary spaces while retaining stored text, formatting and field identity. A synthetic Word probe confirms multiword result wrapping. Results containing Thai and requesting a missing Thai font stay atomic to preserve whole-result font selection for Thai and Latin; ordinary-space wrapping of those results remains unqualified. Direction-sensitive results and odd-level host positions keep the existing atomic whole-result isolate. Wrapping those results, other field types and global refresh policy remain separate gaps.
+Simple left-to-right cached REF results wrap at ordinary spaces while retaining stored text, formatting and field identity. Their East Asian fallback face is selected once for the complete result and shared by its pieces. A synthetic Word probe confirms multiword result wrapping. Results containing Thai and requesting a missing Thai font stay atomic to preserve whole-result font selection for Thai and Latin; ordinary-space wrapping of those results remains unqualified. Direction-sensitive results and odd-level host positions keep the existing atomic whole-result isolate. Wrapping those results, other field types and global refresh policy remain separate gaps.
 
 TOC refresh includes heading and outline paragraphs inside tables, including nested cells. Links and page numbers retain their full paragraph paths when entries move body blocks. The existing link picker still accepts top-level heading block indices.
 

@@ -494,3 +494,21 @@ fn spaced_style_fallback_is_bounded() {
     session.doc.styles.get_mut("TOC 3").unwrap().kind = wordcraft_doc::styles::StyleKind::Character;
     assert_eq!(toc_entry_style(&session, 3), "TOC3", "character styles are not admitted");
 }
+
+#[test]
+fn outline_selector_keeps_range() {
+    let mut doc = Document::from_text("Heading one\nHeading two\nHeading three\nHeading four");
+    for (i, block) in doc.body.iter_mut().enumerate() {
+        let wordcraft_doc::Block::Para(para) = std::sync::Arc::make_mut(block) else { panic!("paragraph") };
+        para.props.style = Some(format!("Heading{}", i + 1));
+        para.props.outline_level = Some(i as u8);
+    }
+    let session = Session::new(doc);
+    for (instruction, expected) in [
+        (r#"TOC \o "2-3" \u"#, vec!["Heading two", "Heading three"]),
+        (r"TOC \u", vec!["Heading one", "Heading two", "Heading three", "Heading four"]),
+    ] {
+        let entries = toc_entries(&session, &FieldCode::parse(instruction));
+        assert_eq!(entries.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>(), expected, "{instruction}");
+    }
+}

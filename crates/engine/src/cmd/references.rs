@@ -253,7 +253,7 @@ fn heading_style_level(p: &Paragraph) -> Option<u8> {
 /// fields (`\f`, levels `\l`).
 fn toc_entries(s: &Session, f: &FieldCode) -> Vec<TocEntry> {
     let o = f.has('o').then(|| f.arg('o').and_then(level_range).unwrap_or((1, 9)));
-    let max = o.map(|r| r.1).unwrap_or(9);
+    let (min, max) = o.unwrap_or((1, 9));
     let styles: Vec<(String, u8)> = f
         .arg('t')
         .map(|t| {
@@ -290,7 +290,7 @@ fn toc_entries(s: &Session, f: &FieldCode) -> Vec<TocEntry> {
             styles.iter().find(|(n, _)| s.doc.styles.get(style).is_some_and(|st| st.name.eq_ignore_ascii_case(n)) || n == style).map(|(_, l)| *l);
         // `Some(9)` direct outline level is body text: "Do Not Show in Table of Contents".
         let outline = s.doc.styles.resolve_para(&p.props).outline_level;
-        let by_outline = f.has('u').then_some(outline).flatten().filter(|l| *l < 9).map(|l| l + 1).filter(|l| *l <= max);
+        let by_outline = f.has('u').then_some(outline).flatten().filter(|l| *l < 9).map(|l| l + 1).filter(|l| (min..=max).contains(l));
         let hidden = f.has('u') && outline == Some(9);
         let by_heading = o.and_then(|(a, b)| {
             let l = heading_style_level(p).or_else(|| {
