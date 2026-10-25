@@ -483,6 +483,7 @@ fn widow_control_moves_a_three_line_paragraph_whole() {
         for (fill, shift) in (30usize..60).flat_map(|f| (0..15).step_by(2).map(move |s| (f, s))) {
             let filler = "Filler line.\n".repeat(fill);
             let mut d = Document::from_text(&format!("{filler}{}\nAfter.", "word ".repeat(words)));
+            d.styles.default_chr.font = Some("Source Sans 3".into());
             d.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.space_before = Some(shift as f32)).unwrap();
             let l = lay(&d);
             let pieces: Vec<(usize, usize)> = l
@@ -833,4 +834,116 @@ fn footer_widow_keeps_lines() {
             assert!(bottom <= top + 0.01, "body {bottom}, footer {top}");
         }
     }
+}
+
+#[test]
+fn a_page_ends_when_a_multiple_spaced_lines_text_no_longer_fits() {
+    // Multiple spacing puts its extra leading below the text, and Word lets that leading of a
+    // page's last line run into the bottom margin: a multiple-spaced line stays on the page while
+    // its text ends above the margin (observed in Word at 1.15, 1.5 and double spacing: the page
+    // holds one more line than when the whole line box must fit, for shifts up to about the
+    // leading). Each shift moves the text down; on every page the last line's text ends within
+    // the margin, and the next line's would not.
+    use wordcraft_doc::props::LineSpacing;
+    for multiple in [1.15, 1.5, 2.0] {
+        let mut past_margin = 0;
+        for shift in (0..28).step_by(2) {
+            let mut d = Document::from_text(&"Several words wrap onto many lines of a long paragraph. ".repeat(60));
+            if let Some(wordcraft_doc::Block::Para(p)) = d.body.get_mut(0).map(Arc::make_mut) {
+                p.props.line_spacing = Some(LineSpacing::Multiple(multiple));
+                p.props.space_before = Some(shift as f32);
+                p.props.widow_control = Some(false);
+            }
+            let bottom = d.last_section.page_h - d.last_section.margin_bottom;
+            let l = lay(&d);
+            assert!(l.pages.len() >= 2, "{multiple} shift {shift}: the paragraph should run onto a second page");
+            let Some(Placed::Lines { y, para, l0, l1, .. }) =
+                l.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { story: StoryRef::Body, .. }))
+            else {
+                panic!("{multiple} shift {shift}: no body lines on page 1")
+            };
+            let (first, last, next) = (&para.lines[*l0], &para.lines[*l1 - 1], &para.lines[*l1]);
+            let top = y + last.top - first.top;
+            let text_end = top + (last.baseline - last.top) + last.text_desc;
+            assert!(text_end <= bottom + 0.01, "{multiple} shift {shift}: the last line's text ends at {text_end}, below the margin at {bottom}");
+            let next_text_end = top + last.height + (next.baseline - next.top) + next.text_desc;
+            assert!(
+                next_text_end > bottom + 0.01,
+                "{multiple} shift {shift}: the next line's text would end at {next_text_end}, within the margin at {bottom}"
+            );
+            if top + last.height > bottom + 0.01 {
+                past_margin += 1;
+            }
+        }
+        assert!(past_margin > 0, "{multiple}: some shift should leave the last line's leading past the margin");
+    }
+}
+
+#[test]
+fn kept_lines_use_final_fit() {
+    use wordcraft_doc::props::LineSpacing;
+
+    for case in [FooterFitCase::Margin, FooterFitCase::Short, FooterFitCase::Tall] {
+        for spacing in [
+            LineSpacing::Multiple(1.15),
+            LineSpacing::Multiple(1.5),
+            LineSpacing::Multiple(2.0),
+            LineSpacing::Exactly(24.0),
+            LineSpacing::AtLeast(24.0),
+        ] {
+            for text in ["One", "One\nTwo\nThree"] {
+                let mut d = footer_fit_doc(case);
+                let mut target = footer_fit_para(text);
+                target.props.line_spacing = Some(spacing);
+                target.props.keep_lines = Some(true);
+                d.body = vec![para_block(target.clone())];
+                let measured = lay(&d);
+                let Some(Placed::Lines { para, .. }) = measured.pages[0].items.iter().find(|it| matches!(it, Placed::Lines { .. })) else { panic!() };
+                let last = para.lines.last().unwrap();
+                let full = last.top + last.height;
+                let fit = last.top + last.fit_height;
+                let room = if full - fit > 0.01 { (full + fit) / 2.0 } else { full - 0.5 };
+                let boundary = measured.pages[0].body.bottom();
+                let mut filler = footer_fit_para("Filler");
+                filler.props.line_spacing = Some(LineSpacing::Exactly(boundary - d.last_section.margin_top - room));
+                d.body = vec![para_block(filler), para_block(target)];
+
+                let layout = lay(&d);
+                let expected = usize::from(matches!(case, FooterFitCase::Tall) || !matches!(spacing, LineSpacing::Multiple(_)));
+                assert_eq!(footer_target_page(&layout, 1), expected, "{case:?}, {spacing:?}, {text:?}");
+                if matches!(case, FooterFitCase::Tall) {
+                    for page in &layout.pages {
+                        let (_, bottom) = extent(&page.items, StoryRef::Body).unwrap();
+                        let (top, _) = extent(&page.footer, StoryRef::Part(page.footer_story.unwrap())).unwrap();
+                        assert!(bottom <= top + 0.01, "body {bottom}, footer {top}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn kept_lines_clear_notes() {
+    use wordcraft_doc::props::LineSpacing;
+
+    let (room, height) = footer_fit_metrics();
+    let mut d = footer_fit_doc(FooterFitCase::Margin);
+    let note = d.add_part(PartKind::Footnote, vec![para_block(footer_fit_para("Note"))]);
+    let mut filler = footer_fit_para("Filler");
+    filler
+        .insert_object(filler.len(), InlineObject::NoteRef { kind: NoteKind::Footnote, id: note, custom: String::new() }, &Default::default())
+        .unwrap();
+    // Measure the body floor after this note reserves its separator and content.
+    d.body = vec![para_block(filler.clone())];
+    let measured = lay(&d);
+    let (note_top, _) = extent(&measured.pages[0].items, StoryRef::Part(note)).unwrap();
+    let boundary = note_top - NOTE_SEP;
+    filler.props.line_spacing = Some(LineSpacing::Exactly(boundary - d.last_section.margin_top - height - room));
+    let mut target = footer_fit_para("One\nTwo");
+    target.props.keep_lines = Some(true);
+    d.body = vec![para_block(filler), para_block(target)];
+
+    let layout = lay(&d);
+    assert_eq!(footer_target_page(&layout, 1), 1, "kept lines reserve their full boxes above notes");
 }
