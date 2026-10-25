@@ -11100,6 +11100,39 @@ mod continuous_picture_fit {
     }
 
     #[test]
+    fn empty_predecessor_keeps_page() {
+        let mut d = document(Case::Overflow, Flow::Unbroken, 1);
+        d.body.drain(..BEFORE_LINES);
+        d.last_section.start = SectionStart::Continuous;
+
+        let header = paragraph("FIRST HEADER", BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT);
+        let id = d.add_part(wordcraft_doc::PartKind::Header, vec![wordcraft_doc::para_block(header)]);
+        let mut previous = section(SectionStart::NextPage, 1);
+        previous.title_page = true;
+        previous.header = BODY_TOP;
+        previous.headers.first = Some(id);
+        let mut mark = paragraph("", ANCHOR_LINE_HEIGHT);
+        mark.mark.hidden = Some(true);
+        mark.section = Some(Box::new(previous));
+        d.body.insert(0, wordcraft_doc::para_block(mark));
+
+        // Header space raises the next section's top without preceding body content.
+        let laid = lay(&d);
+        assert_eq!(laid.pages.len(), 1, "an empty predecessor must not add a page");
+        let first = &laid.pages[0];
+        let top = BODY_TOP + BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT;
+        assert_eq!(first.section, 0);
+        assert!((first.body.y - top).abs() < EPSILON);
+        assert!(!first.items.iter().any(|item| matches!(item,
+            Placed::Lines { story: StoryRef::Body, path, .. } if *path == Path::top(0)
+        )), "the predecessor has no body lines");
+        assert_eq!(image_rects(&first.items), [Rect::new(BODY_TOP, top, PICTURE_WIDTH, OVERFLOW_HEIGHT)]);
+        let after = laid.caret(&Pos::body(2, 0)).unwrap();
+        assert_eq!(after.page, 0);
+        assert!((after.top - (top + ANCHOR_LINE_HEIGHT)).abs() < EPSILON);
+    }
+
+    #[test]
     fn bookmarks_keep_geometry() {
         for (case, page, top) in [(Case::Fits, 0, BODY_TOP + BEFORE_LINES as f32 * BEFORE_LINE_HEIGHT), (Case::Overflow, 1, BODY_TOP)] {
             let mut d = document(case, Flow::Continuous, 1);

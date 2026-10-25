@@ -3830,7 +3830,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     // Pending notes can change that page's capacity; keep their existing route.
     let partial_page_start = !pb.web
         && pb.sect.start == SectionStart::Continuous
-        && pb.pages.last().is_some_and(|p| p.section != pb.sect_idx)
+        && pb.pages.last().is_some_and(|p| p.section != pb.sect_idx && pb.content_bottom > p.body.y + 0.01)
         && pb.cols.len() == 1
         && pb.at_top()
         && pb.top > body_top + 0.01
