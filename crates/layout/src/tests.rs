@@ -11223,6 +11223,49 @@ fn automatic_banner_shares_width() {
     assert!(widths.iter().all(|w| (w - 75.0).abs() < 0.01), "automatic widths: {widths:?}");
 }
 
+#[test]
+fn nested_spans_use_grid_weights() {
+    const NESTED_WIDTH: f32 = 40.0;
+    const IMAGE_WIDTH: f32 = 50.0;
+    const OUTER_WIDTH: f32 = 51.0;
+    let widths: Vec<_> = [0.0, 4.0]
+        .into_iter()
+        .map(|first| {
+            let mut nested = Table::new(2, 3, NESTED_WIDTH);
+            nested.props.style = None;
+            nested.props.width = Some(NESTED_WIDTH);
+            nested.props.cell_margins = Some([0.0; 4]);
+            nested.grid = vec![first, 100.0, 100.0];
+            for (index, row) in nested.rows.iter_mut().enumerate() {
+                row.cells.truncate(1);
+                row.props.grid_before = index as u32;
+                row.cells[0].props.span = 2;
+                row.cells[0].props.width = None;
+                let mut p = Paragraph::new();
+                p.insert_object(0, picture(IMAGE_WIDTH, 10.0, Default::default()), &Default::default()).unwrap();
+                row.cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+            }
+            let mut outer = Table::new(1, 1, OUTER_WIDTH);
+            outer.props.style = None;
+            outer.props.width = Some(OUTER_WIDTH);
+            outer.props.cell_margins = Some([0.0; 4]);
+            outer.rows[0].cells[0].blocks = vec![Arc::new(Block::Table(nested))];
+            let mut d = Document::new();
+            d.body = vec![Arc::new(Block::Table(outer))];
+            lay(&d).pages[0]
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Placed::Cell { rect, table, .. } if table.0 == [0] => Some(rect.w),
+                    _ => None,
+                })
+                .unwrap()
+        })
+        .collect();
+    assert!(widths[1] > OUTER_WIDTH + 0.5, "overlapping spans must expand the outer table: {widths:?}");
+    assert!((widths[0] - widths[1]).abs() < 0.01, "equivalent nested grids changed outer fitting: {widths:?}");
+}
+
 /// #2048: a picture anchored in a later paragraph but placed higher up the page (fixed on the
 /// page, or moved up from its paragraph) keeps the text of the paragraphs above its anchor clear
 /// too, as in Word, not just its own paragraph's.

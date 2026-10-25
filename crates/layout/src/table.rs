@@ -355,13 +355,9 @@ fn region_borders(parts: &[(TablePart, Borders)], (ri, nrows): (usize, usize), (
     out
 }
 
-pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], avail: f32, depth: usize) -> TableLayout {
-    let style = table_style(ctx, t);
-    // Cell text formatting and looks per set of style parts, built once per table.
-    let mut cell_text: Vec<(Region, CellText)> = Vec::new();
-    let mut looks: Vec<(Region, RegionLook)> = Vec::new();
+// Nested measurement needs the same preferred weights as layout before sharing span minima.
+fn preferred_grid(t: &Table, avail: f32) -> Vec<f32> {
     let ncols = t.cols().max(1);
-    // Column widths.
     let mut grid: Vec<f32> = if t.grid.len() == ncols {
         // Grid units can be narrower than a text box, including omitted row-end columns.
         t.grid
@@ -376,6 +372,16 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         vec![avail / ncols as f32; ncols]
     };
     apply_cell_widths(t, &mut grid);
+    grid
+}
+
+pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], avail: f32, depth: usize) -> TableLayout {
+    let style = table_style(ctx, t);
+    // Cell text formatting and looks per set of style parts, built once per table.
+    let mut cell_text: Vec<(Region, CellText)> = Vec::new();
+    let mut looks: Vec<(Region, RegionLook)> = Vec::new();
+    let ncols = t.cols().max(1);
+    let mut grid = preferred_grid(t, avail);
     let mut total: f32 = grid.iter().sum();
     // A top-level table in an inherited header or footer takes its share of the defining
     // section's width (`Ctx::pct_base`).
@@ -1206,7 +1212,8 @@ fn blocks_content(ctx: &mut Ctx, blocks: &Blocks, text: Option<&CellText>, depth
                     (width, width)
                 } else {
                     let style = table_style(ctx, nt);
-                    let cols = column_content(ctx, nt, style.as_ref(), depth + 1, &nt.grid).unwrap_or_default();
+                    let weights = preferred_grid(nt, width);
+                    let cols = column_content(ctx, nt, style.as_ref(), depth + 1, &weights).unwrap_or_default();
                     let (l, h) = cols.iter().fold((0.0, 0.0), |(l, h), c| (l + c.0, h + c.1));
                     (width.max(l), width.max(h))
                 }
