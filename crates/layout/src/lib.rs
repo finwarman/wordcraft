@@ -3829,7 +3829,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     let fit_space = if has_notes { FitSpace::Reserved } else { FitSpace::Margin };
     let height = pl.lines.last().map_or(pl.height, |line| pl.height - line.height + line_fit_height(line, fit_space)) + top_room + bottom_room;
     let footer_over = pb.footer_limited && pb.y + pl.height + top_room + bottom_room > pb.orig_bottom + 0.01;
-    if pl.rp.keep_lines || (pl.rp.keep_next && pb.y + height <= pb.bottom + 0.01 && !footer_over) {
+    if pl.height > 0.0 && (pl.rp.keep_lines || (pl.rp.keep_next && pb.y + height <= pb.bottom + 0.01 && !footer_over)) {
         let need = height + if pl.rp.keep_next { next_first_line(ctx, block, width, 0, &mut ctx.counters.clone()) } else { 0.0 };
         // (Against the whole column: balanced columns grow to hold it.)
         // With the 0.01 pt of slack the other fit checks take.

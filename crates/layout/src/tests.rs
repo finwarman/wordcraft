@@ -10949,27 +10949,36 @@ fn collapsed_after_fitted_line() {
             next.props.space_after = Some(0.0);
             d.body.truncate(1);
             d.body.push(wordcraft_doc::para_block(next));
-            let laid = layout(&d, &mut LayoutCache::new(), &options);
-            if deleted {
-                let hidden = laid
-                    .pages
-                    .iter()
-                    .flat_map(|page| &page.items)
-                    .find_map(|item| match item {
-                        Placed::Lines { story: StoryRef::Body, path, para, .. } if *path == Path::top(1) => Some(para),
-                        _ => None,
-                    })
-                    .unwrap();
-                assert_eq!(hidden.height, 0.0, "deleted paragraph must collapse");
-                assert!(!hidden.lines.is_empty(), "collapsed paragraph retains its caret line");
-                for line in &hidden.lines {
-                    assert_eq!(line.height, 0.0, "collapsed line height");
-                    assert_eq!(line.fit_height, 0.0, "collapsed line fit height");
+            for (keep_lines, keep_next) in [(false, false), (true, false), (false, true), (true, true)] {
+                let next = d.para_mut(StoryRef::Body, &Path::top(1)).unwrap();
+                next.props.keep_lines = Some(keep_lines);
+                next.props.keep_next = Some(keep_next);
+                let laid = layout(&d, &mut LayoutCache::new(), &options);
+                if deleted {
+                    let hidden = laid
+                        .pages
+                        .iter()
+                        .flat_map(|page| &page.items)
+                        .find_map(|item| match item {
+                            Placed::Lines { story: StoryRef::Body, path, para, .. } if *path == Path::top(1) => Some(para),
+                            _ => None,
+                        })
+                        .unwrap();
+                    assert_eq!(hidden.height, 0.0, "deleted paragraph must collapse");
+                    assert!(!hidden.lines.is_empty(), "collapsed paragraph retains its caret line");
+                    for line in &hidden.lines {
+                        assert_eq!(line.height, 0.0, "collapsed line height");
+                        assert_eq!(line.fit_height, 0.0, "collapsed line fit height");
+                    }
                 }
+                let expected = if deleted { 0 } else { 1 };
+                assert_eq!(
+                    laid.caret(&Pos::body(1, 0)).unwrap().page,
+                    expected,
+                    "spacing={multiple}, deleted={deleted}, keep_lines={keep_lines}, keep_next={keep_next}"
+                );
+                assert_eq!(laid.pages.len(), expected + 1, "spacing={multiple}, deleted={deleted}, keep_lines={keep_lines}, keep_next={keep_next}");
             }
-            let expected = if deleted { 0 } else { 1 };
-            assert_eq!(laid.caret(&Pos::body(1, 0)).unwrap().page, expected, "spacing={multiple}, deleted={deleted}");
-            assert_eq!(laid.pages.len(), expected + 1, "spacing={multiple}, deleted={deleted}");
         }
     }
 }
