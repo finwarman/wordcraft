@@ -12,6 +12,8 @@ struct EquationPlacement {
     page: usize,
     x: f32,
     baseline: f32,
+    top: f32,
+    bottom: f32,
     math: std::sync::Arc<crate::math::MathLayout>,
     clip: Option<Rect>,
 }
@@ -26,6 +28,18 @@ pub struct Caret {
     pub top: f32,
     pub height: f32,
     pub width: f32,
+}
+
+/// An equation as [`DocLayout::equation_box`] finds it, in page coordinates: its left edge
+/// `x` and baseline `base`, the top and bottom of its line, and its layout (`math.width` wide).
+#[derive(Clone, Debug)]
+pub struct EquationBox {
+    pub page: usize,
+    pub x: f32,
+    pub base: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub math: std::sync::Arc<crate::math::MathLayout>,
 }
 
 /// Result of [`DocLayout::visual_step`].
@@ -312,13 +326,15 @@ fn turned_hit(page: &Page, story: StoryRef, x: f32, y: f32) -> Option<Pos> {
     })
 }
 
-/// The position in the turned text of `story` nearest to page point (x, y), wherever it is.
-fn nearest_turned(page: &Page, story: StoryRef, x: f32, y: f32) -> Option<Pos> {
+/// The position in the turned text of `story` nearest to page point (x, y), wherever it is, in a
+/// paragraph `skip` doesn't leave out.
+fn nearest_turned(page: &Page, story: StoryRef, x: f32, y: f32, skip: &dyn Fn(&Path) -> bool) -> Option<Pos> {
     let dist = |r: Rect| band_dist(x, r.x, r.w).hypot(band_dist(y, r.y, r.h));
     let it = line_items(page, story)
         .into_iter()
         .filter(|(_, clip)| point_in_clip(*clip, x, y))
         .map(|(it, _)| it)
+        .filter(|it| matches!(it, Placed::Lines { story: s, path, .. } if *s == story && !skip(path)))
         .filter_map(|it| it.turned_bounds().map(|r| (it, dist(r))))
         .min_by(|a, b| a.1.total_cmp(&b.1))?
         .0;
@@ -343,6 +359,23 @@ fn nearest_line_at<'a>(page: &'a Page, y: f32, top_only: bool) -> Option<LineHit
         .min_by(|a, b| band_dist(y, a.top, a.bottom - a.top).total_cmp(&band_dist(y, b.top, b.bottom - b.top)).then(a.left.total_cmp(&b.left)))
 }
 
+/// Each floating body table on `page` with the area its cells cover there.
+fn float_table_areas(page: &Page) -> Vec<(&Path, Rect)> {
+    page.float_tables
+        .iter()
+        .filter_map(|t| {
+            page.items
+                .iter()
+                .filter_map(|it| match it {
+                    Placed::Cell { rect, table, story: StoryRef::Body, .. } if table == t => Some(*rect),
+                    _ => None,
+                })
+                .reduce(|a, b| a.union(&b))
+                .map(|r| (t, r))
+        })
+        .collect()
+}
+
 /// How far `v` is outside the band `top..top + h`.
 fn band_dist(v: f32, top: f32, h: f32) -> f32 {
     if v < top {
@@ -361,13 +394,19 @@ impl DocLayout {
         if let Some(pos) = turned_hit(p, story, x, y) {
             return Some(pos);
         }
+        // Like Word, a click outside a floating table doesn't land in its cells while there's
+        // other text on the page: below one, it goes to the text beside or after it (#2038).
+        let floats = if story == StoryRef::Body { float_table_areas(p) } else { Vec::new() };
+        let away = |path: &Path| floats.iter().any(|(t, r)| path.0.len() > t.0.len() && path.0.starts_with(&t.0) && !r.contains(Point::new(x, y)));
         let lines = hit_lines(p, story);
         if lines.is_empty() {
             // A page of turned text (a vertical section): the nearest turned line.
-            return nearest_turned(p, story, x, y);
+            return nearest_turned(p, story, x, y, &away).or_else(|| nearest_turned(p, story, x, y, &|_: &Path| false));
         }
-        let best =
-            lines.iter().filter(|(_, clip)| point_in_clip(*clip, x, y)).min_by(|(a, _), (b, _)| score(a, x, y).total_cmp(&score(b, x, y)))?.0.clone();
+        // Every fallback keeps the physical clip; click-away only changes candidate priority.
+        let visible = || lines.iter().filter(|(_, clip)| point_in_clip(*clip, x, y)).map(|(line, _)| line);
+        let nearest = |a: &&LineHit, b: &&LineHit| score(a, x, y).total_cmp(&score(b, x, y));
+        let best = visible().filter(|line| !away(line.path)).min_by(nearest).or_else(|| visible().min_by(nearest))?;
         let off = best.para.off_at_x(best.li, x - best.x);
         Some(Pos { story: best.story, path: best.path.clone(), off })
     }
@@ -643,20 +682,27 @@ impl DocLayout {
         None
     }
 
-    /// Word's selection bar (#856): when (x, y) is in the page's left margin, left of the body
-    /// text column, the start of the body line at that height. Not in the header/footer area,
-    /// not beside a table's lines (those are left to the table), nothing on an empty page.
+    /// Word's selection bar (#856): when (x, y) is in the page margin beside the text column,
+    /// the start of the body line at that height. The bar is the left margin for a left-to-right
+    /// paragraph and the right margin for a right-to-left one. Not in the header/footer area,
+    /// not beside a table's lines (those are the table's row areas), nothing on an empty page.
     pub fn selection_bar_at(&self, page: usize, x: f32, y: f32) -> Option<Pos> {
         let p = self.pages.get(page)?;
-        if !(x.is_finite() && y.is_finite()) || x < 0.0 || x >= p.body.x || y < p.body.y || y > p.body.bottom() {
+        if !(x.is_finite() && y.is_finite()) || x < 0.0 || x > p.w || y < p.body.y || y > p.body.bottom() {
+            return None;
+        }
+        let left = x < p.body.x;
+        if !left && x <= p.body.right() {
             return None;
         }
         let l = nearest_line_at(p, y, false)?;
-        if l.path.0.len() > 1 || l.left < p.body.x - 0.5 {
-            // A table's line, or text hanging into the margin: not the selection bar.
+        let line = l.para.lines.get(l.li)?;
+        // The line's own side, and no text hanging into that margin.
+        let hangs = if line.rtl { l.right > p.body.right() + 0.5 } else { l.left < p.body.x - 0.5 };
+        if l.path.0.len() > 1 || line.rtl == left || hangs {
             return None;
         }
-        Some(Pos { story: StoryRef::Body, path: l.path.clone(), off: l.para.lines.get(l.li)?.start })
+        Some(Pos { story: StoryRef::Body, path: l.path.clone(), off: line.start })
     }
 
     /// The start of the top-level body line nearest height `y` on `page` (dragging in the
@@ -815,16 +861,21 @@ impl DocLayout {
     /// Where the equation at `pos` (its U+FFFC) is drawn: page, x of its left edge and its
     /// baseline (page coordinates), and its intrinsic layout. Clip overlays with `equation_clip`.
     pub fn equation_geom(&self, pos: &Pos, page_hint: usize) -> Option<(usize, f32, f32, std::sync::Arc<crate::math::MathLayout>)> {
+        self.equation_box(pos, page_hint).map(|b| (b.page, b.x, b.base, b.math))
+    }
+
+    /// Physical cell clip for the same occurrence selected by `equation_box`, including empty clips.
+    /// `None` means no owning cell clip or no placed equation. Visibility is decided by `equation_box`.
+    pub fn equation_clip(&self, pos: &Pos, page_hint: usize) -> Option<Rect> {
+        self.equation_placement(pos, page_hint).and_then(|placed| placed.clip)
+    }
+
+    /// The equation's intrinsic width and line bounds, provided its ink intersects its cell clip.
+    pub fn equation_box(&self, pos: &Pos, page_hint: usize) -> Option<EquationBox> {
         let placed = self.equation_placement(pos, page_hint)?;
         let bounds = Rect::new(placed.x, placed.baseline - placed.math.ascent, placed.math.width, placed.math.ascent + placed.math.descent);
         clip_geometry(bounds, placed.clip)?;
-        Some((placed.page, placed.x, placed.baseline, placed.math))
-    }
-
-    /// Physical cell clip for the same occurrence selected by `equation_geom`, including empty clips.
-    /// `None` means no owning cell clip or no placed equation. Visibility is decided by `equation_geom`.
-    pub fn equation_clip(&self, pos: &Pos, page_hint: usize) -> Option<Rect> {
-        self.equation_placement(pos, page_hint).and_then(|placed| placed.clip)
+        Some(EquationBox { page: placed.page, x: placed.x, base: placed.baseline, top: placed.top, bottom: placed.bottom, math: placed.math })
     }
 
     fn equation_placement(&self, pos: &Pos, page_hint: usize) -> Option<EquationPlacement> {
@@ -843,10 +894,14 @@ impl DocLayout {
                 if c.start != pos.off {
                     continue;
                 }
-                let ml = para.maths.iter().find(|(o, _)| *o == oi)?.1.clone();
+                let math = para.maths.iter().find(|(o, _)| *o == oi)?.1.clone();
                 let cx = l.cl_left(k)?;
-                let base = y + (l.baseline - first.top);
-                return Some(EquationPlacement { page: pi, x: x + cx, baseline: base, math: ml, clip });
+                let top = y + (l.top - first.top);
+                let base = top + (l.baseline - l.top);
+                // A line holds its tallest piece, so it holds the equation too; `max` keeps
+                // the box around it should the line's own box come out shorter.
+                let (top, bottom) = ((base - math.ascent).min(top), (base + math.descent).max(top + l.height));
+                return Some(EquationPlacement { page: pi, x: x + cx, baseline: base, top, bottom, math, clip });
             }
         }
         None
