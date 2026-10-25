@@ -11880,3 +11880,81 @@ fn float_clip_instances() {
     assert!(matches!(&draws[0], display::Draw::Clip { rect, .. } if rect.h == 30.0));
     assert!(matches!(&draws[1], display::Draw::Image { rect, .. } if rect.x == 200.0));
 }
+
+#[test]
+fn vertical_skips_hidden_caret() {
+    use wordcraft_doc::props::{HeightRule, LineSpacing};
+    for (height, rule) in [(5.0, HeightRule::Exact), (75.0, HeightRule::Exact), (80.0, HeightRule::Exact), (5.0, HeightRule::AtLeast)] {
+        let mut doc = Document::from_text("Before\nAfter");
+        let chr = CharProps { font: Some(WRAP_TEST_FONT.into()), size: Some(10.0), ..Default::default() };
+        doc.styles.default_chr = chr.clone();
+        // Keep the next paragraph below the retained 80 pt logical line.
+        doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().props.space_before = Some(100.0);
+        let mut paragraph = Paragraph::with_text("", chr.clone());
+        paragraph.insert_object(0, picture(20.0, 20.0, Default::default()), &chr).unwrap();
+        paragraph.props.line_spacing = Some(LineSpacing::Exactly(80.0));
+        paragraph.props.space_after = Some(0.0);
+        let mut table = Table::new(1, 1, 200.0);
+        table.props.style = None;
+        table.props.cell_margins = Some([0.0; 4]);
+        table.props.borders = Some(Default::default());
+        table.rows[0].props.height = Some(height);
+        table.rows[0].props.height_rule = rule;
+        table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(paragraph)];
+        doc.insert_block(StoryRef::Body, &Path::top(1), Block::Table(table)).unwrap();
+        let layout = lay(&doc);
+        let cell_path = Path(vec![1, 0, 0, 0]);
+        let line = crate::hit::page_lines(&layout.pages[0], StoryRef::Body).into_iter().find(|line| line.path == &cell_path).unwrap();
+        let rect = layout.pages[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Placed::Cell { rect, covered: false, .. } => Some(*rect),
+                _ => None,
+            })
+            .unwrap();
+        let off = line.para.off_at_x(line.li, 0.0);
+        let target = Pos { story: StoryRef::Body, path: cell_path.clone(), off };
+        let clipped = height == 5.0 && rule == HeightRule::Exact;
+        let caret = layout.caret_on(&target, 0);
+        assert_eq!(
+            caret.is_some_and(|c| c.top < rect.bottom() && c.top + c.height > rect.y),
+            !clipped,
+            "fixture must distinguish a retained object line from its visible caret: {height}, {rule:?}, {rect:?}, {caret:?}"
+        );
+        for dir in [-1, 1] {
+            let origin = Pos { story: StoryRef::Body, path: Path::top(if dir < 0 { 2 } else { 0 }), off: 0 };
+            for separate_pages in [false, true] {
+                let mut placed = layout.clone();
+                let page_hint = usize::from(separate_pages && dir < 0);
+                if separate_pages {
+                    // Keep the laid-out cell and its clip together on the adjacent page.
+                    let mut only_origin = placed.pages[0].clone();
+                    only_origin.items.retain(|item| matches!(item, Placed::Lines { path, .. } if path == &origin.path));
+                    let mut rest = placed.pages[0].clone();
+                    rest.items.retain(|item| !matches!(item, Placed::Lines { path, .. } if path == &origin.path));
+                    placed.pages = if dir < 0 { vec![rest, only_origin] } else { vec![only_origin, rest] };
+                    placed.index.clear();
+                    for (pi, page) in placed.pages.iter().enumerate() {
+                        for (ii, item) in page.items.iter().enumerate() {
+                            if let Placed::Lines { story, path, .. } = item {
+                                placed.index.entry((*story, path.clone())).or_default().push((pi, ii));
+                            }
+                        }
+                    }
+                }
+                for gx in [line.x, line.right] {
+                    let (next, goal) = placed.vertical(&origin, Some(gx), dir, page_hint).unwrap();
+                    assert_eq!(goal, gx, "the horizontal goal is retained");
+                    let expected = if clipped { Path::top(if dir < 0 { 0 } else { 2 }) } else { cell_path.clone() };
+                    assert_eq!(
+                        next.path, expected,
+                        "{height}, {rule:?}, direction {dir}, separate pages {separate_pages}: a visible line must not yield a hidden caret"
+                    );
+                    let caret = placed.caret_on(&next, usize::from(separate_pages && dir > 0)).unwrap();
+                    assert_eq!(caret.page, usize::from(separate_pages && dir > 0));
+                }
+            }
+        }
+    }
+}

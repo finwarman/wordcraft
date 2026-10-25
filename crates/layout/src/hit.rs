@@ -646,6 +646,12 @@ impl DocLayout {
     pub fn vertical(&self, pos: &Pos, goal_x: Option<f32>, dir: i32, page_hint: usize) -> Option<(Pos, f32)> {
         let c = self.caret_anchor_on(pos, page_hint)?;
         let gx = goal_x.unwrap_or(c.x);
+        // A retained object line can expose leading while its selected caret stays clipped.
+        let visible = |l: &LineHit<'_>, page| {
+            let off = l.para.off_at_x(l.li, gx - l.x);
+            let target = Pos { story: l.story, path: l.path.clone(), off };
+            self.caret_on(&target, page).is_some_and(|caret| caret.page == page)
+        };
         let page = self.pages.get(c.page)?;
         let lines = page_lines(page, pos.story);
         let cur_mid = c.top + c.height / 2.0;
@@ -659,6 +665,7 @@ impl DocLayout {
                     mid > cur_mid + 1.0 && l.top >= c.top + c.height * 0.5
                 }
             })
+            .filter(|l| visible(l, c.page))
             .collect();
         let across: Vec<&LineHit> = cands.iter().copied().filter(|l| gx >= l.left - 2.0 && gx <= l.right + 2.0).collect();
         let target = match nearest(&across, dir) {
@@ -684,7 +691,8 @@ impl DocLayout {
         let np = if dir < 0 { c.page.checked_sub(1)? } else { c.page + 1 };
         let p = self.pages.get(np)?;
         let lines = page_lines(p, pos.story);
-        let l = if dir < 0 { lines.iter().max_by(|a, b| a.top.total_cmp(&b.top))? } else { lines.iter().min_by(|a, b| a.top.total_cmp(&b.top))? };
+        let candidates = lines.iter().filter(|l| visible(l, np));
+        let l = if dir < 0 { candidates.max_by(|a, b| a.top.total_cmp(&b.top))? } else { candidates.min_by(|a, b| a.top.total_cmp(&b.top))? };
         let off = l.para.off_at_x(l.li, gx - l.x);
         Some((Pos { story: l.story, path: l.path.clone(), off }, gx))
     }
