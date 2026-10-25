@@ -252,3 +252,40 @@ fn unranked_keeps_zero_on_overflow() {
     assert_eq!(reserve(&mut doc, &[1]).unwrap(), [3]);
     assert_eq!(document_ranks(&doc).unwrap(), [0, 2, 1]);
 }
+
+#[test]
+fn paste_keeps_unknown_order() {
+    let source = document(&[7, 0, 2]);
+    let frag = source.copy_range(&source.start_of(StoryRef::Body), &source.end_of(StoryRef::Body));
+    let before = frag.clone();
+    let mut session = Session::new(document(&[100]));
+    session.sel = Selection::caret(session.doc.end_of(StoryRef::Body));
+    super::super::paste::insert(&mut session, frag.clone()).unwrap();
+    assert_eq!(document_ranks(&session.doc).unwrap(), [100, 102, 102, 101]);
+    let order: Vec<_> = session.layout().pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            wordcraft_layout::Placed::Object { off, .. } if *off > 0 => Some(*off),
+            _ => None,
+        })
+        .collect();
+    let unit = wordcraft_doc::para::OBJ.len_utf8();
+    assert_eq!(order, [3 * unit, unit, 2 * unit]);
+    assert_eq!(frag, before);
+    assert_eq!(document_ranks(&source).unwrap(), [7, 0, 2]);
+}
+
+#[test]
+fn source_order_resets_per_story() {
+    let mut source = document(&[9, 0]);
+    let part = source.add_part(PartKind::TextBox, document(&[0, 2]).body);
+    let p = source.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    let InlineObject::Shape { story, .. } = &mut p.objects[0] else { panic!("shape") };
+    *story = Some(part);
+    p.touch();
+    let mut frag = source.copy_range(&source.start_of(StoryRef::Body), &source.end_of(StoryRef::Body));
+    assert_eq!(fragment_ranks(&frag).unwrap(), [9, 9, 0, 2]);
+    fragment(&mut document(&[100]), &mut frag, Intent::Fresh).unwrap();
+    assert_eq!(fragment_ranks(&frag).unwrap(), [103, 103, 101, 102]);
+}

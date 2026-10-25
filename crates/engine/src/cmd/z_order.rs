@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use wordcraft_doc::edit::Fragment;
-use wordcraft_doc::para::{InlineObject, Wrap};
+use wordcraft_doc::para::{Float, InlineObject, Wrap};
 use wordcraft_doc::props::CharProps;
 use wordcraft_doc::{Block, Document, Pos};
 
@@ -35,18 +35,43 @@ impl Budget {
     }
 }
 
+// Resolve unknown source ranks as layout does before assigning fresh positive ranks.
+#[derive(Default)]
+struct SourceOrder {
+    front: u32,
+}
+
+impl SourceOrder {
+    fn rank(&mut self, float: &Float, local: &mut u32) -> u32 {
+        if float.hidden {
+            return float.z;
+        }
+        *local = (*local).max(float.z);
+        if float.wrap == Wrap::BehindText {
+            return if float.z == 0 { *local } else { float.z };
+        }
+        self.front = self.front.max(*local);
+        if float.z == 0 { self.front } else { float.z }
+    }
+}
+
 fn scan_block(block: &Block, depth: usize, budget: &mut Budget, ranks: &mut Vec<u32>) -> Result<(), CmdError> {
+    scan_ordered(block, depth, budget, ranks, None)
+}
+
+fn scan_ordered(block: &Block, depth: usize, budget: &mut Budget, ranks: &mut Vec<u32>, mut order: Option<&mut SourceOrder>) -> Result<(), CmdError> {
     budget.take()?;
     if depth > MAX_ORDER_DEPTH {
         return Err(limit());
     }
     match block {
         Block::Para(p) => {
+            let mut local = 0;
             for obj in &p.objects {
                 budget.take()?;
                 if let Some((_, _, f)) = obj.frame().filter(|_| floating(obj)) {
                     ranks.try_reserve(1).map_err(|_| limit())?;
-                    ranks.push(f.z);
+                    ranks.push(order.as_deref_mut().map_or(f.z, |order| order.rank(f, &mut local)));
                 }
             }
         }
@@ -56,7 +81,7 @@ fn scan_block(block: &Block, depth: usize, budget: &mut Budget, ranks: &mut Vec<
                 for cell in &row.cells {
                     budget.take()?;
                     for child in &cell.blocks {
-                        scan_block(child, depth + 1, budget, ranks)?;
+                        scan_ordered(child, depth + 1, budget, ranks, order.as_deref_mut())?;
                     }
                 }
             }
@@ -81,13 +106,15 @@ fn document_ranks(doc: &Document) -> Result<Vec<u32>, CmdError> {
 fn fragment_ranks(frag: &Fragment) -> Result<Vec<u32>, CmdError> {
     let mut ranks = Vec::new();
     let mut budget = Budget(MAX_ORDER_ITEMS);
+    let mut order = SourceOrder::default();
     for block in &frag.blocks {
-        scan_block(block, 0, &mut budget, &mut ranks)?;
+        scan_ordered(block, 0, &mut budget, &mut ranks, Some(&mut order))?;
     }
     for part in frag.parts.values() {
         budget.take()?;
+        let mut order = SourceOrder::default();
         for block in &part.blocks {
-            scan_block(block, 0, &mut budget, &mut ranks)?;
+            scan_ordered(block, 0, &mut budget, &mut ranks, Some(&mut order))?;
         }
     }
     Ok(ranks)
