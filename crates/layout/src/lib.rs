@@ -3648,7 +3648,18 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
             .map(v_span)
             .map(|(_, bottom)| bottom)
             .fold(prev.body.y, f32::max);
-        push_para(&mut prev.items, StoryRef::Body, &[block as u32], &pl, 0, pl.lines.len(), prev.body.x, y, width, Edges::own(&pl, 0, pl.lines.len()));
+        push_para(
+            &mut prev.items,
+            StoryRef::Body,
+            &[block as u32],
+            &pl,
+            0,
+            pl.lines.len(),
+            prev.body.x,
+            y,
+            width,
+            Edges::own(&pl, 0, pl.lines.len()),
+        );
         return;
     }
     if !pb.web && ctx.quiet_marks.binary_search(&block).is_ok() {
