@@ -62,8 +62,8 @@ def paragraph(texts, font="Arial", size=8, rule=AUTO, language="en-US"):
     fmt = formatting(font, size, language)
     line = size * 20 if rule == EXACT else 240
     text = '<w:br/>'.join(f'<w:t>{escape(text)}</w:t>' for text in texts)
-    return (f'<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="{line}" '
-            f'w:lineRule="{rule}"/><w:snapToGrid w:val="0"/><w:rPr>{fmt}</w:rPr>'
+    return (f'<w:p><w:pPr><w:snapToGrid w:val="0"/><w:spacing w:before="0" w:after="0" '
+            f'w:line="{line}" w:lineRule="{rule}"/><w:rPr>{fmt}</w:rPr>'
             f'</w:pPr><w:r><w:rPr>{fmt}</w:rPr>{text}</w:r></w:p>')
 
 
@@ -74,7 +74,7 @@ def document_parts(cases):
         body += paragraph((label,))
         body += paragraph(row["texts"], row["font"], row["size"], row["rule"], row["language"])
     body += ('<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
-             '<w:pgMar w:top="600" w:right="600" w:bottom="600" w:left="600"/></w:sectPr>')
+             '<w:pgMar w:top="600" w:right="600" w:bottom="600" w:left="600" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr>')
     content = ('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
                '<Default Extension="xml" ContentType="application/xml"/>')
