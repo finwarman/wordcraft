@@ -22,6 +22,8 @@ Exact line spacing keeps the run font baseline around tall equations; automatic 
 
 ### Table paragraph shading across pages
 
+[Reproducible synthetic paint comparison](evidence/table-shading-3428/README.md) covers whole moves, continuations, closing rules and unchanged cell backgrounds.
+
 Matched paragraph shading in direct horizontal body-table cells follows moved or split text; cell backgrounds keep their cell bounds. Source/model checks only; no new Word comparison.
 
 Recognition requires the paragraph shading color and emitted line geometry inside one row-contained body-cell frame. Nested, turned, clipped, foreign-story, ambiguous and out-of-row frames retain prior geometric routing. This does not establish native Word, corpus or general table parity.
