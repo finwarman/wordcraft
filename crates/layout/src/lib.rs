@@ -3581,7 +3581,7 @@ fn place_objects(
                 }
                 layer.extend(items);
             }
-            front.push(Placed::Object {
+            layer.push(Placed::Object {
                 rect,
                 spin: float.spin(),
                 story,

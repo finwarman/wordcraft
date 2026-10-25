@@ -833,6 +833,10 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
     if !(cut > 0.0 && cut < row.height) {
         return None;
     }
+    // Rotation markers and their text must travel together. Keep this row whole.
+    if row.items.iter().any(|item| matches!(item, Placed::Spun { .. })) {
+        return None;
+    }
     let limit = cut - row.bottom.clamp(0.0, cut);
     let fits = |bottom: f32| bottom <= limit + 0.01;
     // Each cell's items: every item of a row is in one of its cells.

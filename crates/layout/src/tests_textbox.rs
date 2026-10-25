@@ -356,7 +356,7 @@ fn a_turned_box_shape_draws_the_same_alone_as_on_the_page() {
     turned_box(&mut d, 30.0, false, false);
     if let Some(InlineObject::Shape { effects, fill, stroke, .. }) = d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().objects.first_mut() {
         effects.shadow = Some(wordcraft_doc::effects::Shadow { distance: 8.0, angle: 0.0, ..Default::default() });
-        *fill = Some(wordcraft_doc::props::Rgb(0, 0, 255));
+        *fill = Some(wordcraft_doc::fill::Fill::solid(wordcraft_doc::props::Rgb(0, 0, 255)));
         *stroke = Some(wordcraft_doc::props::Rgb::BLACK);
     }
     let l = lay(&d);
@@ -557,4 +557,43 @@ fn vertical_spun_preview() {
         let preview = display::object_display(&document, page, source, object.rect, object.text_box, &options);
         assert_eq!(glyph_turns(&preview), glyph_turns(&display::page_display(&document, page, &options)), "{direction:?}");
     }
+}
+
+#[test]
+fn behind_frame_stays_in_turn() {
+    let mut doc = Document::from_text("Anchor\nEarlier\nLater");
+    let id = turned_box(&mut doc, 30.0, false, false);
+    doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap().objects[0].float_mut().unwrap().wrap = Wrap::BehindText;
+    doc.body.swap(0, 1);
+    doc.last_section.valign = wordcraft_doc::section::PageVAlign::Justify;
+    let layout = lay(&doc);
+    let items = &layout.pages[0].items;
+    let open = items.iter().position(|it| matches!(it, Placed::Spun { part, open: true, .. } if *part == id)).unwrap();
+    let close = items.iter().position(|it| matches!(it, Placed::Spun { part, open: false, .. } if *part == id)).unwrap();
+    let frame = items.iter().position(|it| matches!(it, Placed::Object { text_box: Some(part), .. } if *part == id)).unwrap();
+    assert!(open < frame && frame < close, "the hit frame belongs to its turn");
+    let Placed::Spun { rect, .. } = &items[open] else { panic!("missing turn") };
+    assert_eq!(frame_of(&layout, id), *rect, "justification keeps the hit and paint frames together");
+}
+
+#[test]
+fn rotated_row_stays_whole() {
+    use crate::table::{CellPart, RowLayout, split_row};
+    let layout = lay(&Document::from_text("Line"));
+    let Placed::Lines { story, path, para, .. } = layout.pages[0].items.iter().find(|it| matches!(it, Placed::Lines { .. })).unwrap() else {
+        panic!("missing line")
+    };
+    let line = |y| Placed::Lines {
+        story: *story, path: path.clone(), para: para.clone(), l0: 0, l1: 1, x: 0.0, y, turn: TextDirection::Horizontal,
+    };
+    let mut row = RowLayout {
+        height: 200.0, items: vec![line(0.0), line(150.0)], bottom: 4.0, edge: 0.0,
+        cells: vec![CellPart { top: 2.0, items: 0..2, end: Some(170.0) }],
+    };
+    assert!(split_row(&row, 100.0).is_some(), "ordinary text can split");
+    let marker = |open| Placed::Spun { rect: Rect::new(0.0, 0.0, 100.0, 170.0), spin: Spin::new(30.0, false, false), part: 1, open };
+    row.items.insert(0, marker(true));
+    row.items.push(marker(false));
+    row.cells[0].items = 0..row.items.len();
+    assert!(split_row(&row, 100.0).is_none(), "markers and enclosed content remain atomic");
 }
