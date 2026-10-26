@@ -312,6 +312,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         }
     }
     let header = t.header(app.ui.header_colour);
+    let (button_fill, button_hover, button_ink) = t.header_buttons(app.ui.header_colour);
     // Tab strip.
     egui::Panel::top("tabs")
         .exact_size(30.0)
@@ -357,17 +358,17 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                         let (share_size, share_text) =
                             if plan.buttons < 2 { (((share_w + 36.0).max(74.0), 24.0), true) } else { ((30.0, 24.0), false) };
                         let (r, resp) = ui.allocate_exact_size(vec2(share_size.0, share_size.1), Sense::click());
-                        ui.painter().rect_filled(r, 4.0, if resp.hovered() { header.accent_text } else { header.accent });
+                        ui.painter().rect_filled(r, 4.0, if resp.hovered() { button_hover } else { button_fill });
                         let icon_x = if share_text { r.min.x + 14.0 } else { r.center().x };
                         icons::paint(
                             ui.painter(),
                             Rect::from_center_size(pos2(icon_x, r.center().y), vec2(14.0, 14.0)),
                             "share",
-                            header.on_accent,
-                            header.on_accent,
+                            button_ink,
+                            button_ink,
                         );
                         if share_text {
-                            ui.painter().text(pos2(r.min.x + 26.0, r.center().y), Align2::LEFT_CENTER, share, medium(12.0), header.on_accent);
+                            ui.painter().text(pos2(r.min.x + 26.0, r.center().y), Align2::LEFT_CENTER, share, medium(12.0), button_ink);
                         }
                         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, share));
                         if resp.on_hover_text(tl!("Export a copy to share (PDF, Word document)")).clicked() {

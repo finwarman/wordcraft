@@ -528,6 +528,15 @@ impl Tokens {
         if ctx.global_style().visuals.dark_mode { Tokens::dark() } else { Tokens::light() }
     }
 
+    /// Filled header buttons keep the chosen hue and use their own readable foreground.
+    pub(crate) fn header_buttons(self, colour: HeaderColour) -> (Color32, Color32, Color32) {
+        let Some(rgb) = colour.rgb() else { return (self.accent, self.accent_text, self.on_accent) };
+        let background = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+        let ink = header_ink(rgb);
+        let fill = header_hover(background, ink);
+        (fill, header_hover(fill, ink), ink)
+    }
+
     /// Header controls use a local palette; menus, input fields and document colours keep theirs.
     pub(crate) fn header(mut self, colour: HeaderColour) -> Self {
         let Some(rgb) = colour.rgb() else { return self };
