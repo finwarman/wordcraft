@@ -664,26 +664,28 @@ fn theme_picker(app: &mut WordApp, ui: &mut Ui) {
     });
 }
 
-/// An opaque header colour, with a reset to the interface's normal palette.
+/// Named header colours and a custom opaque colour; Default restores the normal palette.
 fn header_colour_picker(app: &mut WordApp, ui: &mut Ui) {
     use crate::theme::HeaderColour;
     ui.horizontal(|ui| {
         let label = ui.label(tl!("Header colour:"));
+        let combo = egui::ComboBox::from_id_salt("header_colour").selected_text(tl!(app.ui.header_colour.label())).width(120.0).show_ui(ui, |ui| {
+            for (name, colour) in HeaderColour::PRESETS {
+                if ui.selectable_label(app.ui.header_colour == colour, tl!(name)).clicked() {
+                    let _ = app.run("ui.headerColour", json!({"value": colour.code()}));
+                }
+            }
+        });
+        combo.response.labelled_by(label.id);
         let default = Tokens::get(ui.ctx()).title_bar;
         let mut rgb = app.ui.header_colour.rgb().unwrap_or([default.r(), default.g(), default.b()]);
-        let response = ui.color_edit_button_srgb(&mut rgb).labelled_by(label.id);
+        let response = ui.color_edit_button_srgb(&mut rgb).labelled_by(label.id).on_hover_text(tl!("Choose a custom colour"));
         if response.changed() {
             let [r, g, b] = rgb;
             let _ = app.run("ui.headerColour", json!({"value": format!("#{r:02X}{g:02X}{b:02X}")}));
         }
-        ui.monospace(app.ui.header_colour.code());
-        for (name, colour) in [("Pink", HeaderColour::PINK), ("Blue", HeaderColour::BLUE)] {
-            if ui.button(tl!(name)).clicked() {
-                let _ = app.run("ui.headerColour", json!({"value": colour.code()}));
-            }
-        }
-        if ui.add_enabled(app.ui.header_colour.rgb().is_some(), egui::Button::new(tl!("Reset"))).clicked() {
-            let _ = app.run("ui.headerColour", json!({"value": HeaderColour::DEFAULT_CODE}));
+        if app.ui.header_colour.rgb().is_some() {
+            ui.monospace(app.ui.header_colour.code());
         }
     });
 }

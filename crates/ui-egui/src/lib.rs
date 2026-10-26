@@ -277,7 +277,7 @@ pub struct UiState {
     pub recent_fonts: Vec<String>,
     /// Interface theme: light, dark, or follow the OS appearance (#115).
     pub theme: theme::Appearance,
-    /// Optional title-bar colour; kept separately from the light/dark interface theme.
+    /// Optional title-bar and ribbon-tab colour, separate from light/dark appearance.
     #[serde(rename = "headerColour")]
     header_colour: theme::HeaderColour,
     /// Interface size (#475, #822): Auto (the display scale the system reports) or an absolute

@@ -8,7 +8,7 @@ use egui::{Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily,
 pub const APP_COLOR: Color32 = Color32::from_rgb(0x3B, 0x5B, 0xDB);
 pub const APP_INK: Color32 = Color32::from_rgb(0x2B, 0x47, 0xB5);
 
-/// An optional opaque title-bar colour, independent of the interface's light/dark setting.
+/// An optional title-bar and ribbon-tab colour, independent of light/dark appearance.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(from = "serde_json::Value", into = "serde_json::Value")]
 pub(crate) struct HeaderColour(Option<[u8; 3]>);
@@ -17,6 +17,11 @@ impl HeaderColour {
     pub(crate) const DEFAULT_CODE: &str = "default";
     pub(crate) const PINK: Self = Self(Some([0xF6, 0xBF, 0xD3]));
     pub(crate) const BLUE: Self = Self(Some([APP_COLOR.r(), APP_COLOR.g(), APP_COLOR.b()]));
+    pub(crate) const PRESETS: [(&'static str, Self); 3] = [("Default", Self(None)), ("Blue", Self::BLUE), ("Pink", Self::PINK)];
+
+    pub(crate) fn label(self) -> &'static str {
+        Self::PRESETS.into_iter().find(|(_, colour)| *colour == self).map_or("Custom", |(name, _)| name)
+    }
 
     pub(crate) fn from_code(value: &str) -> Option<Self> {
         let value = value.trim();
@@ -55,23 +60,42 @@ impl From<HeaderColour> for serde_json::Value {
 
 /// Choose the higher-contrast black or white ink using linear sRGB luminance.
 fn header_ink(rgb: [u8; 3]) -> Color32 {
+    // Where black and white have equal WCAG contrast, sqrt(1.05 * 0.05) - 0.05.
+    const INK_SWITCH: f32 = 0.17912878;
+    if luminance(rgb) > INK_SWITCH { Color32::BLACK } else { Color32::WHITE }
+}
+
+/// Relative luminance of an opaque sRGB colour, as used by WCAG contrast ratios.
+fn luminance(rgb: [u8; 3]) -> f32 {
     const LINEAR_LIMIT: f32 = 0.04045;
     const LINEAR_SCALE: f32 = 12.92;
     const GAMMA_OFFSET: f32 = 0.055;
     const GAMMA_SCALE: f32 = 1.055;
     const GAMMA: f32 = 2.4;
     const WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
-    // Where black and white have equal WCAG contrast, sqrt(1.05 * 0.05) - 0.05.
-    const INK_SWITCH: f32 = 0.17912878;
-    let luminance: f32 = rgb
-        .into_iter()
+    rgb.into_iter()
         .zip(WEIGHTS)
         .map(|(c, weight)| {
             let c = f32::from(c) / f32::from(u8::MAX);
             weight * if c <= LINEAR_LIMIT { c / LINEAR_SCALE } else { ((c + GAMMA_OFFSET) / GAMMA_SCALE).powf(GAMMA) }
         })
-        .sum();
-    if luminance > INK_SWITCH { Color32::BLACK } else { Color32::WHITE }
+        .sum()
+}
+
+/// A visible hover fill that retains normal-text contrast, including near the ink switch.
+fn header_hover(background: Color32, ink: Color32) -> Color32 {
+    const HOVER_BLEND: f32 = 0.12;
+    const CONTRAST_OFFSET: f32 = 0.05;
+    const MIN_TEXT_CONTRAST: f32 = 4.5;
+    let candidate = background.lerp_to_gamma(ink, HOVER_BLEND);
+    let light = luminance([candidate.r(), candidate.g(), candidate.b()]);
+    let contrast =
+        if ink == Color32::BLACK { (light + CONTRAST_OFFSET) / CONTRAST_OFFSET } else { (1.0 + CONTRAST_OFFSET) / (light + CONTRAST_OFFSET) };
+    if contrast >= MIN_TEXT_CONTRAST {
+        return candidate;
+    }
+    let away = if ink == Color32::BLACK { Color32::WHITE } else { Color32::BLACK };
+    background.lerp_to_gamma(away, HOVER_BLEND)
 }
 
 /// The interface theme setting (File › Options › General, View › Interface Theme): a fixed light or
@@ -510,11 +534,12 @@ impl Tokens {
         let background = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
         let ink = header_ink(rgb);
         self.title_bar = background;
+        self.tab_strip = background;
         self.text = ink;
         self.text_dim = ink;
         self.icon = ink;
         self.text_disabled = background.lerp_to_gamma(ink, 0.45);
-        self.hover = background.lerp_to_gamma(ink, 0.12);
+        self.hover = header_hover(background, ink);
         self.accent = ink;
         self.accent_text = ink;
         self.on_accent = background;
