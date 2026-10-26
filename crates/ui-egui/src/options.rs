@@ -211,6 +211,7 @@ fn flag(app: &mut WordApp, ui: &mut Ui, label: &str, key: &str, value: bool) {
 fn general(app: &mut WordApp, ui: &mut Ui) {
     section(ui, "Interface");
     theme_picker(app, ui);
+    header_colour_picker(app, ui);
     interface_size_picker(app, ui);
     ui.checkbox(&mut app.ui.mini_toolbar, tl!("Show the mini toolbar when text is selected"));
     let mut dark_page = app.session.view.dark_mode;
@@ -660,6 +661,30 @@ fn theme_picker(app: &mut WordApp, ui: &mut Ui) {
             }
         });
         combo.response.labelled_by(label.id);
+    });
+}
+
+/// An opaque header colour, with a reset to the interface's normal palette.
+fn header_colour_picker(app: &mut WordApp, ui: &mut Ui) {
+    use crate::theme::HeaderColour;
+    ui.horizontal(|ui| {
+        let label = ui.label(tl!("Header colour:"));
+        let default = Tokens::get(ui.ctx()).title_bar;
+        let mut rgb = app.ui.header_colour.rgb().unwrap_or([default.r(), default.g(), default.b()]);
+        let response = ui.color_edit_button_srgb(&mut rgb).labelled_by(label.id);
+        if response.changed() {
+            let [r, g, b] = rgb;
+            let _ = app.run("ui.headerColour", json!({"value": format!("#{r:02X}{g:02X}{b:02X}")}));
+        }
+        ui.monospace(app.ui.header_colour.code());
+        for (name, colour) in [("Pink", HeaderColour::PINK), ("Blue", HeaderColour::BLUE)] {
+            if ui.button(tl!(name)).clicked() {
+                let _ = app.run("ui.headerColour", json!({"value": colour.code()}));
+            }
+        }
+        if ui.add_enabled(app.ui.header_colour.rgb().is_some(), egui::Button::new(tl!("Reset"))).clicked() {
+            let _ = app.run("ui.headerColour", json!({"value": HeaderColour::DEFAULT_CODE}));
+        }
     });
 }
 

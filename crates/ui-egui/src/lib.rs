@@ -277,6 +277,9 @@ pub struct UiState {
     pub recent_fonts: Vec<String>,
     /// Interface theme: light, dark, or follow the OS appearance (#115).
     pub theme: theme::Appearance,
+    /// Optional title-bar colour; kept separately from the light/dark interface theme.
+    #[serde(rename = "headerColour")]
+    header_colour: theme::HeaderColour,
     /// Interface size (#475, #822): Auto (the display scale the system reports) or an absolute
     /// size in percent. Junk saved values read as Auto; out-of-range ones are clamped to 50–300 %.
     #[serde(rename = "uiScale")]
@@ -425,6 +428,7 @@ impl Default for UiState {
             recent_colors: Vec::new(),
             recent_fonts: Vec::new(),
             theme: theme::Appearance::default(),
+            header_colour: theme::HeaderColour::default(),
             interface_size: theme::InterfaceSize::default(),
             legacy_interface_size: None,
             animations: theme::Animations::default(),
@@ -1937,6 +1941,15 @@ impl WordApp {
                 }
                 json!({"theme": self.ui.theme.code(), "dark": self.ui_is_dark()})
             }
+            "ui.headerColour" => {
+                if let Some(value) = p.get("value") {
+                    let Some(colour) = value.as_str().and_then(theme::HeaderColour::from_code) else {
+                        return Some(Err("use #RRGGBB or default for the header colour".into()));
+                    };
+                    self.ui.header_colour = colour;
+                }
+                json!({"value": self.ui.header_colour.code()})
+            }
             "ui.interfaceSize" => {
                 // `auto` (the display scale the system reports) or an absolute size in percent,
                 // 50–300 (clamped); no value reads it. `percent` in the result is the size the
@@ -3341,6 +3354,7 @@ pub(crate) fn works_without_document(id: &str) -> bool {
             | "ui.keytips"
             | "ui.dark"
             | "ui.theme"
+            | "ui.headerColour"
             | "ui.interfaceSize"
             | "ui.animations"
             | "ui.language"

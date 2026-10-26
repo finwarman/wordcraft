@@ -8,6 +8,72 @@ use egui::{Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily,
 pub const APP_COLOR: Color32 = Color32::from_rgb(0x3B, 0x5B, 0xDB);
 pub const APP_INK: Color32 = Color32::from_rgb(0x2B, 0x47, 0xB5);
 
+/// An optional opaque title-bar colour, independent of the interface's light/dark setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "serde_json::Value", into = "serde_json::Value")]
+pub(crate) struct HeaderColour(Option<[u8; 3]>);
+
+impl HeaderColour {
+    pub(crate) const DEFAULT_CODE: &str = "default";
+    pub(crate) const PINK: Self = Self(Some([0xF6, 0xBF, 0xD3]));
+    pub(crate) const BLUE: Self = Self(Some([APP_COLOR.r(), APP_COLOR.g(), APP_COLOR.b()]));
+
+    pub(crate) fn from_code(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case(Self::DEFAULT_CODE) {
+            return Some(Self::default());
+        }
+        let hex = value.strip_prefix('#')?;
+        if hex.len() != 6 || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let n = u32::from_str_radix(hex, 16).ok()?;
+        Some(Self(Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])))
+    }
+
+    pub(crate) fn code(self) -> String {
+        self.0.map_or_else(|| Self::DEFAULT_CODE.to_string(), |[r, g, b]| format!("#{r:02X}{g:02X}{b:02X}"))
+    }
+
+    pub(crate) fn rgb(self) -> Option<[u8; 3]> {
+        self.0
+    }
+}
+
+/// Invalid saved colours fall back locally without discarding the person's other preferences.
+impl From<serde_json::Value> for HeaderColour {
+    fn from(value: serde_json::Value) -> Self {
+        value.as_str().and_then(Self::from_code).unwrap_or_default()
+    }
+}
+
+impl From<HeaderColour> for serde_json::Value {
+    fn from(value: HeaderColour) -> Self {
+        Self::String(value.code())
+    }
+}
+
+/// Choose the higher-contrast black or white ink using linear sRGB luminance.
+fn header_ink(rgb: [u8; 3]) -> Color32 {
+    const LINEAR_LIMIT: f32 = 0.04045;
+    const LINEAR_SCALE: f32 = 12.92;
+    const GAMMA_OFFSET: f32 = 0.055;
+    const GAMMA_SCALE: f32 = 1.055;
+    const GAMMA: f32 = 2.4;
+    const WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    // Where black and white have equal WCAG contrast, sqrt(1.05 * 0.05) - 0.05.
+    const INK_SWITCH: f32 = 0.17912878;
+    let luminance: f32 = rgb
+        .into_iter()
+        .zip(WEIGHTS)
+        .map(|(c, weight)| {
+            let c = f32::from(c) / f32::from(u8::MAX);
+            weight * if c <= LINEAR_LIMIT { c / LINEAR_SCALE } else { ((c + GAMMA_OFFSET) / GAMMA_SCALE).powf(GAMMA) }
+        })
+        .sum();
+    if luminance > INK_SWITCH { Color32::BLACK } else { Color32::WHITE }
+}
+
 /// The interface theme setting (File › Options › General, View › Interface Theme): a fixed light or
 /// dark palette, or `System`, which follows the OS light/dark appearance live (#115). Dark page
 /// (View › Switch Modes) is separate: it changes how pages are drawn, never the interface (#312).
@@ -436,6 +502,23 @@ impl Tokens {
     }
     pub fn get(ctx: &egui::Context) -> Tokens {
         if ctx.global_style().visuals.dark_mode { Tokens::dark() } else { Tokens::light() }
+    }
+
+    /// Header controls use a local palette; menus, input fields and document colours keep theirs.
+    pub(crate) fn header(mut self, colour: HeaderColour) -> Self {
+        let Some(rgb) = colour.rgb() else { return self };
+        let background = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+        let ink = header_ink(rgb);
+        self.title_bar = background;
+        self.text = ink;
+        self.text_dim = ink;
+        self.icon = ink;
+        self.text_disabled = background.lerp_to_gamma(ink, 0.45);
+        self.hover = background.lerp_to_gamma(ink, 0.12);
+        self.accent = ink;
+        self.accent_text = ink;
+        self.on_accent = background;
+        self
     }
 }
 
