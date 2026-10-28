@@ -13273,3 +13273,42 @@ fn split_merge_dedups_bottom() {
 
 #[path = "merge_flow_controls.rs"]
 mod merge_flow_controls;
+
+fn break_before_table(text: &str, page_break_before: bool) -> Arc<Block> {
+    let mut p = Paragraph::with_text(text, CharProps::default());
+    p.props.page_break_before = Some(page_break_before);
+    let mut t = Table::new(1, 1, 200.0);
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+    Arc::new(Block::Table(t))
+}
+
+fn cell_pages(layout: &DocLayout) -> Vec<usize> {
+    layout.pages.iter().enumerate().flat_map(|(i, pg)| pg.items.iter().filter(|it| matches!(it, Placed::Cell { .. })).map(move |_| i)).collect()
+}
+
+#[test]
+fn table_breaks_before_first_cell() {
+    let mut d = Document::new();
+    d.body = vec![wordcraft_doc::para_block(Paragraph::with_text("Before", CharProps::default())), break_before_table("Heading", true)];
+    assert_eq!(cell_pages(&lay(&d)), vec![1]);
+}
+
+#[test]
+fn table_after_table_breaks_before() {
+    let mut d = Document::new();
+    d.body = vec![
+        break_before_table("First", false),
+        wordcraft_doc::para_block(Paragraph::with_text("", CharProps::default())),
+        break_before_table("Second", true),
+    ];
+    assert_eq!(cell_pages(&lay(&d)), vec![0, 1]);
+}
+
+#[test]
+fn table_at_top_keeps_page() {
+    let mut d = Document::new();
+    d.body = vec![break_before_table("Heading", true)];
+    let layout = lay(&d);
+    assert_eq!(layout.pages.len(), 1);
+    assert_eq!(cell_pages(&layout), vec![0]);
+}

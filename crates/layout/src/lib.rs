@@ -4557,6 +4557,11 @@ fn next_first_line(ctx: &mut Ctx, block: usize, width: f32, depth: usize, counte
 }
 
 fn row_keeps_next(row: &table::RowLayout) -> bool {
+    first_cell_flag(row, |rp| rp.keep_next)
+}
+
+/// A flag of the first paragraph of the row's first cell, which Word reads for the whole row.
+fn first_cell_flag(row: &table::RowLayout, flag: impl Fn(&wordcraft_doc::resolve::ResolvedPara) -> bool) -> bool {
     let Some(items) = row.cells.first().and_then(|cell| row.items.get(cell.items.clone())) else { return false };
     let Some((depth, story)) = items
         .iter()
@@ -4573,7 +4578,7 @@ fn row_keeps_next(row: &table::RowLayout) -> bool {
         .iter()
         .find_map(|item| match item {
             Placed::Lines { path, story: own, para, .. } if path.0.len() == depth && path.0.last() == Some(&0) && *own == story => {
-                Some(para.rp.keep_next)
+                Some(flag(&para.rp))
             }
             _ => None,
         })
@@ -4641,6 +4646,10 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
         // Too tall for a page: Word lets it run across pages like a table in the text, from its
         // own left edge.
         tl.x = float_table_x(pb, tl.width, &f, legacy, ctx.mirror) - pb.col_x();
+    }
+    // Word starts the table on a new page when its first cell opens with a page break before.
+    if !pb.at_top() && !pb.web && tl.rows.first().is_some_and(|row| first_cell_flag(row, |rp| rp.page_break_before)) {
+        pb.new_page(block, body_top);
     }
     // A table in the text flow starts below the floating objects in its way.
     below_floats(ctx, pb, pb.col_x() + tl.x, pb.col_x() + tl.x + tl.width, tl.rows.first().map_or(0.0, |r| r.height));
