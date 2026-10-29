@@ -84,6 +84,7 @@ fn place_break_mark(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: u
     });
     let pl = ctx.para_labelled(p, width, None, &[], None);
     let prev = &mut pb.pages[page];
+    let x = x + mirror_shift(&pl.rp, prev.number, pb.web);
     // Page alignment can move the body after its paragraph end was recorded.
     let y = owner
         .filter(|_| ctx.hf.sections.get(prev.section).is_some_and(|(_, sect)| sect.valign == wordcraft_doc::section::PageVAlign::Top))
