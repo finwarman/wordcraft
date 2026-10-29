@@ -4157,9 +4157,10 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     // A terminal page-break mark stays with its break and draws no bottom border there.
     let break_mark = !pb.web
         && pl.lines.len() >= 2
-        && pl.lines.get(pl.lines.len() - 2).is_some_and(|line| {
-            line.end == LineEnd::PageBreak && pl.lines.last().is_some_and(|mark| only_markers(p, mark.start..mark.stop))
-        });
+        && pl
+            .lines
+            .get(pl.lines.len() - 2)
+            .is_some_and(|line| line.end == LineEnd::PageBreak && pl.lines.last().is_some_and(|mark| only_markers(p, mark.start..mark.stop)));
     let height = pl.height + top_room + if break_mark { 0.0 } else { bottom_room };
     if pl.rp.keep_lines || (pl.rp.keep_next && pb.y + height <= pb.bottom + 0.01) {
         let need = height + if pl.rp.keep_next { next_first_line(ctx, block, width, 0, &mut ctx.counters.clone()) } else { 0.0 };

@@ -13647,3 +13647,64 @@ fn an_empty_bulleted_mark_after_a_bulleted_section_closer_draws_no_bullet() {
         assert!(text, "{filler} lines above: the text closer keeps its bullet");
     }
 }
+
+#[test]
+fn border_break_keeps_preflight() {
+    use wordcraft_doc::para::PAGE_BREAK;
+    use wordcraft_doc::props::LineSpacing;
+    const BODY_HEIGHT: f32 = 160.0;
+    const MARGIN: f32 = 20.0;
+    const LINE_HEIGHT: f32 = 10.0;
+    const BORDER_GAP: f32 = 20.0;
+
+    let make_para = |text: &str| {
+        let chr = wordcraft_doc::CharProps { font: Some("Source Sans 3".into()), size: Some(10.0), ..Default::default() };
+        let mut p = Paragraph::with_text(text, chr);
+        p.props.space_before = Some(0.0);
+        p.props.space_after = Some(0.0);
+        p.props.line_spacing = Some(LineSpacing::Exactly(LINE_HEIGHT));
+        p.props.keep_lines = Some(true);
+        p.props.keep_next = Some(false);
+        p.props.borders =
+            Some(Borders { bottom: Some(Border { style: BorderStyle::Single, width: 1.0, space: BORDER_GAP, color: None }), ..Default::default() });
+        p
+    };
+    let fitting = format!("One{PAGE_BREAK}");
+    let tall = format!("One\nTwo{PAGE_BREAK}");
+    let mut measured = Document::new();
+    measured.body = vec![wordcraft_doc::para_block(make_para(&fitting))];
+    let l = lay(&measured);
+    let room = l.pages[0]
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Placed::Lines { para, .. } => Some(para.height),
+            _ => None,
+        })
+        .unwrap();
+    assert!(room > 0.0 && room + BORDER_GAP + 1.0 < BODY_HEIGHT);
+    for (text, expected) in [(fitting.as_str(), 0), (tall.as_str(), 1), ("One", 1)] {
+        let mut d = Document::new();
+        d.last_section.margin_top = MARGIN;
+        d.last_section.margin_bottom = MARGIN;
+        d.last_section.page_h = BODY_HEIGHT + 2.0 * MARGIN;
+        let mut filler = Paragraph::with_text("Filler", Default::default());
+        filler.props.space_before = Some(0.0);
+        filler.props.space_after = Some(0.0);
+        filler.props.line_spacing = Some(LineSpacing::Exactly(BODY_HEIGHT - room));
+        let mut after = Paragraph::with_text("After", Default::default());
+        after.props.space_before = Some(0.0);
+        after.props.space_after = Some(0.0);
+        after.props.line_spacing = Some(LineSpacing::Exactly(LINE_HEIGHT));
+        d.body = vec![wordcraft_doc::para_block(filler), wordcraft_doc::para_block(make_para(text)), wordcraft_doc::para_block(after)];
+        let l = lay(&d);
+        assert_eq!(l.caret(&Pos::body(1, 0)).unwrap().page, expected, "{text:?}: omit only the terminal break border extent");
+        let pieces: Vec<_> = l
+            .pages
+            .iter()
+            .enumerate()
+            .filter_map(|(page, p)| p.items.iter().any(|it| matches!(it, Placed::Lines { path, .. } if *path == Path::top(1))).then_some(page))
+            .collect();
+        assert_eq!(pieces, vec![expected], "{text:?}: keep the paragraph whole");
+    }
+}
