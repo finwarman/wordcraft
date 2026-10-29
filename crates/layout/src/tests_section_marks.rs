@@ -1,3 +1,5 @@
+use super::headers::bookmark_pages;
+use super::notes::v_span;
 use super::*;
 use wordcraft_doc::props::{LineSpacing, ParaProps};
 use wordcraft_doc::section::{LineNumberRestart, LineNumbering, SectionProps};
