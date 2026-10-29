@@ -1727,6 +1727,10 @@ struct PageBuilder<'a> {
     /// The previous paragraph ended with a page break (its mark stayed with the break): the next
     /// paragraph, first on the new page, gets no space before (Word).
     after_break_mark: bool,
+    /// Column geometry of the preceding explicit page break.
+    break_column: Option<(f32, f32)>,
+    /// Paragraph path and terminal line of the break's placed fragment.
+    break_line: Option<(Path, usize)>,
     /// The next section starts on a new page: this section's closing mark, when empty, needs no
     /// room (Word leaves it on a full page rather than starting a page for it).
     next_starts_page: bool,
@@ -2156,16 +2160,18 @@ impl PageBuilder<'_> {
             }
         }
     }
+    fn empty_break_page(&self) -> bool {
+        self.after_break_mark
+            && self.at_top()
+            && self.notes.is_empty()
+            && self.pages.len() > 1
+            && self.pages.last().is_some_and(|p| p.items.len() == self.page_items_start)
+    }
     /// Takes back the page a page break has just started while nothing is on it, so a page start
     /// that follows (a next-page section) doesn't leave it blank: Word keeps the break's mark on
     /// the page before, and starts one page.
     fn take_back_break_page(&mut self) -> bool {
-        let empty = self.after_break_mark
-            && self.at_top()
-            && self.notes.is_empty()
-            && self.pages.len() > 1
-            && self.pages.last().is_some_and(|p| p.items.len() == self.page_items_start);
-        if !empty {
+        if !self.empty_break_page() {
             return false;
         }
         self.pages.pop();
@@ -2484,6 +2490,8 @@ fn layout_pass(
         orig_bottom: 0.0,
         prev: None,
         after_break_mark: false,
+        break_column: None,
+        break_line: None,
         next_starts_page: false,
         restart_at: None,
         excl: Vec::new(),
@@ -3904,37 +3912,7 @@ fn para_notes(doc: &Document, p: &Paragraph, pl: &ParaLayout) -> Vec<(usize, u32
 /// A closing mark before a continuous section takes no room after content. An otherwise empty
 /// section starting a new page retains its paragraph line.
 fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, body_top: f32) {
-    if !pb.web
-        && pb.after_break_mark
-        && pb.next_starts_page
-        && p.section.is_some()
-        && only_bookmarks(p)
-        && !ctx.has_label(p)
-        && let Some(page) = pb.pages.len().checked_sub(2)
-    {
-        // The structural section mark stays with the preceding break, without filling its new page.
-        let width = pb.col_w();
-        let pl = ctx.para_labelled(p, width, None, &[], None);
-        let prev = &mut pb.pages[page];
-        let y = prev
-            .items
-            .iter()
-            .filter(|it| matches!(it, Placed::Lines { story: StoryRef::Body, .. } | Placed::Cell { story: StoryRef::Body, .. }))
-            .map(v_span)
-            .map(|(_, bottom)| bottom)
-            .fold(prev.body.y, f32::max);
-        push_para(
-            &mut prev.items,
-            StoryRef::Body,
-            &[block as u32],
-            &pl,
-            0,
-            pl.lines.len(),
-            prev.body.x,
-            y,
-            width,
-            Edges::own(&pl, 0, pl.lines.len()),
-        );
+    if place_break_mark(ctx, pb, p, block) {
         return;
     }
     if !pb.web && ctx.quiet_marks.binary_search(&block).is_ok() {
@@ -3990,6 +3968,38 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
         return;
     }
     place_para_in_flow(ctx, pb, p, block, body_top);
+}
+
+fn place_break_mark(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize) -> bool {
+    if pb.web || !pb.empty_break_page() || !pb.next_starts_page || p.section.is_none() || !only_bookmarks(p) || ctx.has_label(p) {
+        return false;
+    }
+    let Some(page) = pb.pages.len().checked_sub(2) else { return false };
+    let owner = pb.para_end.filter(|(count, _, _)| *count == page + 1);
+    let (x, width) = owner.and(pb.break_column).unwrap_or_else(|| {
+        let prev = &pb.pages[page];
+        (prev.body.x, prev.body.w)
+    });
+    let pl = ctx.para_labelled(p, width, None, &[], None);
+    let prev = &mut pb.pages[page];
+    let x = x + mirror_shift(&pl.rp, prev.number, pb.web);
+    // Alignment moves the placed break; its identity survives column and indent changes.
+    let y = owner
+        .filter(|_| ctx.header_sections.get(prev.section).is_some_and(|(_, sect)| sect.valign == wordcraft_doc::section::PageVAlign::Top))
+        .map(|(_, _, end)| end)
+        .or_else(|| {
+            prev.items.iter().rev().find_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, path, l1, .. }
+                    if pb.break_line.as_ref().is_some_and(|(owner, end)| path == owner && l1 == end) =>
+                {
+                    Some(v_span(item).1)
+                }
+                _ => None,
+            })
+        });
+    let Some(y) = y else { return false };
+    push_para(&mut prev.items, StoryRef::Body, &[block as u32], &pl, 0, pl.lines.len(), x, y, width, Edges::own(&pl, 0, pl.lines.len()));
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -4512,6 +4522,8 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
             });
         match forced_break {
             Some(LineEnd::PageBreak) if mark_with_break => {
+                pb.break_column = Some((pb.col_x(), pb.col_w()));
+                pb.break_line = Some((Path::top(block), l0));
                 pb.new_page(block, body_top);
                 pb.after_break_mark = true;
             }
@@ -4817,6 +4829,7 @@ fn close_merge_bands(pb: &mut PageBuilder, bands: &mut HashMap<(usize, usize), M
 
 fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, block: usize, body_top: f32) {
     pb.prev = None;
+    pb.after_break_mark = false;
     let width = pb.col_w();
     let mut tl = table::layout_table(ctx, StoryRef::Body, t, &[block as u32], width, 1);
     if let Some(f) = t.props.float.filter(|_| !pb.web) {
