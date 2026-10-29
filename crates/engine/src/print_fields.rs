@@ -14,6 +14,7 @@ const MAX_REF_WORK_BYTES: usize = 64 * 1024 * 1024;
 const REF_NAME: &str = "REF";
 const PAGE_REF_NAME: &str = "PAGEREF";
 const MISSING_TARGET: &str = "Missing reference target.";
+const REF_RESULT_LIMIT: &str = "Print cross-reference text exceeds the work limit";
 const REF_INSPECTION_LIMIT: &str = "Print cross-reference inspection exceeds the work limit";
 
 pub(crate) struct PrintCopy {
@@ -29,26 +30,41 @@ enum RefPass<'a> {
 
 /// Evaluate a copy: exporting never changes editor caches, saved results or TOC structure.
 pub(crate) fn prepare(doc: &Document, opts: &LayoutOptions) -> Result<PrintCopy, String> {
+    match prepare_strict(doc, opts) {
+        Err(reason) if reason == REF_INSPECTION_LIMIT || reason == REF_RESULT_LIMIT => {
+            log::warn!("Print cross-reference refresh kept cached results: {reason}");
+            let doc = doc.clone();
+            let layout = wordcraft_layout::layout(&doc, &mut LayoutCache::new(), opts);
+            Ok(PrintCopy { doc, layout })
+        }
+        result => result,
+    }
+}
+
+/// Require settled references when validating an explicitly refreshed TOC.
+pub(crate) fn prepare_strict(doc: &Document, opts: &LayoutOptions) -> Result<PrintCopy, String> {
     let mut doc = doc.clone();
     let mut cache = LayoutCache::new();
     if doc.settings.protection.is_some() {
         let layout = wordcraft_layout::layout(&doc, &mut cache, opts);
         return Ok(PrintCopy { doc, layout });
     }
-    let held = held_ref_targets(&doc, MAX_REF_WORK_BYTES)?;
-    let mut budget = MAX_REF_WORK_BYTES;
-    settle_text(&mut doc, &mut budget, &held)?;
+    let mut work = RefWork { results: MAX_REF_WORK_BYTES, inspection: MAX_REF_WORK_BYTES };
+    inspect_doc(&doc, &mut work.inspection)?;
+    let held = held_ref_work(&doc, &mut work.inspection)?;
+    settle_text(&mut doc, &mut work, &held)?;
     for _ in 0..MAX_PAGE_REF_PASSES {
         let layout = wordcraft_layout::layout(&doc, &mut cache, opts);
-        if !refresh(&mut doc, RefPass::Pages(&layout), &mut budget, &held)? {
+        if !refresh(&mut doc, RefPass::Pages(&layout), &mut work, &held)? {
             return Ok(PrintCopy { doc, layout });
         }
-        settle_text(&mut doc, &mut budget, &held)?;
+        settle_text(&mut doc, &mut work, &held)?;
     }
     Err("Print page-reference results did not converge".into())
 }
 
-fn settle_text(doc: &mut Document, budget: &mut usize, held: &HashSet<String>) -> Result<(), String> {
+fn settle_text(doc: &mut Document, work: &mut RefWork, held: &HashSet<String>) -> Result<(), String> {
+    inspect_doc(doc, &mut work.inspection)?;
     let count: usize = std::iter::once(StoryRef::Body)
         .chain(doc.parts.keys().copied().map(StoryRef::Part))
         .map(|story| {
@@ -62,45 +78,61 @@ fn settle_text(doc: &mut Document, budget: &mut usize, held: &HashSet<String>) -
     // An acyclic chain propagates through at most its number of REF fields. One extra
     // pass checks stability without laying out every intermediate dependency value.
     for _ in 0..=count {
-        if !refresh(doc, RefPass::Text, budget, held)? {
+        if !refresh(doc, RefPass::Text, work, held)? {
             return Ok(());
         }
     }
     Err("Print REF dependencies did not converge".into())
 }
 
-fn refresh(doc: &mut Document, pass: RefPass<'_>, budget: &mut usize, held: &HashSet<String>) -> Result<bool, String> {
+fn page_targets(
+    doc: &Document,
+    layout: &DocLayout,
+    bookmarks: &HashMap<String, Pos>,
+    scan: usize,
+    inspection: &mut usize,
+) -> Result<HashMap<String, (u32, wordcraft_doc::section::NumFormat)>, String> {
+    let sections = doc.sections();
+    let mut ends = std::collections::HashMap::new();
+    for path in doc.para_paths(StoryRef::Body) {
+        let Some(p) = doc.para(StoryRef::Body, &path) else { continue };
+        for (off, object) in p.object_offsets().into_iter().zip(&p.objects) {
+            if let InlineObject::BookmarkEnd { name } = object {
+                ends.entry(name.clone()).or_insert_with(|| Pos::new(StoryRef::Body, path.clone(), off));
+            }
+        }
+    }
+    let mut pages = HashMap::new();
+    for (name, pos) in bookmarks {
+        inspect(inspection, 1)?;
+        let Some(end) = ends.get(name) else { continue };
+        let Some(first) = layout.caret(pos) else { continue };
+        let Some(last) = layout.caret(end) else { continue };
+        if end < pos {
+            continue;
+        }
+        let anchor = if first.page == last.page {
+            first
+        } else {
+            inspect(inspection, scan)?;
+            let Some(pos) = range_page_pos(doc, pos, end) else { continue };
+            let Some(caret) = layout.caret(&pos) else { continue };
+            caret
+        };
+        let Some(page) = layout.pages.get(anchor.page) else { continue };
+        let format = sections.get(page.section).map(|(_, s)| s.page_num_format).unwrap_or_default();
+        pages.insert(name.clone(), (page.number, format));
+    }
+    Ok(pages)
+}
+
+fn refresh(doc: &mut Document, pass: RefPass<'_>, work: &mut RefWork, held: &HashSet<String>) -> Result<bool, String> {
+    let scan = inspect_doc(doc, &mut work.inspection)?;
     let bookmarks: std::collections::HashMap<_, _> = doc.bookmarks().into_iter().collect();
     let nonbody_targets = nonbody_bookmarks(doc);
-    let sections = doc.sections();
     let pages: std::collections::HashMap<_, _> = match pass {
         RefPass::Text => Default::default(),
-        RefPass::Pages(layout) => {
-            let mut ends = std::collections::HashMap::new();
-            for path in doc.para_paths(StoryRef::Body) {
-                let Some(p) = doc.para(StoryRef::Body, &path) else { continue };
-                for (off, object) in p.object_offsets().into_iter().zip(&p.objects) {
-                    if let InlineObject::BookmarkEnd { name } = object {
-                        ends.entry(name.clone()).or_insert_with(|| Pos::new(StoryRef::Body, path.clone(), off));
-                    }
-                }
-            }
-            bookmarks
-                .iter()
-                .filter_map(|(name, pos)| {
-                    let end = ends.get(name)?;
-                    let first = layout.caret(pos)?;
-                    let last = layout.caret(end)?;
-                    if end < pos {
-                        return None;
-                    }
-                    let anchor = if first.page == last.page { first } else { layout.caret(&range_page_pos(doc, pos, end)?)? };
-                    let page = layout.pages.get(anchor.page)?;
-                    let format = sections.get(page.section).map(|(_, s)| s.page_num_format).unwrap_or_default();
-                    Some((name.clone(), (page.number, format)))
-                })
-                .collect()
-        }
+        RefPass::Pages(layout) => page_targets(doc, layout, &bookmarks, scan, &mut work.inspection)?,
     };
     let wanted = match pass {
         RefPass::Text => REF_NAME,
@@ -116,6 +148,7 @@ fn refresh(doc: &mut Document, pass: RefPass<'_>, budget: &mut usize, held: &Has
             for (index, (off, object)) in para.object_offsets().into_iter().zip(&para.objects).enumerate() {
                 let InlineObject::Field { instr, result, locked: false, .. } = object else { continue };
                 let pos = Pos::new(story, path.clone(), off);
+                inspect(&mut work.inspection, locks.len())?;
                 if locks.iter().any(|r| r.start < pos && pos < r.end) {
                     continue;
                 }
@@ -130,13 +163,18 @@ fn refresh(doc: &mut Document, pass: RefPass<'_>, budget: &mut usize, held: &Has
                 let text = match bookmarks.get(target) {
                     None if nonbody_targets.contains(target) => None,
                     None => Some(MISSING_TARGET.to_string()),
-                    Some(start) if wanted == REF_NAME => inline_bookmark(doc, target, start, *budget)?,
+                    Some(start) if wanted == REF_NAME => {
+                        if let Some(para) = doc.para(start.story, &start.path) {
+                            inspect_para(para, &mut work.inspection)?;
+                        }
+                        inline_bookmark(doc, target, start, work.results)?
+                    }
                     Some(_) => {
                         pages.get(target).map(|(number, format)| wordcraft_layout::fields::format_switch(instr).unwrap_or(*format).format(*number))
                     }
                 };
                 if let Some(text) = text.filter(|text| text != result) {
-                    *budget = budget.checked_sub(text.len()).ok_or("Print cross-reference text exceeds the work limit")?;
+                    work.results = work.results.checked_sub(text.len()).ok_or(REF_RESULT_LIMIT)?;
                     updates.push((index, text));
                 }
             }
@@ -210,10 +248,66 @@ fn bookmark_end(para: &Paragraph, name: &str, start: usize) -> Option<usize> {
         .find_map(|(off, object)| (off > start && matches!(object, InlineObject::BookmarkEnd { name: n } if n == name)).then_some(off))
 }
 
+struct RefWork {
+    results: usize,
+    inspection: usize,
+}
+
+fn inspect(budget: &mut usize, cost: usize) -> Result<(), String> {
+    *budget = budget.checked_sub(cost).ok_or(REF_INSPECTION_LIMIT)?;
+    Ok(())
+}
+
+fn inspect_para(para: &Paragraph, budget: &mut usize) -> Result<(), String> {
+    inspect(budget, para.text.len().saturating_add(para.runs.len()).saturating_add(1))?;
+    for object in &para.objects {
+        let cost = match object {
+            InlineObject::Field { instr, result, .. } => instr.len().saturating_add(result.len()),
+            InlineObject::FieldStart { instr, .. } => instr.len(),
+            InlineObject::BookmarkStart { name } | InlineObject::BookmarkEnd { name } => name.len(),
+            _ => object.plain_text().len(),
+        };
+        inspect(budget, cost.saturating_add(1))?;
+    }
+    Ok(())
+}
+
+// Charge before rebuilding indexes on every pass, even when every result is unchanged.
+fn inspect_doc(doc: &Document, budget: &mut usize) -> Result<usize, String> {
+    let before = *budget;
+    inspect(budget, 1)?;
+    for story in std::iter::once(StoryRef::Body).chain(doc.parts.keys().copied().map(StoryRef::Part)) {
+        inspect(budget, 1)?;
+        for path in doc.para_paths(story) {
+            inspect(budget, 1)?;
+            if let Some(para) = doc.para(story, &path) {
+                inspect_para(para, budget)?;
+            }
+        }
+    }
+    Ok(before - *budget)
+}
+
+// A plain field cache cannot carry target visibility or table-style context.
+fn ref_visible(doc: &Document, start: &Pos, end: usize) -> bool {
+    if start.story != StoryRef::Body || start.path.0.len() != 1 {
+        return false;
+    }
+    let Some(para) = doc.para(start.story, &start.path) else { return false };
+    let mark = doc.styles.resolve_char(para.props.style.as_deref(), &para.mark);
+    if mark.hidden || mark.del.is_some() {
+        return false;
+    }
+    para.run_ranges().filter(|(range, _)| range.start < end && range.end > start.off).all(|(_, props)| {
+        let resolved = doc.styles.resolve_char(para.props.style.as_deref(), props);
+        !resolved.hidden && resolved.del.is_none()
+    })
+}
+
 /// Layout-only or unsupported fields cannot supply their stored text to a REF.
 /// Propagate this restriction through REF dependencies once, without recursion.
 /// Charge selected inspection work; initial scans and total heap use are not capped.
-fn held_ref_targets(doc: &Document, mut budget: usize) -> Result<HashSet<String>, String> {
+fn held_ref_work(doc: &Document, budget: &mut usize) -> Result<HashSet<String>, String> {
     let has_refs = std::iter::once(StoryRef::Body).chain(doc.parts.keys().copied().map(StoryRef::Part)).any(|story| {
         doc.para_paths(story)
             .iter()
@@ -233,15 +327,19 @@ fn held_ref_targets(doc: &Document, mut budget: usize) -> Result<HashSet<String>
             held.insert(name.clone());
             continue;
         };
-        budget = budget.checked_sub(para.text.len()).ok_or(REF_INSPECTION_LIMIT)?;
+        inspect_para(para, budget)?;
         let Some(end) = bookmark_end(para, name, start.off) else {
             held.insert(name.clone());
             continue;
         };
+        if !ref_visible(doc, start, end) {
+            held.insert(name.clone());
+            continue;
+        }
         let stop = Pos { off: end, ..start.clone() };
         let mut in_field = false;
         for range in &ranges {
-            budget = budget.checked_sub(std::mem::size_of::<wordcraft_doc::FieldRange>()).ok_or(REF_INSPECTION_LIMIT)?;
+            inspect(budget, std::mem::size_of::<wordcraft_doc::FieldRange>())?;
             if range.start < stop && range.end > *start {
                 in_field = true;
                 break;
@@ -263,14 +361,14 @@ fn held_ref_targets(doc: &Document, mut budget: usize) -> Result<HashSet<String>
                 }
                 _ => continue,
             };
-            budget = budget.checked_sub(instr.len()).ok_or(REF_INSPECTION_LIMIT)?;
+            inspect(budget, instr.len())?;
             let Some(code) = print_ref_code(instr) else {
                 held.insert(name.clone());
                 break;
             };
             let Some(target) = code.args.first() else { continue };
             if code.name == REF_NAME {
-                budget = budget
+                *budget = budget
                     .checked_sub(name.len())
                     .and_then(|left| left.checked_sub(target.len()))
                     .and_then(|left| left.checked_sub(std::mem::size_of::<(String, String)>()))
@@ -292,6 +390,11 @@ fn held_ref_targets(doc: &Document, mut budget: usize) -> Result<HashSet<String>
         }
     }
     Ok(held)
+}
+
+#[cfg(test)]
+fn held_ref_targets(doc: &Document, mut budget: usize) -> Result<HashSet<String>, String> {
+    held_ref_work(doc, &mut budget)
 }
 
 /// A spanning range labels its first text. Leading hard page breaks alone move that
@@ -336,9 +439,12 @@ fn range_page_pos(doc: &Document, start: &Pos, end: &Pos) -> Option<Pos> {
 fn inline_bookmark(doc: &Document, name: &str, start: &Pos, budget: usize) -> Result<Option<String>, String> {
     let Some(para) = doc.para(start.story, &start.path) else { return Ok(None) };
     let Some(end) = bookmark_end(para, name, start.off) else { return Ok(None) };
+    if !ref_visible(doc, start, end) {
+        return Ok(None);
+    }
     let bytes = para.objects.iter().try_fold(para.text.len(), |n, o| n.checked_add(o.plain_text().len()));
     if bytes.is_none_or(|n| n > budget) {
-        return Err("Print cross-reference text exceeds the work limit".into());
+        return Err(REF_RESULT_LIMIT.into());
     }
     Ok(Some(doc.copy_range(start, &Pos { off: end, ..start.clone() }).plain_text()))
 }
