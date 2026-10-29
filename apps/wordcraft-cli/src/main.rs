@@ -426,15 +426,26 @@ fn run_source_paths(rest: &[String], script: Option<&script::Script>) -> (Option
     (from_file, from_template)
 }
 
-fn toc_refresh_arg(args: &[String], output: &str) -> Result<bool, Failure> {
-    let refresh = args.iter().any(|a| a == "--refresh-toc");
-    if refresh && !output.to_ascii_lowercase().ends_with(".pdf") {
-        return Err("--refresh-toc requires PDF output".into());
+fn run_inline_cmds(s: &mut Session, rest: &[String]) -> Result<(), Failure> {
+    let print = rest.iter().any(|a| a == "--print");
+    let mut i = 0;
+    while i < rest.len() {
+        if rest.get(i).map(String::as_str) == Some("--cmd") {
+            let spec = rest.get(i + 1).ok_or("--cmd needs a value")?;
+            let (id, params) = match spec.split_once('=') {
+                Some((id, p)) => (id.to_string(), serde_json::from_str::<Value>(p).map_err(|e| format!("{id}: bad JSON params: {e}"))?),
+                None => (spec.clone(), json!({})),
+            };
+            let r = s.run(&id, &params).map_err(|e| format!("{id}: {e}"))?;
+            if print {
+                write_stdout(|o| writeln!(o, "{id}: {r}"))?;
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
     }
-    if refresh && args.iter().any(|a| a == "--update-fields") {
-        return Err("--refresh-toc cannot be combined with --update-fields".into());
-    }
-    Ok(refresh)
+    Ok(())
 }
 
 /// Run the subcommand named by `args` (the command line after the program name). Files named
@@ -459,7 +470,13 @@ fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
             let paths = positionals(&rest, CONVERT_OPTIONS);
             let (i, o) = (paths.first().ok_or_else(missing_argument)?.to_string(), paths.get(1).ok_or_else(missing_argument)?.to_string());
             let markup = rest.iter().any(|a| a == "--markup");
-            let refresh_toc = toc_refresh_arg(&rest, &o)?;
+            let refresh_toc = rest.iter().any(|a| a == "--refresh-toc");
+            if refresh_toc && !o.to_ascii_lowercase().ends_with(".pdf") {
+                return Err("--refresh-toc requires PDF output".into());
+            }
+            if refresh_toc && rest.iter().any(|a| a == "--update-fields") {
+                return Err("--refresh-toc cannot be combined with --update-fields".into());
+            }
             let password = password_from(&rest)?;
             let mut s = open(&i, password.as_deref())?;
             // Rebuild only in this disposable session; conversion never saves the input.
@@ -551,23 +568,7 @@ fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
                     write_stdout(|o| writeln!(o, "{id}: {r}"))?;
                 }
             }
-            let mut i = 0;
-            while i < rest.len() {
-                if rest.get(i).map(String::as_str) == Some("--cmd") {
-                    let spec = rest.get(i + 1).ok_or("--cmd needs a value")?;
-                    let (id, params) = match spec.split_once('=') {
-                        Some((id, p)) => (id.to_string(), serde_json::from_str::<Value>(p).map_err(|e| format!("{id}: bad JSON params: {e}"))?),
-                        None => (spec.clone(), json!({})),
-                    };
-                    let r = s.run(&id, &params).map_err(|e| format!("{id}: {e}"))?;
-                    if print {
-                        write_stdout(|o| writeln!(o, "{id}: {r}"))?;
-                    }
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
+            run_inline_cmds(&mut s, &rest)?;
             let outputs: Vec<String> = script.iter().flat_map(|c| c.save.iter().cloned()).chain(arg_value(&rest, "--save")).collect();
             // Check every output can be made before writing any, so a bad one leaves no half-done job.
             for out in &outputs {
