@@ -2100,3 +2100,15 @@ fn image_budget_is_checked_from_the_header() {
     assert_eq!(dims, (30_000, 30_000));
     assert!(load_image(&Arc::new(hdr)).is_none());
 }
+
+/// A run's baseline is the y most of its glyphs share, ties to the lower bits; a run on one
+/// baseline (the common case) gives its y without counting.
+#[test]
+fn baseline_is_the_most_shared_y() {
+    assert_eq!(baseline(&[]), None);
+    assert_eq!(baseline(&[(1, 0.0, 7.5)]), Some(7.5));
+    assert_eq!(baseline(&[(1, 0.0, 7.5), (2, 3.0, 7.5), (3, 6.0, 7.5)]), Some(7.5));
+    assert_eq!(baseline(&[(1, 0.0, 7.5), (2, 3.0, 4.0), (3, 6.0, 7.5)]), Some(7.5));
+    assert_eq!(baseline(&[(1, 0.0, 9.0), (2, 3.0, 4.0)]), Some(4.0));
+    assert_eq!(baseline(&[(1, 0.0, -0.0), (2, 3.0, 0.0)]), Some(0.0));
+}

@@ -647,7 +647,8 @@ fn caps_expands(c: char) -> bool {
 /// character before them: same font, same shaping run, so Arabic joining isn't broken.
 fn is_mark(c: char) -> bool {
     use unicode_bidi::BidiClass::{BN, NSM};
-    matches!(unicode_bidi::bidi_class(c), NSM | BN) && !c.is_control()
+    // No ASCII character is a mark (its BN characters are controls).
+    !c.is_ascii() && matches!(unicode_bidi::bidi_class(c), NSM | BN) && !c.is_control()
 }
 
 /// A digit Word's Numeral modes substitute: ASCII or Arabic-Indic (U+0660–U+0669).
@@ -722,6 +723,10 @@ enum Dir<'l> {
 /// The direction of `c` if it is a strong letter (UAX #9 P2): `Some(true)` right to left.
 fn strong_rtl(c: char) -> Option<bool> {
     use unicode_bidi::BidiClass::{AL, L, R};
+    // In ASCII only the letters are strong (L).
+    if c.is_ascii() {
+        return c.is_ascii_alphabetic().then_some(false);
+    }
     match unicode_bidi::bidi_class(c) {
         R | AL => Some(true),
         L => Some(false),
@@ -3289,6 +3294,22 @@ mod label_spacing_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ASCII shortcuts give the bidi class's answer for every character.
+    #[test]
+    fn strong_and_mark_shortcuts_match_the_bidi_class() {
+        use unicode_bidi::BidiClass::{AL, BN, L, NSM, R};
+        for c in (0..=0x10ffff).filter_map(char::from_u32) {
+            let class = unicode_bidi::bidi_class(c);
+            let strong = match class {
+                R | AL => Some(true),
+                L => Some(false),
+                _ => None,
+            };
+            assert_eq!(strong_rtl(c), strong, "{:04x}", c as u32);
+            assert_eq!(is_mark(c), matches!(class, NSM | BN) && !c.is_control(), "{:04x}", c as u32);
+        }
+    }
 
     #[test]
     fn symbols_ignore_roman_hint() {
