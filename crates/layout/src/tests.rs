@@ -12512,6 +12512,11 @@ fn kept_prefix_stays_together() {
     assert_eq!(row_keep_pages(&d), [1, 1, 2], "an oversized follower cannot separate an already placed kept prefix");
 }
 
+/// Half the kept paragraph's 1.5 pt bottom stroke: its centre lies past `kept_space`.
+const KEPT_HALF: f32 = 0.75;
+/// Half the moved paragraph's 2.5 pt top stroke.
+const MOVED_HALF: f32 = 1.25;
+
 fn para_border_row(kept_space: f32, moved_space: f32) -> crate::table::RowLayout {
     use crate::table::{CellPart, RowLayout};
     use wordcraft_doc::props::{LineSpacing, Rgb};
@@ -12612,12 +12617,12 @@ fn split_para_border_spacing() {
             for cut in [80.0, 110.0] {
                 let (first, rest) = split_row(&row, cut).unwrap();
                 let moves = cut == 80.0;
-                let expected_height = if moves { 24.0 + kept_space } else { 104.0 };
+                let expected_height = if moves { 24.0 + kept_space + KEPT_HALF } else { 104.0 };
                 assert_eq!(first.height, expected_height);
-                assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + kept_space]);
+                assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + kept_space + KEPT_HALF]);
                 assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
-                let shift = (60.0_f32 - moved_space - 2.0).max(0.0);
-                let original_top = 60.0 - moved_space;
+                let shift = (60.0_f32 - moved_space - MOVED_HALF - 2.0).max(0.0);
+                let original_top = 60.0 - moved_space - MOVED_HALF;
                 let after_top = original_top - shift;
                 if moves {
                     assert!(para_border_rules(&first, Rgb(0, 0, 200)).is_empty());
@@ -12631,7 +12636,7 @@ fn split_para_border_spacing() {
                         })
                         .unwrap();
                     assert_eq!(text_y, 60.0 - shift);
-                    assert_eq!(text_y - after_top, moved_space, "one shared shift preserves border space");
+                    assert_eq!(text_y - after_top, moved_space + MOVED_HALF, "one shared shift preserves border space");
                     if original_top >= 0.0 {
                         assert!(after_top >= 0.0);
                     } else {
@@ -12679,7 +12684,7 @@ fn split_para_border_fallbacks() {
         let row = para_border_row(space, 8.0);
         let (first, rest) = split_row(&row, 80.0).unwrap();
         assert_eq!(first.height, 80.0);
-        assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + space]);
+        assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), vec![20.0 + space + KEPT_HALF]);
         assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
     }
     // A bottom beyond the physical cut keeps the generic overflow route. The shared cell
@@ -12688,13 +12693,14 @@ fn split_para_border_fallbacks() {
     let (first, rest) = split_row(&row, 80.0).unwrap();
     assert_eq!(first.height, 24.0);
     assert!(para_border_rules(&first, Rgb(200, 0, 0)).is_empty());
-    assert_eq!(para_border_rules(&rest, Rgb(200, 0, 0)), vec![31.0]);
+    // The shared shift is set by the moved paragraph's top rule.
+    assert_eq!(para_border_rules(&rest, Rgb(200, 0, 0)), vec![31.0 + KEPT_HALF + MOVED_HALF]);
 
     // Partial runs retain the previous cut and vertical-border policy.
     let row = para_border_row(0.0, 8.0);
     let (first, rest) = split_row(&row, 90.0).unwrap();
     assert_eq!(first.height, 84.0);
-    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0]);
+    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0 - MOVED_HALF]);
     assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
     let ranges = |part: &crate::table::RowLayout| {
         part.items
@@ -12715,8 +12721,8 @@ fn split_para_border_fallbacks() {
     row.cells[0].items.end += 1;
     row.cells[0].bottom_rule = Some(row.items.len() - 1);
     let (first, rest) = split_row(&row, 80.0).unwrap();
-    assert_eq!(first.height, 56.0);
-    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0]);
+    assert_eq!(first.height, 56.0 - MOVED_HALF);
+    assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), vec![52.0 - MOVED_HALF]);
     assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
 }
 
@@ -13150,13 +13156,20 @@ mod scope_rule_frames {
         add_rule_frame(&mut row);
         let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
         assert_frame_bounds(&first, 80.0);
-        assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [77.0]);
+        assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [77.0 + KEPT_HALF]);
         assert!(para_border_rules(&first, Rgb(0, 0, 200)).is_empty());
         assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
         assert_eq!(para_border_rules(&rest, Rgb(0, 0, 200)), [2.0]);
         assert_eq!(first.items.iter().filter(|item| matches!(item, Placed::Rule { .. })).count(), 3);
-        assert!(first.items.iter().any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 77.0 && y0 == y1 && border.width == 1.5)));
-        assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0)));
+        assert!(
+            first
+                .items
+                .iter()
+                .any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 77.0 + KEPT_HALF && y0 == y1 && border.width == 1.5))
+        );
+        assert!(
+            rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0 + MOVED_HALF))
+        );
     }
 
     #[test]
@@ -13169,12 +13182,17 @@ mod scope_rule_frames {
         row.cells[0].bottom_rule = row.cells[0].bottom_rule.map(|item| item + usize::from(item >= index));
         add_rule_frame(&mut row);
         let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
-        assert_frame_bounds(&first, 56.0);
-        assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [20.0]);
-        assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), [52.0]);
+        assert_frame_bounds(&first, 56.0 - MOVED_HALF);
+        assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [20.0 + KEPT_HALF]);
+        assert_eq!(para_border_rules(&first, Rgb(0, 0, 200)), [52.0 - MOVED_HALF]);
         assert!(para_border_rules(&rest, Rgb(0, 0, 200)).is_empty());
         assert_eq!(first.items.iter().filter(|item| matches!(item, Placed::Rule { .. })).count(), 4);
-        assert!(first.items.iter().any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 52.0 && y0 == y1 && border.width == 2.5)));
+        assert!(
+            first
+                .items
+                .iter()
+                .any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 52.0 - MOVED_HALF && y0 == y1 && border.width == 2.5))
+        );
         assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 2.0)));
     }
 
@@ -13184,10 +13202,12 @@ mod scope_rule_frames {
         let mut row = para_border_row(0.0, 8.0);
         add_rule_frame(&mut row);
         let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
-        assert_frame_bounds(&first, 24.0);
+        assert_frame_bounds(&first, 24.0 + KEPT_HALF);
         assert!(para_border_rules(&first, Rgb(0, 0, 200)).is_empty());
         assert_eq!(para_border_rules(&rest, Rgb(0, 0, 200)), [2.0]);
-        assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0)));
+        assert!(
+            rest.items.iter().any(|item| matches!(item, Placed::Lines { path, l0: 0, l1: 2, y, .. } if path.0 == [1] && *y == 10.0 + MOVED_HALF))
+        );
     }
 
     #[test]
@@ -13207,12 +13227,12 @@ mod scope_rule_frames {
             let (x0, y0, x1, y1, height) = match case {
                 Case::Interior => (0.0, 64.0, RULE_FRAME_WIDTH, 64.0, 68.0),
                 Case::AtCut => (0.0, 80.0, RULE_FRAME_WIDTH, 80.0, 80.0),
-                Case::Top => (0.0, 0.0, RULE_FRAME_WIDTH, 0.0, 24.0),
-                Case::Bottom => (0.0, 200.0, RULE_FRAME_WIDTH, 200.0, 24.0),
-                Case::BeyondCut => (0.0, 81.0, RULE_FRAME_WIDTH, 81.0, 24.0),
-                Case::Vertical => (10.0, 60.0, 10.0, 70.0, 24.0),
-                Case::NonfiniteX => (f32::NAN, 64.0, RULE_FRAME_WIDTH, 64.0, 24.0),
-                Case::NonfiniteY => (0.0, f32::NAN, RULE_FRAME_WIDTH, f32::NAN, 24.0),
+                Case::Top => (0.0, 0.0, RULE_FRAME_WIDTH, 0.0, 24.0 + KEPT_HALF),
+                Case::Bottom => (0.0, 200.0, RULE_FRAME_WIDTH, 200.0, 24.0 + KEPT_HALF),
+                Case::BeyondCut => (0.0, 81.0, RULE_FRAME_WIDTH, 81.0, 24.0 + KEPT_HALF),
+                Case::Vertical => (10.0, 60.0, 10.0, 70.0, 24.0 + KEPT_HALF),
+                Case::NonfiniteX => (f32::NAN, 64.0, RULE_FRAME_WIDTH, 64.0, 24.0 + KEPT_HALF),
+                Case::NonfiniteY => (0.0, f32::NAN, RULE_FRAME_WIDTH, f32::NAN, 24.0 + KEPT_HALF),
             };
             let mut row = para_border_row(0.0, 8.0);
             add_rule_frame(&mut row);
@@ -13255,16 +13275,16 @@ mod scope_rule_frames {
             let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
             assert_eq!(first.height, 24.0);
             let (part, y) = if top == 0.0 {
-                assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [77.0]);
+                assert_eq!(para_border_rules(&first, Rgb(200, 0, 0)), [77.0 + KEPT_HALF]);
                 assert!(para_border_rules(&rest, Rgb(200, 0, 0)).is_empty());
-                (&first, 77.0)
+                (&first, 77.0 + KEPT_HALF)
             } else {
                 assert!(para_border_rules(&first, Rgb(200, 0, 0)).is_empty());
-                assert_eq!(para_border_rules(&rest, Rgb(200, 0, 0)), [27.0]);
+                assert_eq!(para_border_rules(&rest, Rgb(200, 0, 0)), [27.0 + KEPT_HALF + MOVED_HALF]);
                 let anchor = &rest.cells[cell].anchored_rules[0];
-                assert_eq!(anchor.top, 50.0);
-                assert!(matches!(rest.items.get(anchor.item), Some(Placed::Rule { y0, .. }) if *y0 == 27.0));
-                (&rest, 27.0)
+                assert_eq!(anchor.top, 50.0 + MOVED_HALF);
+                assert!(matches!(rest.items.get(anchor.item), Some(Placed::Rule { y0, .. }) if *y0 == 27.0 + KEPT_HALF + MOVED_HALF));
+                (&rest, 27.0 + KEPT_HALF + MOVED_HALF)
             };
             let layer = part.foreground.iter().find(|entry| entry.layer == ANCHOR_LAYER).unwrap();
             assert_eq!(layer.range.len(), 1);
@@ -13285,8 +13305,13 @@ mod scope_rule_frames {
         }
         row.cells[cell].bottom_band = 6.0;
         let (first, rest) = crate::table::split_row(&row, RULE_FRAME_CUT).unwrap();
-        assert_eq!(first.height, 24.0);
-        assert!(first.items.iter().any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 21.0 && y0 == y1 && border.width == 4.0)));
+        assert_eq!(first.height, 24.0 + KEPT_HALF);
+        assert!(
+            first
+                .items
+                .iter()
+                .any(|item| matches!(item, Placed::Rule { y0, y1, border, .. } if *y0 == 21.0 + KEPT_HALF && y0 == y1 && border.width == 4.0))
+        );
         let closing = rest.cells[cell].bottom_rule.unwrap();
         assert!(matches!(rest.items.get(closing), Some(Placed::Rule { y0, y1, border, .. })
             if *y0 == rest.height - 3.0 && y0 == y1 && border.width == 4.0));

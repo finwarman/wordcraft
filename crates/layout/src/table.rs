@@ -1060,8 +1060,8 @@ fn para_rule_owner(items: &[Placed], index: usize) -> Option<(usize, ParaEdge)> 
         let start = para.rp.indent_left.min(para.rp.indent_left + para.rp.indent_first);
         let left = x + if para.rp.bidi { para.rp.indent_right } else { start };
         let lx = left - borders.left.map_or(0.0, |b| b.space);
-        let ty = y - borders.top.map_or(0.0, |b| b.space);
-        let by = y + last.top + last.height - first.top + borders.bottom.map_or(0.0, |b| b.space);
+        let ty = y - borders.top.map_or(0.0, |b| b.space + b.width / 2.0);
+        let by = y + last.top + last.height - first.top + borders.bottom.map_or(0.0, |b| b.space + b.width / 2.0);
         if ![lx, *rx, ty, by].iter().all(|v| v.is_finite()) || *rx <= lx {
             continue;
         }
@@ -2409,6 +2409,9 @@ mod para_rule_controls {
     use wordcraft_doc::props::{BorderStyle, LineSpacing, ParaProps};
     use wordcraft_doc::{Document, Path};
 
+    /// Half the fixture's 2 pt stroke: rule centres lie past the border space.
+    const RULE_HALF: f32 = 1.0;
+
     fn emitted_rules(mask: u8) -> Vec<Placed> {
         emitted_text(mask, "Owned")
     }
@@ -2615,9 +2618,9 @@ mod para_rule_controls {
                         })
                         .collect::<Vec<_>>()
                 };
-                assert_eq!(horizontal(&first), if whole_first { vec![] } else { vec![12.0] });
+                assert_eq!(horizontal(&first), if whole_first { vec![] } else { vec![12.0 - RULE_HALF] });
                 assert_eq!(horizontal(&second), if whole_first { vec![2.0] } else { vec![] });
-                let bottom = if whole_first { 90.0 } else { 50.0 };
+                let bottom = if whole_first { 90.0 } else { 50.0 } + RULE_HALF;
                 assert_eq!(horizontal(&third), vec![bottom]);
                 assert!(horizontal(&tail).is_empty());
                 assert_eq!(third.height, bottom + 4.0, "recovered bottom prefix extends retained extent once");
@@ -2629,7 +2632,7 @@ mod para_rule_controls {
                         _ => None,
                     })
                     .unwrap();
-                assert_eq!(bottom - last_bottom, 8.0, "bottom spacing survives both continuations");
+                assert_eq!(bottom - last_bottom, 8.0 + RULE_HALF, "bottom spacing survives both continuations");
                 for border in [&first, &second, &third].into_iter().flat_map(|part| &part.items).filter_map(|it| match it {
                     Placed::Rule { border, .. } => Some(border),
                     _ => None,
@@ -2687,9 +2690,9 @@ mod para_rule_controls {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(first.height, 56.0);
-        assert_eq!(rules(&first), vec![52.0]);
-        assert_eq!(rules(&rest), vec![30.0]);
+        assert_eq!(first.height, 56.0 - RULE_HALF);
+        assert_eq!(rules(&first), vec![52.0 - RULE_HALF]);
+        assert_eq!(rules(&rest), vec![30.0 + RULE_HALF]);
         let line_y = rest
             .items
             .iter()
@@ -2705,7 +2708,7 @@ mod para_rule_controls {
         row.cells[0].center = Some(CellCenter { kind: CenterKind::Merge, offset: 52.0, height: 36.0, content: 1..4 });
         let (first, rest) = split_row(&row, 70.0).unwrap();
         assert_eq!(first.height, 40.0);
-        assert_eq!(rules(&first), vec![2.0, 38.0]);
+        assert_eq!(rules(&first), vec![2.0 - RULE_HALF, 38.0 + RULE_HALF]);
         assert!(rules(&rest).is_empty());
         let line_y = first
             .items
@@ -2766,7 +2769,7 @@ mod para_rule_controls {
                 assert!(*y0 <= first.height, "retained centerline {y0} outside first frame {}", first.height);
             }
         }
-        assert_eq!(first.height, 56.0);
+        assert_eq!(first.height, 56.0 - RULE_HALF);
         let rules = |part: &RowLayout| {
             part.items
                 .iter()
@@ -2776,8 +2779,8 @@ mod para_rule_controls {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(rules(&first), [(52.0, 2.0)]);
-        assert_eq!(rules(&rest), [(30.0, 2.0)]);
+        assert_eq!(rules(&first), [(52.0 - RULE_HALF, 2.0)]);
+        assert_eq!(rules(&rest), [(30.0 + RULE_HALF, 2.0)]);
         assert!(rest.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 2.0)));
         let frames: Vec<_> = first
             .items
@@ -2787,7 +2790,7 @@ mod para_rule_controls {
                 _ => None,
             })
             .collect();
-        assert_eq!(frames, [56.0, 56.0]);
+        assert_eq!(frames, [56.0 - RULE_HALF, 56.0 - RULE_HALF]);
     }
 
     #[test]
@@ -2805,7 +2808,7 @@ mod para_rule_controls {
                 _ => None,
             })
             .collect();
-        assert_eq!(rules, [2.0, 38.0]);
+        assert_eq!(rules, [2.0 - RULE_HALF, 38.0 + RULE_HALF]);
         assert!(!rest.items.iter().any(|item| matches!(item, Placed::Rule { .. })));
         assert!(first.items.iter().any(|item| matches!(item, Placed::Lines { l0: 0, l1: 1, y, .. } if *y == 10.0)));
     }
