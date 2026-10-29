@@ -89,14 +89,17 @@ fn place_break_mark(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: u
     let y = owner
         .filter(|_| ctx.hf.sections.get(prev.section).is_some_and(|(_, sect)| sect.valign == wordcraft_doc::section::PageVAlign::Top))
         .map(|(_, _, end)| end)
-        .unwrap_or_else(|| {
-            prev.items
-                .iter()
-                .filter(|it| matches!(it, Placed::Lines { story: StoryRef::Body, .. } | Placed::Cell { story: StoryRef::Body, .. }))
-                .map(super::notes::v_span)
-                .map(|(_, bottom)| bottom)
-                .fold(prev.body.y, f32::max)
+        .or_else(|| {
+            prev.items.iter().rev().find_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, path, l1, .. }
+                    if pb.break_line.as_ref().is_some_and(|(owner, end)| path == owner && l1 == end) =>
+                {
+                    Some(super::notes::v_span(item).1)
+                }
+                _ => None,
+            })
         });
+    let Some(y) = y else { return false };
     push_para(&mut prev.items, (StoryRef::Body, &[block as u32]), &pl, (0, pl.lines.len()), (x, y), width, Edges::own(&pl, 0, pl.lines.len()));
     true
 }
@@ -578,6 +581,7 @@ impl<'a> Flow<'a> {
         match forced {
             Some(LineEnd::PageBreak) if mark_with_break => {
                 pb.break_column = Some((pb.col_x(), pb.col_w()));
+                pb.break_line = Some((Path::top(block), self.l0));
                 pb.new_page(block, body_top);
                 pb.after_break_mark = true;
             }

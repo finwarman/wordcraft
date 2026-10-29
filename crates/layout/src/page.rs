@@ -3,7 +3,7 @@ use super::ctx::{Ctx, with_pin};
 use super::floats::{EarlyFloats, WrapArea};
 use super::notes::{NOTE_SEP, NOTE_SEP_W, NoteBox, NoteSeps, v_span};
 use super::placed::Placed;
-use super::{Block, Border, FloatAlign, Page, ParaLayout, Rect, SectionProps, StoryRef};
+use super::{Block, Border, FloatAlign, Page, ParaLayout, Path, Rect, SectionProps, StoryRef};
 
 #[derive(Clone)]
 pub(crate) struct PageBuilder<'a> {
@@ -35,6 +35,8 @@ pub(crate) struct PageBuilder<'a> {
     pub(crate) after_break_mark: bool,
     /// Column geometry of the preceding explicit page break.
     pub(super) break_column: Option<(f32, f32)>,
+    /// Paragraph path and terminal line of the break's placed fragment.
+    pub(super) break_line: Option<(Path, usize)>,
     /// The next section starts on a new page: this section's closing mark, when empty, needs no
     /// room (Word leaves it on a full page rather than starting a page for it).
     pub(crate) next_starts_page: bool,
