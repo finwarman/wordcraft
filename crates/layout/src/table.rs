@@ -2443,7 +2443,18 @@ mod para_rule_controls {
         assert_eq!(para.text_len, text.len());
         assert_eq!(para.lines.len(), text.split(wordcraft_doc::para::LINE_BREAK).count());
         let mut items = Vec::new();
-        crate::push_para(&mut items, StoryRef::Body, &[0], &para, 0, para.lines.len(), 0.0, 60.0, 100.0);
+        crate::push_para(
+            &mut items,
+            StoryRef::Body,
+            &[0],
+            &para,
+            0,
+            para.lines.len(),
+            0.0,
+            60.0,
+            100.0,
+            crate::Edges::own(&para, 0, para.lines.len()),
+        );
         items.push(Placed::Image {
             rect: Rect::new(5.0, 150.0, 20.0, 20.0),
             media: "synthetic".into(),
@@ -2518,7 +2529,7 @@ mod para_rule_controls {
                 assert_eq!(para.lines.len(), 6);
                 for (l0, l1, edge) in [(0, 2, Some(ParaEdge::Top)), (2, 4, None), (4, 6, Some(ParaEdge::Bottom))] {
                     let mut range = Vec::new();
-                    crate::push_para(&mut range, StoryRef::Body, &[0], &para, l0, l1, 0.0, 20.0, 100.0);
+                    crate::push_para(&mut range, StoryRef::Body, &[0], &para, l0, l1, 0.0, 20.0, 100.0, crate::Edges::own(&para, l0, l1));
                     range.push(emitted.last().unwrap().clone());
                     assert!(para_rule_owner(&range, 1) == edge.map(|edge| (0, edge)), "actual emitter range {l0}..{l1}");
                 }
@@ -2532,7 +2543,18 @@ mod para_rule_controls {
                     spin: Default::default(),
                 };
                 let mut items = vec![image(0.0)];
-                crate::push_para(&mut items, StoryRef::Body, &[0], &para, 0, para.lines.len(), 0.0, 20.0, 100.0);
+                crate::push_para(
+                    &mut items,
+                    StoryRef::Body,
+                    &[0],
+                    &para,
+                    0,
+                    para.lines.len(),
+                    0.0,
+                    20.0,
+                    100.0,
+                    crate::Edges::own(&para, 0, para.lines.len()),
+                );
                 items.push(image(200.0));
                 let row = RowLayout {
                     height: 240.0,

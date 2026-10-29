@@ -274,6 +274,7 @@ fn with_merge_ctx<R>(d: &Document, f: impl FnOnce(&mut Ctx<'_>, &mut PageBuilder
         orig_bottom: 0.0,
         prev: None,
         after_break_mark: false,
+        para_end: None,
         next_starts_page: false,
         restart_at: None,
         excl: Vec::new(),

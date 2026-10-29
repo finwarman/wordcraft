@@ -12556,7 +12556,7 @@ fn para_border_row(kept_space: f32, moved_space: f32) -> crate::table::RowLayout
         assert_eq!(para.text_len, if index == 0 { "Kept".len() } else { "Move\nMove".len() });
         assert_eq!(para.lines.len(), if index == 0 { 1 } else { 2 });
         // Use the production border emitter, including its paragraph item ordering.
-        push_para(&mut items, StoryRef::Body, &[index], &para, 0, para.lines.len(), 0.0, y, 100.0);
+        push_para(&mut items, StoryRef::Body, &[index], &para, 0, para.lines.len(), 0.0, y, 100.0, Edges::own(&para, 0, para.lines.len()));
     }
     items.push(Placed::Image {
         rect: Rect::new(5.0, 150.0, 20.0, 20.0),
