@@ -153,12 +153,12 @@ fn grown_merge_centers_sibling() {
     const SIBLING_STEP: f32 = 10.125;
 
     let mut d = merge_overflow_doc(VAlign::Center, COMMENT_STEP);
-    let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { unreachable!() };
+    let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { panic!("unexpected control block") };
     t.props.borders = Some(Borders::default());
     for row in t.rows.iter_mut().take(2) {
         row.props.height = Some(SHORT_ROW_HEIGHT);
     }
-    let mut p = Paragraph::with_text(&vec!["Sibling"; 8].join("\n"), CharProps { size: Some(9.0), ..Default::default() });
+    let mut p = Paragraph::with_text(&["Sibling"; 8].join("\n"), CharProps { size: Some(9.0), ..Default::default() });
     p.props = ParaProps {
         line_spacing: Some(LineSpacing::Exactly(SIBLING_STEP)),
         space_before: Some(0.0),
@@ -324,7 +324,7 @@ mod replay {
 
     fn guard_merge_doc() -> Document {
         let mut d = merge_overflow_doc(VAlign::Center, 10.0);
-        let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { unreachable!() };
+        let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { panic!("unexpected control block") };
         // No border-band hash iteration in exact raw item-order comparisons.
         t.props.borders = None;
         d
@@ -393,7 +393,7 @@ mod replay {
         header.insert_object(0, rect_shape(468.0, 270.0, float), &Default::default()).unwrap();
         let id = d.add_part(wordcraft_doc::PartKind::Header, vec![wordcraft_doc::para_block(header)]);
         d.last_section.headers.default = Some(id);
-        let Block::Para(before) = Arc::make_mut(&mut d.body[0]) else { unreachable!() };
+        let Block::Para(before) = Arc::make_mut(&mut d.body[0]) else { panic!("unexpected control block") };
         let front =
             Float { wrap: Wrap::InFrontOfText, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 500.0, y: 45.0, z_order: 7, ..Default::default() };
         before.insert_object(0, rect_shape(8.0, 8.0, front), &Default::default()).unwrap();
@@ -441,7 +441,7 @@ mod replay {
 
     fn note_table_doc(kind: NoteRow) -> (Document, Vec<u32>) {
         let mut d = guard_merge_doc();
-        let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { unreachable!() };
+        let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { panic!("unexpected control block") };
         let mut early = t.rows[0].clone();
         let plain = early.cells[1].blocks.clone();
         for cell in &mut early.cells {
@@ -533,7 +533,7 @@ mod replay {
 
     fn bottom_sibling_doc(insets: BottomInsets) -> Document {
         let mut d = merge_overflow_doc(VAlign::Center, 11.0);
-        let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { unreachable!() };
+        let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { panic!("unexpected control block") };
         t.props.borders = Some(Borders::default());
         for row in t.rows.iter_mut().take(2) {
             row.props.height = Some(27.0);
@@ -638,7 +638,7 @@ mod replay {
     #[test]
     fn bottom_merge_keeps_old_route() {
         let mut d = bottom_sibling_doc(BottomInsets::Zero);
-        let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { unreachable!() };
+        let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { panic!("unexpected control block") };
         t.rows[0].cells[2].props.valign = Some(VAlign::Bottom);
         with_merge_ctx(&d, |ctx, pb, top| {
             let tl = prepare_merge(ctx, pb);
@@ -711,7 +711,7 @@ mod replay {
             with_merge_ctx(&d, |ctx, pb, top| {
                 let tl = prepare_merge(ctx, pb);
                 let t = d.body[1].as_table().unwrap();
-                assert_eq!(d.para(StoryRef::Body, &path).unwrap().objects, [object.clone()]);
+                assert_eq!(d.para(StoryRef::Body, &path).unwrap().objects.as_slice(), std::slice::from_ref(&object));
                 assert!(table::MergeFlow::new(t, &tl, flow_capacity(t, &tl, pb, top)).is_empty(), "unadmitted object {object:?}");
             });
             assert_eq!(table_output(&d, TablePath::Wrapper), table_output(&d, TablePath::Original), "unadmitted object {object:?}");
@@ -965,7 +965,7 @@ const LABEL_FILLS: [wordcraft_doc::Rgb; 2] = [wordcraft_doc::Rgb(255, 255, 255),
 fn filled_merge_doc(color: wordcraft_doc::Rgb) -> Document {
     use wordcraft_doc::para::{Anchor, Float, Wrap};
     let mut d = merge_overflow_doc(VAlign::Center, 10.0);
-    let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { unreachable!() };
+    let Block::Table(t) = Arc::make_mut(&mut d.body[1]) else { panic!("unexpected control block") };
     t.rows[0].cells[0].props.shading = Some(color);
     let p = d.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
     let behind = Float { wrap: Wrap::BehindText, h_rel: Anchor::Page, v_rel: Anchor::Page, x: 8.0, y: 8.0, ..Default::default() };
