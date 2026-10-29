@@ -1,4 +1,5 @@
-use super::*;
+use super::Cluster;
+use super::{PTabAlign, PTabBase, ParaLayout, TabAlign, TabLeader, TabStop};
 
 /// Next tab stop after `x` (column coordinates): explicit stops, the hanging-indent implicit stop,
 /// then default stops.
