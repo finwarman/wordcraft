@@ -896,6 +896,84 @@ fn draw_owner(item: &Placed) -> Option<(StoryRef, &wordcraft_doc::Path, usize)> 
     }
 }
 
+fn first_fragment_height(
+    row: &RowLayout,
+    cut: f32,
+    cells: &[&[Placed]],
+    splits: &[Vec<usize>],
+    moved: &[f32],
+    own_depth: Option<usize>,
+) -> (f32, f32) {
+    let limit = cut - row.bottom.clamp(0.0, cut);
+    let fits = |bottom: f32| bottom <= limit + 0.01;
+    // Word closes the first fragment below its last fitted content.
+    // Nested boxes crossing the cut retain their geometry.
+    let mut kept_bottoms = Vec::with_capacity(cells.len());
+    for (((items, splits), c), &moved_top) in cells.iter().zip(splits).zip(&row.cells).zip(moved) {
+        let behind: std::collections::HashSet<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                Placed::Object { story, path, off, wrap: wordcraft_doc::para::Wrap::BehindText, .. } => Some((*story, path, *off)),
+                _ => None,
+            })
+            .collect();
+        let mut kept_bottom = 0.0f32;
+        for (it, &split) in items.iter().zip(splits) {
+            let owner = draw_owner(it).or_else(|| {
+                let Placed::Clip { items, .. } = it else { return None };
+                let owner = draw_owner(items.first()?)?;
+                // Canvas members emitted together share one owner. Unknown clips retain flow bounds.
+                items.iter().all(|item| draw_owner(item) == Some(owner)).then_some(owner)
+            });
+            if owner.is_some_and(|owner| behind.contains(&owner)) {
+                continue;
+            }
+            let bottom = if let Some(r) = it.turned_bounds() {
+                fits(r.bottom()).then_some(r.bottom())
+            } else {
+                match it {
+                    Placed::Lines { para, l0, y, .. } if split > *l0 => crate::item_bottom(*y, para, *l0, split),
+                    Placed::Image { rect, .. } | Placed::Shape { rect, .. } | Placed::Graphic { rect, .. } | Placed::Clip { rect, .. }
+                        if fits(rect.bottom()) =>
+                    {
+                        Some(rect.bottom())
+                    }
+                    Placed::Object { rect, wrap, .. } if *wrap != wordcraft_doc::para::Wrap::BehindText && fits(rect.bottom()) => Some(rect.bottom()),
+                    Placed::Cell { rect, table, .. } if Some(table.0.len()) > own_depth && rect.y < cut => Some(rect.bottom().min(cut)),
+                    // Interior rules stay at their original height; the row's bottom edge is rebuilt below.
+                    Placed::Rule { y0, y1, .. }
+                        if y0.is_finite() && y1.is_finite() && (y0 - y1).abs() < 0.01 && *y0 < row.height - 0.01 && *y0 <= cut =>
+                    {
+                        Some(y0.max(*y1))
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(bottom) = bottom {
+                kept_bottom = kept_bottom.max(bottom);
+            }
+        }
+        if moved_top == f32::MAX
+            && let Some(end) = c.end.filter(|e| fits(*e))
+        {
+            kept_bottom = kept_bottom.max(end);
+        }
+        kept_bottoms.push(kept_bottom);
+    }
+    let floor = if row.min_height <= cut + 0.01 { row.min_height } else { cut };
+    let plain_bottom = kept_bottoms.iter().zip(&row.cells).filter(|(_, c)| c.center.is_none()).map(|(b, _)| *b).fold(0.0f32, f32::max);
+    let plain_height = (plain_bottom + row.bottom).max(floor).min(cut);
+    // A fitting merged label uses the first physical fragment's vertical center.
+    let kept_bottom = kept_bottoms
+        .iter()
+        .zip(&row.cells)
+        .filter(|(_, c)| c.center.as_ref().is_none_or(|v| v.height > plain_height + 0.01))
+        .map(|(b, _)| *b)
+        .fold(0.0f32, f32::max);
+    let first_height = (kept_bottom + row.bottom).max(floor).min(cut);
+    (first_height, plain_height)
+}
+
 /// Split a row at `cut` (points below the row's top) so the part above fits on this page.
 /// Paragraph lines break between lines; fills, vertical rules and cell areas are cut; the
 /// rest moves up to the top of the continuation. `None` when no line fits above the cut.
@@ -999,71 +1077,7 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
     if !kept_any || first_moved == f32::MAX {
         return None;
     }
-    // Word closes the first fragment below its last fitted content.
-    // Nested boxes crossing the cut retain their geometry.
-    let mut kept_bottoms = Vec::with_capacity(cells.len());
-    for (((items, splits), c), &moved_top) in cells.iter().zip(&splits).zip(&row.cells).zip(&moved) {
-        let behind: std::collections::HashSet<_> = items
-            .iter()
-            .filter_map(|item| match item {
-                Placed::Object { story, path, off, wrap: wordcraft_doc::para::Wrap::BehindText, .. } => Some((*story, path, *off)),
-                _ => None,
-            })
-            .collect();
-        let mut kept_bottom = 0.0f32;
-        for (it, &split) in items.iter().zip(splits) {
-            let owner = draw_owner(it).or_else(|| {
-                let Placed::Clip { items, .. } = it else { return None };
-                let owner = draw_owner(items.first()?)?;
-                // Canvas members emitted together share one owner. Unknown clips retain flow bounds.
-                items.iter().all(|item| draw_owner(item) == Some(owner)).then_some(owner)
-            });
-            if owner.is_some_and(|owner| behind.contains(&owner)) {
-                continue;
-            }
-            let bottom = if let Some(r) = it.turned_bounds() {
-                fits(r.bottom()).then_some(r.bottom())
-            } else {
-                match it {
-                    Placed::Lines { para, l0, y, .. } if split > *l0 => crate::item_bottom(*y, para, *l0, split),
-                    Placed::Image { rect, .. } | Placed::Shape { rect, .. } | Placed::Graphic { rect, .. } | Placed::Clip { rect, .. }
-                        if fits(rect.bottom()) =>
-                    {
-                        Some(rect.bottom())
-                    }
-                    Placed::Object { rect, wrap, .. } if *wrap != wordcraft_doc::para::Wrap::BehindText && fits(rect.bottom()) => Some(rect.bottom()),
-                    Placed::Cell { rect, table, .. } if Some(table.0.len()) > own_depth && rect.y < cut => Some(rect.bottom().min(cut)),
-                    // Interior rules stay at their original height; the row's bottom edge is rebuilt below.
-                    Placed::Rule { y0, y1, .. }
-                        if y0.is_finite() && y1.is_finite() && (y0 - y1).abs() < 0.01 && *y0 < row.height - 0.01 && *y0 <= cut =>
-                    {
-                        Some(y0.max(*y1))
-                    }
-                    _ => None,
-                }
-            };
-            if let Some(bottom) = bottom {
-                kept_bottom = kept_bottom.max(bottom);
-            }
-        }
-        if moved_top == f32::MAX
-            && let Some(end) = c.end.filter(|e| fits(*e))
-        {
-            kept_bottom = kept_bottom.max(end);
-        }
-        kept_bottoms.push(kept_bottom);
-    }
-    let floor = if row.min_height <= cut + 0.01 { row.min_height } else { cut };
-    let plain_bottom = kept_bottoms.iter().zip(&row.cells).filter(|(_, c)| c.center.is_none()).map(|(b, _)| *b).fold(0.0f32, f32::max);
-    let plain_height = (plain_bottom + row.bottom).max(floor).min(cut);
-    // A fitting merged label uses the first physical fragment's vertical center.
-    let kept_bottom = kept_bottoms
-        .iter()
-        .zip(&row.cells)
-        .filter(|(_, c)| c.center.as_ref().is_none_or(|v| v.height > plain_height + 0.01))
-        .map(|(b, _)| *b)
-        .fold(0.0f32, f32::max);
-    let first_height = (kept_bottom + row.bottom).max(floor).min(cut);
+    let (first_height, plain_height) = first_fragment_height(row, cut, &cells, &splits, &moved, own_depth);
     let trim_first = |r: Rect| (r.y < first_height).then(|| Rect::new(r.x, r.y, r.w, r.h.min(first_height - r.y)));
     // Fitted centers have no continuation content or movement to contribute.
     let center_fits = |c: &CellPart| c.center.as_ref().is_some_and(|v| v.height <= plain_height + 0.01);
