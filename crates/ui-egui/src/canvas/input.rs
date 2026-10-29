@@ -204,7 +204,7 @@ fn handle_page_pointer(app: &mut WordApp, pointer: PagePointer<'_>) {
         {
             let pj = serde_json::to_value(target.position()).unwrap_or_default();
             if app.session.run("caret.set", &json!({"pos": pj, "extend": true})).is_ok() {
-                app.session.retain_visual(target);
+                retain_pointer_hit(app, (page, x, y), story);
             }
             app.session.page_hint = page;
             app.canvas.caret_visible_since = crate::now_ms();
@@ -339,14 +339,14 @@ fn handle_primary_press(
     }
     // Alt+drag selects a column (block) of text.
     if mods.alt && !mods.shift && !mods.command {
-        set_visual_caret(app, target.clone(), SelectionMode::Replace);
+        set_visual_caret(app, target.clone(), SelectionMode::Replace, (page, x, y));
         app.session.page_hint = page;
         app.canvas.column_drag = Some(((page, x, y), (page, x, y)));
         app.canvas.dragging = true;
         return;
     }
     app.canvas.column_drag = None;
-    set_visual_caret(app, target, if mods.shift { SelectionMode::Extend } else { SelectionMode::Replace });
+    set_visual_caret(app, target, if mods.shift { SelectionMode::Extend } else { SelectionMode::Replace }, (page, x, y));
     // Double-click selects a word, triple-click a paragraph, Ctrl/⌘+click a sentence; holding
     // the button and dragging then extends by whole units (Word, #549).
     let unit = match clicks {
@@ -491,9 +491,18 @@ fn show_hover_link(app: &WordApp, pointer: &PagePointer<'_>) {
     }
 }
 
-fn set_visual_caret(app: &mut WordApp, target: wordcraft_layout::VisualPos, mode: SelectionMode) {
+fn set_visual_caret(app: &mut WordApp, target: wordcraft_layout::VisualPos, mode: SelectionMode, point: (usize, f32, f32)) {
+    let story = target.position().story;
     let pos = serde_json::to_value(target.position()).unwrap_or_default();
     if app.run("caret.set", json!({"pos": pos, "extend": mode == SelectionMode::Extend})).is_ok() {
+        retain_pointer_hit(app, point, story);
+    }
+}
+
+fn retain_pointer_hit(app: &mut WordApp, (page, x, y): (usize, f32, f32), story: StoryRef) {
+    // The command may end typing. Hit the final layout without reusing an old owner.
+    let layout = app.session.layout();
+    if let Some(target) = layout.hit_visual(page, x, y, story) {
         app.session.retain_visual(target);
     }
 }
