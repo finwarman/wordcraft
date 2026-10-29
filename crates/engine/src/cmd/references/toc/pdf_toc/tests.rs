@@ -1,5 +1,6 @@
+use super::super::toc_entry_style;
 use super::*;
-use wordcraft_doc::{Document, SectionProps};
+use wordcraft_doc::{Block, CharProps, Document, Path, SectionProps, para_block};
 
 fn control() -> Document {
     let mut doc = Document::from_text("Contents\nStale entry\n\nIncluded\nExcluded\nUnrelated ");

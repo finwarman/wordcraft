@@ -1,6 +1,8 @@
 //! Admission checks for rebuilding a TOC in a disposable PDF session.
 
-use super::*;
+use super::{
+    CmdError, CmdResult, FieldCode, InlineObject, OBJ, Paragraph, Pos, Session, StoryRef, Value, level_range, toc_entries, toc_range, update_toc,
+};
 use serde_json::json;
 
 const MAX_INSTRUCTION_BYTES: usize = 4096;

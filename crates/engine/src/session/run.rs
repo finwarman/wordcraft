@@ -273,11 +273,16 @@ impl Session {
                 self.status = e.to_string();
             }
         }
-        if result.is_err() {
-            self.visual_anchor = visual_before.0.filter(|hint| hint.position() == &self.sel.anchor);
-            self.visual_focus = visual_before.1.filter(|hint| hint.position() == &self.sel.focus);
-        }
+        self.restore_failed_visual(&result, visual_before);
         result
+    }
+
+    fn restore_failed_visual(&mut self, result: &Result<Value, CmdError>, before: (Option<VisualPos>, Option<VisualPos>)) {
+        if result.is_ok() {
+            return;
+        }
+        self.visual_anchor = before.0.filter(|hint| hint.position() == &self.sel.anchor);
+        self.visual_focus = before.1.filter(|hint| hint.position() == &self.sel.focus);
     }
 
     /// Geometry for a session endpoint, including valid transient visual affinity.

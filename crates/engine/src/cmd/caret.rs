@@ -221,6 +221,34 @@ fn para_down(s: &mut Session, p: &Pos) -> Pos {
     }
 }
 
+fn retain_final_target(
+    s: &mut Session,
+    layout: &std::sync::Arc<wordcraft_layout::DocLayout>,
+    target: wordcraft_layout::VisualPos,
+    edge: Option<wordcraft_layout::VisualEdge>,
+) {
+    let pos = target.position();
+    let Some(caret) = layout.caret_visual(pos, Some(&target), s.page_hint) else { return };
+    let story = pos.story;
+    let current = s.layout();
+    let target = if std::sync::Arc::ptr_eq(layout, &current) {
+        Some(target)
+    } else {
+        let point = current.hit_visual(caret.page, caret.x + caret.width / 2.0, caret.top + caret.height / 2.0, story);
+        match (point, edge) {
+            (Some(hit), Some(edge)) => current.line_edge_visual(hit.position(), Some(&hit), caret.page, edge),
+            (point, None) => point,
+            _ => None,
+        }
+    };
+    if let Some(target) = target {
+        s.retain_visual(target);
+        if let Some(caret) = s.caret_geometry(&current, &s.sel.focus) {
+            s.page_hint = caret.page;
+        }
+    }
+}
+
 fn vert(s: &mut Session, v: &Value, dir: i32) -> CmdResult {
     let ext = extend(v);
     let l = s.layout();
@@ -232,12 +260,11 @@ fn vert(s: &mut Session, v: &Value, dir: i32) -> CmdResult {
     };
     apply(s, to, ext);
     if let Some((target, _)) = target {
-        s.retain_visual(target);
+        retain_final_target(s, &l, target, None);
+    } else if let Some(caret) = l.caret_on(&s.sel.focus, s.page_hint) {
+        s.page_hint = caret.page;
     }
     s.goal_x = goal;
-    if let Some(c) = s.caret_geometry(&l, &s.sel.focus) {
-        s.page_hint = c.page;
-    }
     sel_result(s)
 }
 
@@ -250,7 +277,7 @@ fn line(s: &mut Session, v: &Value, home: bool) -> CmdResult {
     s.goal_x = None;
     apply(s, to, ext);
     if let Some(target) = target {
-        s.retain_visual(target);
+        retain_final_target(s, &l, target, Some(edge));
     }
     sel_result(s)
 }
@@ -266,7 +293,7 @@ fn page(s: &mut Session, v: &Value, dir: i32) -> CmdResult {
     s.page_hint = np;
     apply(s, to, ext);
     if let Some(target) = target {
-        s.retain_visual(target);
+        retain_final_target(s, &l, target, None);
     }
     sel_result(s)
 }
