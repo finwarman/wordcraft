@@ -470,3 +470,7 @@ supported text retain their complete caches. Bookmark navigation is unchanged. M
 own error text. External fields are not evaluated. REF dependencies settle before page
 reflow; pagination feedback has a separate pass limit and generated text work is bounded.
 Full TOC regeneration remains an explicit update.
+
+REF targets with hidden/deleted content or table-dependent formatting retain their caches.
+Inspection accounting is cumulative across refresh passes. An inspection limit makes ordinary
+exports retain the cached copy; strict TOC refresh reports an error. This is not a hard CPU or heap cap.
