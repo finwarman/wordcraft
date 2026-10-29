@@ -368,8 +368,8 @@ pub(crate) fn below(excl: &[WrapArea], mut y: f32, x0: f32, x1: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::{DocLayout, LayoutCache, LayoutOptions, layout};
-    use wordcraft_doc::Document;
     use wordcraft_doc::props::TextDirection;
+    use wordcraft_doc::{Document, Table};
 
     fn lay(doc: &Document) -> DocLayout {
         let mut c = LayoutCache::new();
