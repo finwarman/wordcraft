@@ -264,6 +264,43 @@ fn inherited_outline_is_selected() {
     assert_eq!(entries.iter().map(|e| e.level).collect::<Vec<_>>(), [2, 2, 2]);
 }
 
+/// Measured in Word for Mac: Update Table lists a Heading 1 paragraph as TOC 1 under
+/// `\o "1-2" \u`, even when the Heading 1 style declares outline level 2.
+#[test]
+fn heading_styles_keep_their_level() {
+    let mut doc = Document::from_text("Chapter\nSection");
+    doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.style = Some("Heading1".into());
+    doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().props.style = Some("Heading2".into());
+    for (id, level) in [("Heading1", 1), ("Heading2", 2)] {
+        doc.styles.styles.retain(|style| style.id != id);
+        doc.styles.styles.push(wordcraft_doc::styles::Style {
+            id: id.into(),
+            name: format!("heading {}", level),
+            builtin: true,
+            para: wordcraft_doc::ParaProps { outline_level: Some(level), ..Default::default() },
+            ..Default::default()
+        });
+    }
+    let session = Session::new(doc);
+    let entries = toc_entries(&session, &FieldCode::parse(r#"TOC \o "1-2" \u"#));
+    assert_eq!(entries.iter().map(|e| (&*e.text, e.level)).collect::<Vec<_>>(), [("Chapter", 0), ("Section", 1)]);
+}
+
+/// Word keeps the TOC field in its first entry, so a cached first entry's own list number and
+/// spacing don't survive as an empty line above the refreshed entries.
+#[test]
+fn first_entry_holds_the_field() {
+    let mut doc = control();
+    doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.style = None;
+    doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().props.space_before = Some(20.0);
+    let session = refresh_doc(doc).unwrap();
+    assert_eq!(toc_range(&session), Some((1, 1)));
+    let first = session.doc.body[1].as_para().unwrap();
+    assert_eq!(first.plain_text(), "Included\t1");
+    assert_eq!(first.props.space_before, None);
+    assert!(toc_field(first).is_some());
+}
+
 #[derive(Clone, Copy)]
 enum Tail {
     PageBreak,
@@ -349,12 +386,29 @@ fn unsafe_tails_are_atomic() {
         assert!(session.run("references.updateToc", &json!({"forPdf": true})).is_err());
         assert_eq!(serde_json::to_value(&session.doc).unwrap(), before);
     }
-    let mut doc = tail_control(Tail::PageBreak);
+    let mut doc = tail_control(Tail::Bookmark);
     doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap().props.style = Some("TOC1".into());
     let before = serde_json::to_value(&doc).unwrap();
     let mut session = Session::new(doc);
-    assert!(session.run("references.updateToc", &json!({"forPdf": true})).is_err(), "TOC-styled detached tails could be consumed by the generator");
+    assert!(session.run("references.updateToc", &json!({"forPdf": true})).is_err(), "TOC-styled bookmark tails are unmeasured");
     assert_eq!(serde_json::to_value(&session.doc).unwrap(), before);
+}
+
+/// Measured in Word for Mac: Update Table keeps a TOC1 last paragraph holding only the field end
+/// and a page break, style included.
+#[test]
+fn toc_styled_page_break_tail_is_kept() {
+    let mut doc = tail_control(Tail::PageBreak);
+    let end = doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap();
+    end.props.style = Some("TOC1".into());
+    end.section = None;
+    let session = refresh_doc(doc).unwrap();
+    let (start, last) = toc_range(&session).unwrap();
+    assert_eq!((start, last), (0, 2), "the entry and the kept tail");
+    assert_eq!(session.doc.body[1].as_para().unwrap().plain_text(), "Included\t2", "after the kept page break");
+    let tail = session.doc.body[2].as_para().unwrap();
+    assert_eq!(tail.text, "\u{000c}");
+    assert_eq!(tail.props.style.as_deref(), Some("TOC1"));
 }
 
 #[test]

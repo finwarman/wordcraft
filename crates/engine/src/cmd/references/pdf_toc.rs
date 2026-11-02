@@ -68,11 +68,15 @@ struct Table {
 }
 
 fn supported_tail(para: &Paragraph, end: &Pos) -> bool {
-    if end.off != 0 || para.props.style.as_deref().is_some_and(|style| style.starts_with("TOC")) {
+    if end.off != 0 {
         return false;
     }
+    // Word keeps a TOC-styled last entry paragraph holding only the field end and a page break.
     if para.text == format!("{OBJ}\u{000c}") && matches!(para.objects.as_slice(), [InlineObject::FieldEnd]) {
         return true;
+    }
+    if para.props.style.as_deref().is_some_and(|style| style.starts_with("TOC")) {
+        return false;
     }
     para.text == OBJ.to_string().repeat(3)
         && matches!(para.objects.as_slice(), [InlineObject::FieldEnd, InlineObject::BookmarkStart { name }, InlineObject::BookmarkEnd { name: other }] if !name.is_empty() && name == other)
@@ -247,21 +251,98 @@ fn admit(s: &Session) -> Result<Admission, CmdError> {
     Ok(Admission::Refresh(Table { start, code, split_end }))
 }
 
+/// Moves the TOC field from a paragraph holding nothing else into the first entry, where Word
+/// keeps it. The holder would otherwise print as a blank line, with the list number and spacing
+/// of the cached entry it came from. Returns whether it moved.
+fn join_first_entry(s: &mut Session, start: usize) -> Result<bool, CmdError> {
+    let Some(holder) = s.doc.body.get(start).and_then(|block| block.as_para()) else { return Ok(false) };
+    let only_field = holder.text == OBJ.to_string() && matches!(holder.objects.as_slice(), [InlineObject::Field { .. }]);
+    let entry_follows = s
+        .doc
+        .body
+        .get(start + 1)
+        .and_then(|block| block.as_para())
+        .is_some_and(|para| para.props.style.as_deref().is_some_and(|style| style.starts_with("TOC") && style != "TOCHeading"));
+    if holder.section.is_some() || !only_field || !entry_follows {
+        return Ok(false);
+    }
+    let (field, props) = (holder.objects[0].clone(), holder.props_of_char(0).clone());
+    s.doc.remove_block(StoryRef::Body, &Path::top(start))?;
+    s.doc.para_mut(StoryRef::Body, &Path::top(start))?.insert_object(0, field, &props)?;
+    s.touch();
+    Ok(true)
+}
+
+/// Rewrites entry page numbers after the TOC lost its holder line: headings may now print a
+/// page earlier. Two passes, as in the generator; the final print check rejects anything else.
+fn renumber_entries(s: &mut Session, code: &FieldCode, start: usize) -> Result<(), CmdError> {
+    let no_pages = code.has('n').then(|| code.arg('n').and_then(level_range).unwrap_or((1, 9)));
+    let sep = code.arg('p').unwrap_or("\t").to_string();
+    for _ in 0..2 {
+        let layout = s.layout();
+        let entries = toc_entries(s, code);
+        let mut changed = false;
+        for (i, entry) in entries.iter().enumerate() {
+            if no_pages.is_some_and(|(a, b)| (a..=b).contains(&(entry.level + 1))) {
+                continue;
+            }
+            let page = layout
+                .caret(&Pos::new(StoryRef::Body, entry.path.clone(), entry.lead))
+                .and_then(|caret| layout.pages.get(caret.page))
+                .map(|page| page.number)
+                .ok_or_else(|| failed("TOC heading has no printed page"))?;
+            let para = s.doc.para_mut(StoryRef::Body, &Path::top(start + i))?;
+            let Some(at) = para.text.rfind(&sep).map(|at| at + sep.len()) else { continue };
+            let page = page.to_string();
+            if para.text.get(at..) == Some(page.as_str()) {
+                continue;
+            }
+            let props = para.props_of_char(at).clone();
+            para.delete(at, para.len())?;
+            para.insert_text(at, &page, &props)?;
+            para.touch();
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+        s.touch();
+    }
+    Ok(())
+}
+
 pub(super) fn refresh(s: &mut Session, v: &Value) -> CmdResult {
     let table = match admit(s)? {
         Admission::Keep(state) => return Ok(report(state)),
         Admission::Refresh(table) => table,
     };
     let sections: Vec<_> = s.doc.sections().into_iter().map(|(_, section)| section.clone()).collect();
+    let mut tail_style = None;
     // Detach the admitted tail before deletion joins it onto the TOC's start paragraph.
     // Keep its formatting and section after the regenerated entries.
     if let Some(end) = table.split_end {
         let mark = s.doc.para_at(&end).ok_or_else(|| failed("TOC end paragraph is missing"))?.mark.clone();
         let off = end.off.checked_add(OBJ.len_utf8()).ok_or_else(|| failed("TOC field offset overflow"))?;
         let tail = s.doc.split_paragraph(&Pos { off, ..end })?;
-        s.doc.para_mut(tail.story, &tail.path)?.mark = mark;
+        let para = s.doc.para_mut(tail.story, &tail.path)?;
+        para.mark = mark;
+        // Hidden from the generator, which would take a TOC-styled tail for an entry.
+        if para.props.style.as_deref().is_some_and(|style| style.starts_with("TOC")) {
+            tail_style = Some((tail.path.last(), para.props.style.take()));
+        }
     }
     update_toc(s)?;
+    let joined = join_first_entry(s, table.start)?;
+    if joined {
+        renumber_entries(s, &table.code, table.start)?;
+    }
+    let restyled = tail_style.is_some();
+    if let Some((index, style)) = tail_style {
+        // The tail sits right after the entries; the generator and the join moved it.
+        let at = toc_range(s).map_or(index, |(_, end)| end + 1);
+        s.doc.para_mut(StoryRef::Body, &Path::top(at))?.props.style = style;
+        s.touch();
+    }
     if s.doc.sections().into_iter().map(|(_, section)| section.clone()).collect::<Vec<_>>() != sections {
         return Err(failed("TOC refresh changed section properties"));
     }
@@ -274,7 +355,8 @@ pub(super) fn refresh(s: &mut Session, v: &Value) -> CmdResult {
     let printed = Session::new(print.doc);
     let entries = toc_entries(&printed, &table.code);
     let Some((start, end)) = toc_range(&printed) else { return Err(failed("refreshed TOC is missing")) };
-    if start != table.start || end.saturating_sub(start) != entries.len() {
+    let first = start + usize::from(!joined);
+    if start != table.start || end + 1 - first - usize::from(restyled) != entries.len() {
         return Err(failed("TOC entry boundaries did not settle"));
     }
     let no_pages = table.code.has('n').then(|| table.code.arg('n').and_then(level_range).unwrap_or((1, 9)));
@@ -288,7 +370,7 @@ pub(super) fn refresh(s: &mut Session, v: &Value) -> CmdResult {
             .ok_or_else(|| failed("TOC heading has no printed page"))?;
         let show_page = no_pages.is_none_or(|(a, b)| !(a..=b).contains(&(entry.level + 1)));
         let expected = if show_page { format!("{}{sep}{page}", entry.text) } else { entry.text.clone() };
-        if printed.doc.body.get(start + 1 + i).and_then(|block| block.as_para()).is_none_or(|para| para.plain_text() != expected) {
+        if printed.doc.body.get(first + i).and_then(|block| block.as_para()).is_none_or(|para| para.plain_text() != expected) {
             return Err(failed("TOC page numbers did not settle in the final print layout"));
         }
     }

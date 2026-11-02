@@ -299,7 +299,11 @@ fn toc_entries(s: &Session, f: &FieldCode) -> Vec<TocEntry> {
             })?;
             (a..=b).contains(&l).then_some(l)
         });
-        if let Some(l) = by_style.or(by_outline).or(if hidden { None } else { by_heading }) {
+        // A built-in heading style in the `\o` range keeps its own level over its style's
+        // outline level, as Word's Update Table does.
+        let by_name = o.zip(heading_style_level(p)).filter(|((a, b), l)| (*a..=*b).contains(l)).map(|(_, l)| l);
+        let visible = |l: Option<u8>| if hidden { None } else { l };
+        if let Some(l) = by_style.or(visible(by_name)).or(by_outline).or(visible(by_heading)) {
             let t = p.plain_text().replace(['\u{000C}', '\n', '\t'], " ").trim().to_string();
             if !t.is_empty() {
                 let text = number.map_or_else(|| t.clone(), |n| format!("{n}{t}"));
