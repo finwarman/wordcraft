@@ -4098,7 +4098,8 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     let mut anchor_y = pb.y;
     let spot = |pb: &PageBuilder| (pb.pages.len(), pb.col);
     let placed_at = spot(pb);
-    let broke_before = pl.rp.page_break_before && !pb.at_top() && !pb.web;
+    // A continuous section's top mid-page is not a page top, so the break still applies.
+    let broke_before = pl.rp.page_break_before && !pb.fresh() && !pb.web;
     if broke_before {
         pb.new_page(block, body_top);
     }
@@ -4846,7 +4847,7 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
         tl.x = float_table_x(pb, tl.width, &f, legacy, ctx.mirror) - pb.col_x();
     }
     // Word starts the table on a new page when its first cell opens with a page break before.
-    if !pb.at_top() && !pb.web && tl.rows.first().is_some_and(|row| first_cell_flag(row, |rp| rp.page_break_before)) {
+    if !pb.fresh() && !pb.web && tl.rows.first().is_some_and(|row| first_cell_flag(row, |rp| rp.page_break_before)) {
         pb.new_page(block, body_top);
     }
     // A table in the text flow starts below the floating objects in its way.

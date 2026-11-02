@@ -13436,6 +13436,35 @@ fn table_after_table_breaks_before() {
     assert_eq!(cell_pages(&lay(&d)), vec![0, 1]);
 }
 
+/// A continuous section starting mid-page leaves its first paragraph's page break before in
+/// force, measured in Word for Mac: "Cover", an empty mark closing a continuous section, then
+/// "Heading" with page break before puts "Heading" on page 2.
+#[test]
+fn a_page_break_before_after_a_continuous_mark_starts_a_page() {
+    use wordcraft_doc::section::{SectionProps, SectionStart};
+    let mut d = Document::from_text("Cover\n\nHeading");
+    d.para_mut(StoryRef::Body, &Path::top(1)).unwrap().section =
+        Some(Box::new(SectionProps { start: SectionStart::Continuous, ..Default::default() }));
+    d.para_mut(StoryRef::Body, &Path::top(2)).unwrap().props.page_break_before = Some(true);
+    d.last_section.start = SectionStart::Continuous;
+    assert_eq!(lay(&d).caret(&Pos::body(2, 0)).unwrap().page, 1);
+}
+
+#[test]
+fn a_table_breaking_before_after_a_continuous_mark_starts_a_page() {
+    use wordcraft_doc::section::{SectionProps, SectionStart};
+    let mut mark = Paragraph::with_text("", CharProps::default());
+    mark.section = Some(Box::new(SectionProps { start: SectionStart::Continuous, ..Default::default() }));
+    let mut d = Document::new();
+    d.body = vec![
+        wordcraft_doc::para_block(Paragraph::with_text("Cover", CharProps::default())),
+        wordcraft_doc::para_block(mark),
+        break_before_table("Heading", true),
+    ];
+    d.last_section.start = SectionStart::Continuous;
+    assert_eq!(cell_pages(&lay(&d)), vec![1]);
+}
+
 #[test]
 fn table_at_top_keeps_page() {
     let mut d = Document::new();
