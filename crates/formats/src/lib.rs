@@ -1,6 +1,6 @@
 //! WordCraft import/export for the "other" text formats: plain text, Markdown (CommonMark subset
 //! plus GFM tables and strikethrough), HTML, RTF, OpenDocument Text and LaTeX — and, read-only,
-//! spreadsheet cells for mail-merge recipient lists ([`sheet`]: .xlsx/.xlsm/.ods).
+//! spreadsheet cells for mail-merge recipient lists ([`sheet`]: .xlsx/.xlsm/.xls/.ods).
 //!
 //! Every format maps to a small flow model ([`model::Flow`]: paragraphs with a kind, list
 //! membership, alignment and formatted spans; tables of cells), which [`model::to_doc`] and
@@ -13,6 +13,7 @@ pub mod comments;
 pub mod html;
 pub mod latex;
 pub mod markdown;
+pub mod mathml;
 pub mod model;
 pub mod odt;
 pub mod rtf;
@@ -20,6 +21,10 @@ pub mod sheet;
 pub mod txt;
 
 use wordcraft_doc::Document;
+
+/// Most entries an ODT or spreadsheet package may declare, as many as a Word package
+/// (`wordcraft_docx::package::MAX_ENTRIES`); checked before `zip` parses them (#3660).
+pub const MAX_ZIP_ENTRIES: u64 = 20_000;
 
 /// Extensions this crate handles.
 pub const EXTENSIONS: &[&str] = &["txt", "text", "md", "markdown", "html", "htm", "xhtml", "rtf", "odt", "tex", "latex", "ltx"];
@@ -40,6 +45,21 @@ pub fn import(ext: &str, bytes: &[u8]) -> Option<Result<Document, String>> {
         d.ensure_nonempty();
         d
     }))
+}
+
+/// [`import`] onto `page` (its size and margins) for the formats whose files give no page size:
+/// plain text, Markdown and HTML start on it, and their tables size to it (#1381). The other
+/// formats keep the page their file gives.
+pub fn import_on(ext: &str, bytes: &[u8], page: &wordcraft_doc::SectionProps) -> Option<Result<Document, String>> {
+    let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+    let mut doc = match ext.as_str() {
+        "txt" | "text" => txt::import_on(bytes, page),
+        "md" | "markdown" => markdown::import_on(&txt::decode(bytes), page),
+        "html" | "htm" | "xhtml" => html::import_on(&html::decode(bytes), &|_| None, page),
+        _ => return import(&ext, bytes),
+    };
+    doc.ensure_nonempty();
+    Some(Ok(doc))
 }
 
 /// Export `doc` in the format named by `ext`. `None` = not our format.
@@ -75,5 +95,7 @@ pub fn export_with(ext: &str, doc: &Document, opts: &ExportOptions) -> Option<Re
     Some(out.map(|bytes| comments::append(&ext, doc, bytes)))
 }
 
+#[cfg(test)]
+mod test_log;
 #[cfg(test)]
 mod tests;
