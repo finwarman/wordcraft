@@ -50,6 +50,8 @@ pub enum Placed {
     /// `rect` is the unturned frame and `items` sit in it; `spin` turns the clipped whole about
     /// the frame's centre.
     Clip { rect: Rect, spin: Spin, items: Vec<Placed> },
+    /// Begin/end a text box's paint transform without changing its layout coordinates.
+    Spun { rect: Rect, spin: Spin, part: u32, open: bool },
     /// A table cell's area (for hit testing and cell selection). A vertically merged cell is
     /// one `Cell` as tall as all its rows; its continuation rows get a `covered` `Cell` (their
     /// own row's height) so the rows keep a box each, but it isn't a cell of its own on screen.
@@ -95,7 +97,8 @@ impl Placed {
             | Placed::Image { rect, .. }
             | Placed::Shape { rect, .. }
             | Placed::Graphic { rect, .. }
-            | Placed::Cell { rect, .. } => {
+            | Placed::Cell { rect, .. }
+            | Placed::Spun { rect, .. } => {
                 rect.x += dx;
                 rect.y += dy;
             }
@@ -155,7 +158,10 @@ impl Placed {
             Placed::Fill { rect, .. } | Placed::Cell { rect, .. } => {
                 *rect = turn_rect(turn, x, y, *rect);
             }
-            Placed::Image { rect, spin, .. } | Placed::Shape { rect, spin, .. } | Placed::Graphic { rect, spin, .. } => {
+            Placed::Image { rect, spin, .. }
+            | Placed::Shape { rect, spin, .. }
+            | Placed::Graphic { rect, spin, .. }
+            | Placed::Spun { rect, spin, .. } => {
                 turn_drawing(rect, spin, turn, x, y);
             }
             Placed::Object { rect, spin, origin, clip, .. } => {

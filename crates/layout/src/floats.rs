@@ -557,18 +557,6 @@ pub(crate) fn place_objects(ctx: &mut Ctx, req: &ObjectPlacement) -> PlacedObjec
                 let cx = x + line.cl_left(k).unwrap_or(0.0);
                 display::inline_rect(Some(obj), cx, y + (line.baseline - fl.top), c.adv, c.obj_h, pl.rule_room(line, k))
             };
-            let mut foreground = Vec::new();
-            let layer = if !floating {
-                &mut inline
-            } else if float.wrap == Wrap::BehindText {
-                &mut back
-            } else {
-                &mut foreground
-            };
-            // Floating ones are drawn here; inline ones with their line.
-            if floating {
-                layer.extend(float_items(obj, rect, (Spin::default(), Point::default()), story, path, c.start));
-            }
             let text_box = match obj {
                 InlineObject::Shape { story: Some(id), .. } if ctx.doc.parts.get(id).is_some_and(|p| p.kind == wordcraft_doc::PartKind::TextBox) => {
                     Some(*id)
@@ -577,6 +565,31 @@ pub(crate) fn place_objects(ctx: &mut Ctx, req: &ObjectPlacement) -> PlacedObjec
             };
             // A box linked from another shows (and edits) that box's story.
             let shown = text_box.map(|id| textbox::shown_story(ctx, id));
+            let rotation = shown
+                .filter(|_| {
+                    !text_box.and_then(|id| ctx.doc.parts.get(&id)).is_some_and(|part| part.body.upright)
+                        && !Spin::new(float.spin().deg, false, false).is_identity()
+                        && (float.spin().deg - 90.0).abs() >= 0.01
+                        && (float.spin().deg - 270.0).abs() >= 0.01
+                })
+                .map(|part| (part, Spin::new(float.spin().deg, false, false)));
+            let mut foreground = Vec::new();
+            let layer = paint_layer(float.wrap, &mut inline, &mut back, &mut foreground);
+            if let Some((part, spin)) = rotation {
+                layer.push(Placed::Spun { rect, spin, part, open: true });
+            }
+            // A rotated box carries its frame and text through the same transform.
+            if floating {
+                let mut items = float_items(obj, rect, (Spin::default(), Point::default()), story, path, c.start);
+                if rotation.is_some() {
+                    for item in &mut items {
+                        if let Placed::Shape { spin, .. } = item {
+                            *spin = Spin::new(0.0, float.flip_h, float.flip_v);
+                        }
+                    }
+                }
+                layer.extend(items);
+            }
             layer.push(Placed::Object {
                 rect,
                 clip: None,
@@ -605,15 +618,15 @@ pub(crate) fn place_objects(ctx: &mut Ctx, req: &ObjectPlacement) -> PlacedObjec
             for (id, rect, spin) in boxes {
                 let parent = if text_box == Some(id) { Some(obj) } else { None };
                 let mut items = textbox::box_items(ctx, id, rect, depth, parent);
-                turn_box_text(ctx, id, rect, spin, &mut items);
-                let layer = if !floating {
-                    &mut inline
-                } else if float.wrap == Wrap::BehindText {
-                    &mut back
-                } else {
-                    &mut foreground
-                };
+                if rotation.is_none() {
+                    turn_box_text(ctx, id, rect, spin, &mut items);
+                }
+                let layer = paint_layer(float.wrap, &mut inline, &mut back, &mut foreground);
                 layer.extend(items);
+            }
+            if let Some((part, spin)) = rotation {
+                let layer = paint_layer(float.wrap, &mut inline, &mut back, &mut foreground);
+                layer.push(Placed::Spun { rect, spin, part, open: false });
             }
             let z = if floating && float.z > 0 {
                 z_top = z_top.max(float.z);
@@ -648,6 +661,14 @@ pub(crate) fn place_objects(ctx: &mut Ctx, req: &ObjectPlacement) -> PlacedObjec
         behind.extend(group);
     }
     PlacedObjects { behind, inline, front }
+}
+
+fn paint_layer<'a>(wrap: Wrap, inline: &'a mut Vec<Placed>, back: &'a mut Vec<Placed>, front: &'a mut Vec<Placed>) -> &'a mut Vec<Placed> {
+    match wrap {
+        Wrap::Inline => inline,
+        Wrap::BehindText => back,
+        _ => front,
+    }
 }
 
 fn turn_box_text(ctx: &Ctx, id: u32, rect: Rect, spin: Spin, items: &mut [Placed]) {

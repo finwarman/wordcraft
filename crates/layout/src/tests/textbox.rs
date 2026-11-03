@@ -1039,3 +1039,79 @@ fn body_box_dist_top_wrap() {
     assert!(count(&laid) > 1, "the distance above the corrected frame must wrap earlier text");
     assert_eq!(doc, original);
 }
+
+#[test]
+fn box_text_keeps_free_rotation() {
+    fn angles(draws: &[display::Draw], angle: f32, found: &mut Vec<f32>) {
+        for draw in draws {
+            match draw {
+                display::Draw::Glyphs { text, .. } if text.contains("Original") => found.push(angle.rem_euclid(360.0)),
+                display::Draw::Rotated { spin, items, .. } => angles(items, angle + spin.deg, found),
+                display::Draw::Turned { turn, items, .. } => {
+                    let delta = if *turn == TextDirection::Down { 90.0 } else { 270.0 };
+                    angles(items, angle + delta, found);
+                }
+                display::Draw::Clip { items, .. } => angles(items, angle, found),
+                _ => {}
+            }
+        }
+    }
+    for degrees in [315.0, 45.0, 180.0, 0.0, 90.0, 270.0] {
+        for upright in [false, true] {
+            for header in [false, true] {
+                let mut document = Document::from_text("Body probe");
+                let box_id = text_box(&mut document, 0, "Original rotation probe", 180.0, 60.0, TextBody { upright, ..Default::default() });
+                let object = &mut document.para_mut(StoryRef::Body, &Path::top(0)).unwrap().objects[0];
+                let float = object.float_mut().unwrap();
+                float.set_spin(Spin::new(degrees, false, false));
+                float.wrap = wordcraft_doc::para::Wrap::BehindText;
+                let original = object.clone();
+                if header {
+                    let blocks = std::mem::replace(&mut document.body, Document::from_text("Body probe").body);
+                    let id = document.add_part(PartKind::Header, blocks);
+                    document.last_section.headers.default = Some(id);
+                }
+                let layout = lay(&document);
+                let draws = display::page_display(&document, &layout.pages[0], &display::DisplayOptions::default());
+                let mut found = Vec::new();
+                angles(&draws, 0.0, &mut found);
+                let item_display = display::ItemDisplay::new(&document, &layout.pages[0]);
+                let isolated: Vec<_> = layout.pages[0]
+                    .header
+                    .iter()
+                    .chain(&layout.pages[0].items)
+                    .flat_map(|it| item_display.draws(it, &display::DisplayOptions::default()))
+                    .collect();
+                let mut isolated_angles = Vec::new();
+                angles(&isolated, 0.0, &mut isolated_angles);
+                assert_eq!(isolated_angles, found, "PDF item drawing must match canvas rotation");
+                let frame = layout.find_object(0, |o| o.text_box == Some(box_id)).unwrap().rect;
+                let preview =
+                    display::object_display(&document, &layout.pages[0], &original, frame, Some(box_id), &display::DisplayOptions::default());
+                let mut preview_angles = Vec::new();
+                angles(&preview, 0.0, &mut preview_angles);
+                assert_eq!(preview_angles, found, "object preview must match page rotation");
+                if !upright && [45.0, 180.0, 315.0].contains(&degrees) {
+                    let story = StoryRef::Part(box_id);
+                    let pos = Pos { story, path: Path::top(0), off: 0 };
+                    let next = Pos { off: 1, ..pos.clone() };
+                    let a = layout.caret_on(&pos, 0).unwrap();
+                    let b = layout.caret_on(&next, 0).unwrap();
+                    let (x, y) = Spin::new(degrees, false, false).apply(
+                        frame.x + frame.w / 2.0,
+                        frame.y + frame.h / 2.0,
+                        a.x + (b.x - a.x) * 0.25,
+                        a.top + a.height / 2.0,
+                    );
+                    assert_eq!(layout.hit(0, x, y, story).map(|p| p.off), Some(0), "hit follows rotated glyph");
+                    if header {
+                        assert_eq!(layout.header_footer_text_box_at(0, x, y), Some(box_id));
+                    }
+                }
+                let expected = if upright { 0.0 } else { degrees };
+                assert!(!found.is_empty(), "original text must remain visible");
+                assert!(found.iter().all(|angle| (*angle - expected).abs() < 0.01), "degrees={degrees} upright={upright} header={header}: {found:?}");
+            }
+        }
+    }
+}

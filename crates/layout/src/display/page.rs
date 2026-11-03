@@ -64,6 +64,7 @@ pub struct ItemDisplay<'a> {
     clips: [Clips; 3],
     scopes: [ObjectScopes<'a>; 3],
     positions: HashMap<usize, (usize, usize)>,
+    turns: HashMap<usize, Vec<(Rect, Spin)>>,
 }
 
 impl<'a> ItemDisplay<'a> {
@@ -72,13 +73,25 @@ impl<'a> ItemDisplay<'a> {
         let clips = lists.map(|items| clipped_cells(items));
         let scopes = lists.map(|items| object_scopes(items));
         let mut positions = HashMap::new();
+        let mut turns = HashMap::new();
         for (slice, items) in lists.iter().enumerate() {
+            let mut stack = Vec::new();
             for (index, item) in items.iter().enumerate() {
+                match item {
+                    Placed::Spun { rect, spin, open: true, .. } => stack.push((*rect, *spin)),
+                    Placed::Spun { open: false, .. } => {
+                        stack.pop();
+                    }
+                    _ if !stack.is_empty() => {
+                        turns.insert(item as *const Placed as usize, stack.clone());
+                    }
+                    _ => {}
+                }
                 crate::work::steps(1);
                 positions.insert(item as *const Placed as usize, (slice, index));
             }
         }
-        ItemDisplay { doc, page, authors: Authors::new(doc), clips, scopes, positions }
+        ItemDisplay { doc, page, authors: Authors::new(doc), clips, scopes, positions, turns }
     }
 
     /// The draw items of `it` alone, as [`page_display`] gives them for a page holding just it
@@ -87,8 +100,14 @@ impl<'a> ItemDisplay<'a> {
         let mut out = Vec::new();
         let items = std::slice::from_ref(it);
         let (_, ba) = dimming(opts);
-        let shared = self.positions.get(&(it as *const Placed as usize)).map(|&(slice, index)| (&self.clips[slice], &self.scopes[slice], index));
+        let turns = self.turns.get(&(it as *const Placed as usize)).map_or(&[][..], Vec::as_slice);
+        let shared =
+            self.positions.get(&(it as *const Placed as usize)).map(|&(slice, index)| (&self.clips[slice], &self.scopes[slice], index, turns));
         stories_display(self.doc, &[items], shared, opts, &self.authors, ba, &mut out);
+        for &(rect, spin) in turns.iter().rev() {
+            let inner = std::mem::take(&mut out);
+            spun(spin, rect, inner, &mut out);
+        }
         body_change_bars(self.doc, self.page, items, opts, ba, &mut out);
         out
     }
@@ -124,7 +143,7 @@ fn body_change_bars(doc: &Document, page: &Page, items: &[Placed], opts: &Displa
 fn stories_display(
     doc: &Document,
     stories: &[&[Placed]],
-    shared: Option<(&Clips, &ObjectScopes<'_>, usize)>,
+    shared: Option<(&Clips, &ObjectScopes<'_>, usize, &[(Rect, Spin)])>,
     opts: &DisplayOptions,
     authors: &Authors,
     a: f32,
@@ -136,7 +155,7 @@ fn stories_display(
         let own;
         let own_scopes;
         let (clips, scopes) = match shared {
-            Some((clips, scopes, _)) => (clips, scopes),
+            Some((clips, scopes, _, _)) => (clips, scopes),
             None => {
                 own = clipped_cells(items);
                 own_scopes = object_scopes(items);
@@ -144,7 +163,23 @@ fn stories_display(
             }
         };
         let mut done: Vec<u32> = Vec::new();
+        let mut turns: Vec<(Vec<Draw>, Rect, Spin)> = Vec::new();
+        let inherited = shared.map_or(Spin::default(), |(_, _, _, turns)| turns.iter().fold(Spin::default(), |outer, (_, spin)| spin.within(outer)));
         for (index, it) in items.iter().enumerate() {
+            let outer = turns.iter().fold(inherited, |outer, (_, _, spin)| spin.within(outer));
+            match it {
+                Placed::Spun { rect, spin, open: true, .. } => {
+                    turns.push((std::mem::take(out), *rect, *spin));
+                    continue;
+                }
+                Placed::Spun { open: false, .. } => {
+                    if let Some((before, rect, spin)) = turns.pop() {
+                        close_turn(before, rect, spin, out);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             // The object being dragged is drawn by its preview instead: leave it out here.
             if hidden.as_ref().is_some_and(|h| h.hides(it)) {
                 continue;
@@ -152,7 +187,7 @@ fn stories_display(
             if !clips.is_empty()
                 && let Some((story, path, object)) = it.source()
             {
-                let index = shared.map_or(index, |(_, _, index)| index);
+                let index = shared.map_or(index, |(_, _, index, _)| index);
                 // Pin places object records outside the cell sequence. Drawing layer order does not own the clip.
                 let scope = object
                     .and_then(|off| scopes.get(&(story, path, off)))
@@ -168,7 +203,7 @@ fn stories_display(
                 let clip = scope.map_or_else(|| cell_clip(clips, story, &path.0, index), |(_, clip)| clip);
                 if let Some(rect) = clip {
                     let mut inner = Vec::new();
-                    item(doc, it, opts, authors, a, &mut inner);
+                    item_in(doc, it, opts, authors, a, outer, &mut inner);
                     out.push(Draw::Clip { rect, items: inner });
                     continue;
                 }
@@ -186,10 +221,18 @@ fn stories_display(
                         warped_text(WarpedText { doc, lines: &lines, rect: *rect, warp, opts, authors, alpha: a }, out);
                     }
                 }
-                _ => item(doc, it, opts, authors, a, out),
+                _ => item_in(doc, it, opts, authors, a, outer, out),
             }
         }
+        while let Some((before, rect, spin)) = turns.pop() {
+            close_turn(before, rect, spin, out);
+        }
     }
+}
+
+fn close_turn(before: Vec<Draw>, rect: Rect, spin: Spin, out: &mut Vec<Draw>) {
+    let inner = std::mem::replace(out, before);
+    spun(spin, rect, inner, out);
 }
 
 /// One object drawn alone, as its page draws it: the picture, shape or group `o` in `rect` (its
@@ -200,14 +243,27 @@ pub fn object_display(doc: &Document, page: &Page, o: &InlineObject, rect: Rect,
     object_draws(o, rect, Spin::default(), 1.0, opts, &mut out);
     let Some(id) = text_box else { return out };
     let authors = Authors::new(doc);
+    let mut text = Vec::new();
+    let mut rotation = None;
     for items in [&page.items, &page.header, &page.footer] {
+        rotation = rotation.or_else(|| {
+            items.iter().find_map(|it| match it {
+                Placed::Spun { rect: frame, spin, part, open: true } if *part == id && *frame == rect => Some(*spin),
+                _ => None,
+            })
+        });
         let lines: Vec<&Placed> = items.iter().filter(|i| matches!(i, Placed::Lines { story: StoryRef::Part(s), .. } if *s == id)).collect();
         match warped_boxes(doc, items).into_iter().find(|(w, ..)| *w == id) {
             Some((_, rect, warp)) if !lines.is_empty() => {
-                warped_text(WarpedText { doc, lines: &lines, rect, warp: &warp, opts, authors: &authors, alpha: 1.0 }, &mut out)
+                warped_text(WarpedText { doc, lines: &lines, rect, warp: &warp, opts, authors: &authors, alpha: 1.0 }, &mut text)
             }
-            _ => lines.into_iter().for_each(|it| item(doc, it, opts, &authors, 1.0, &mut out)),
+            _ => lines.into_iter().for_each(|it| item(doc, it, opts, &authors, 1.0, &mut text)),
         }
+    }
+    if let Some(spin) = rotation {
+        spun(spin, rect, text, &mut out);
+    } else {
+        out.extend(text);
     }
     out
 }
@@ -409,7 +465,7 @@ fn item_in(doc: &Document, it: &Placed, opts: &DisplayOptions, authors: &Authors
             }
             spun(*spin, *rect, vec![Draw::Clip { rect: *rect, items: inner }], out)
         }
-        Placed::Cell { .. } | Placed::Object { .. } => {}
+        Placed::Cell { .. } | Placed::Object { .. } | Placed::Spun { .. } => {}
         Placed::Lines { story, path, para, l0, l1, x, y, turn } if turn.is_turned() => {
             let mut items = Vec::new();
             lines(

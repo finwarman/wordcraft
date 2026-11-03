@@ -185,6 +185,7 @@ pub(crate) fn v_span(it: &Placed) -> (f32, f32) {
         | Placed::Image { rect, .. }
         | Placed::Shape { rect, .. }
         | Placed::Graphic { rect, .. }
+        | Placed::Spun { rect, .. }
         | Placed::Clip { rect, .. }
         | Placed::Cell { rect, .. }
         | Placed::Object { rect, .. } => (rect.y, rect.y + rect.h),

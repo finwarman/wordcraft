@@ -55,6 +55,7 @@ fn page_content_key(page: &Page) -> u64 {
                     format!("{spin:?}").hash(&mut h);
                     (story, path, off).hash(&mut h);
                 }
+                Placed::Spun { rect, spin, part, open } => format!("{rect:?}{spin:?}{part}{open}").hash(&mut h),
                 Placed::Clip { rect, spin, items } => format!("{rect:?}{spin:?}{items:?}").hash(&mut h),
                 Placed::Cell { rect, clip, story, table, row, cell, .. } => {
                     // Cell markers select the physical clip; their placement closes each occurrence.

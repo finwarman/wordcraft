@@ -115,6 +115,7 @@ fn bounds(it: &Placed) -> Option<Rect> {
         | Placed::Image { rect, .. }
         | Placed::Shape { rect, .. }
         | Placed::Graphic { rect, .. }
+        | Placed::Spun { rect, .. }
         | Placed::Clip { rect, .. }
         | Placed::Cell { rect, .. }
         | Placed::Object { rect, .. } => Some(*rect),

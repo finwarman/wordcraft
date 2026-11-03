@@ -379,6 +379,7 @@ fn fit_lines(items: Vec<Placed>, height: f32, fit: LineFit) -> Vec<Placed> {
             Placed::Image { rect, .. }
             | Placed::Shape { rect, .. }
             | Placed::Graphic { rect, .. }
+            | Placed::Spun { rect, .. }
             | Placed::Clip { rect, .. }
             | Placed::Cell { rect, .. }
             | Placed::Object { rect, .. }
@@ -426,7 +427,8 @@ fn fit_exact_cell(items: Vec<Placed>, height: f32, story: StoryRef) -> Vec<Place
                 | Placed::Shape { .. }
                 | Placed::Graphic { .. }
                 | Placed::Clip { .. }
-                | Placed::Object { .. } => Some(item),
+                | Placed::Object { .. }
+                | Placed::Spun { .. } => Some(item),
                 Placed::Fill { source: Some((owner, _)), .. } | Placed::Rule { source: Some((owner, _)), .. } if owner == story => Some(item),
                 Placed::Fill { rect, color, source } if rect.y < limit => {
                     Some(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, rect.h.min(limit - rect.y)), color, source })

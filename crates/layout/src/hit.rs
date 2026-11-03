@@ -550,10 +550,34 @@ fn band_dist(v: f32, top: f32, h: f32) -> f32 {
     }
 }
 
+fn text_point(page: &Page, story: StoryRef, x: f32, y: f32) -> Point {
+    let StoryRef::Part(id) = story else { return Point::new(x, y) };
+    let frame = page
+        .items
+        .iter()
+        .chain(&page.header)
+        .chain(&page.footer)
+        .filter_map(|item| match item {
+            Placed::Spun { rect, spin, part, open: true } if *part == id => Some((*rect, *spin)),
+            _ => None,
+        })
+        .min_by(|(a, sa), (b, sb)| {
+            let distance = |r: Rect, spin: wordcraft_geom::Spin| {
+                let (px, py) = spin.unapply(r.x + r.w / 2.0, r.y + r.h / 2.0, x, y);
+                band_dist(px, r.x, r.w) + band_dist(py, r.y, r.h)
+            };
+            distance(*a, *sa).total_cmp(&distance(*b, *sb))
+        });
+    let Some((rect, spin)) = frame else { return Point::new(x, y) };
+    let (x, y) = spin.unapply(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0, x, y);
+    Point::new(x, y)
+}
+
 impl DocLayout {
     /// The position nearest to (x, y) on `page`, in `story`.
     pub fn hit(&self, page: usize, x: f32, y: f32, story: StoryRef) -> Option<Pos> {
         let p = self.pages.get(page)?;
+        let Point { x, y } = text_point(p, story, x, y);
         if let Some(pos) = turned_hit(p, story, x, y) {
             return Some(pos);
         }
@@ -581,7 +605,7 @@ impl DocLayout {
         let p = self.pages.get(page)?;
         let text_box = |behind: bool| {
             objects_at(&p.items, page, x, y)
-                .find(|o| o.behind() == behind && o.text_box.is_some() && o.rect.contains(Point::new(x, y)))
+                .find(|o| o.behind() == behind && o.text_box.is_some_and(|id| o.rect.contains(text_point(p, StoryRef::Part(id), x, y))))
                 .and_then(|o| o.text_box)
         };
         text_box(false).map(StoryRef::Part).or_else(|| text_at(p, page, x, y)).or_else(|| text_box(true).map(StoryRef::Part))
@@ -626,7 +650,7 @@ impl DocLayout {
         let p = self.pages.get(page)?;
         objects_at(&p.header, page, x, y)
             .chain(objects_at(&p.footer, page, x, y))
-            .find(|o| o.text_box.is_some() && o.rect.contains(Point::new(x, y)))
+            .find(|o| o.text_box.is_some_and(|id| o.rect.contains(text_point(p, StoryRef::Part(id), x, y))))
             .and_then(|o| o.text_box)
     }
 

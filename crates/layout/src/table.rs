@@ -1158,7 +1158,11 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
                             y + l.top - base
                         })
                     }
-                    Placed::Image { rect, .. } | Placed::Shape { rect, .. } | Placed::Graphic { rect, .. } | Placed::Clip { rect, .. } => {
+                    Placed::Image { rect, .. }
+                    | Placed::Shape { rect, .. }
+                    | Placed::Graphic { rect, .. }
+                    | Placed::Spun { rect, .. }
+                    | Placed::Clip { rect, .. } => {
                         if fits(rect.bottom()) {
                             *kept = true;
                             None
@@ -1259,6 +1263,7 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
                 Placed::Image { rect, .. }
                 | Placed::Shape { rect, .. }
                 | Placed::Graphic { rect, .. }
+                | Placed::Spun { rect, .. }
                 | Placed::Clip { rect, .. }
                 | Placed::Object { rect, .. } => {
                     if fits(rect.bottom()) {
@@ -1397,9 +1402,14 @@ fn align_in_part(
                 (None, Placed::Lines { para, l0, y, .. }) if split > *l0 => crate::item_bottom(*y, para, *l0, split)
                     .filter(|&b| b <= limit + 0.01)
                     .map(|b| if split == para.lines.len() { (b + para.rp.space_after).min(limit) } else { b }),
-                (None, Placed::Image { rect, .. } | Placed::Shape { rect, .. } | Placed::Graphic { rect, .. } | Placed::Clip { rect, .. }) => {
-                    Some(rect.bottom())
-                }
+                (
+                    None,
+                    Placed::Image { rect, .. }
+                    | Placed::Shape { rect, .. }
+                    | Placed::Graphic { rect, .. }
+                    | Placed::Spun { rect, .. }
+                    | Placed::Clip { rect, .. },
+                ) => Some(rect.bottom()),
                 _ => None,
             };
             if let Some(b) = bottom.filter(|&b| b <= limit + 0.01) {
