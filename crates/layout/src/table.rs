@@ -128,7 +128,10 @@ fn table_style(ctx: &Ctx, t: &Table) -> Option<TableStyleProps> {
 
 /// The table's default cell margins: its own, else its style's, else Word's.
 fn default_margins(t: &Table, style: Option<&TableStyleProps>) -> [f32; 4] {
-    t.props.cell_margins.or(style.and_then(|s| s.parts.cell_margins)).unwrap_or(DEFAULT_MARGINS)
+    let defaults = style.and_then(|s| s.parts.cell_margins).unwrap_or(DEFAULT_MARGINS);
+    t.props
+        .cell_margins
+        .unwrap_or_else(|| t.props.partial_cell_margins.map_or(defaults, |sides| std::array::from_fn(|i| sides[i].unwrap_or(defaults[i]))))
 }
 
 /// The margins (top, left, bottom, right; points) of cell `cell` of row `row`: its own, else the

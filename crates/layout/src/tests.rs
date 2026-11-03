@@ -12876,4 +12876,25 @@ fn section_mark_after_break() {
     }
 }
 
+#[test]
+fn table_margin_sides_inherit() {
+    let mut doc = Document::new();
+    let mut table = Table::new(1, 1, 100.0);
+    table.props.style = None;
+    table.props.cell_margins = None;
+    table.props.partial_cell_margins = Some([None, None, None, Some(0.0)]);
+    assert_eq!(cell_margins(&doc, &table, 0, 0), [0.0, 5.4, 0.0, 0.0]);
+    table.props.style = Some("OriginalMargins".into());
+    doc.styles.upsert(wordcraft_doc::Style {
+        id: "OriginalMargins".into(),
+        name: "Original margins".into(),
+        kind: wordcraft_doc::StyleKind::Table,
+        table: Some(wordcraft_doc::styles::TableStyleParts { cell_margins: Some([2.0, 7.0, 3.0, 8.0]), ..Default::default() }),
+        ..Default::default()
+    });
+    assert_eq!(cell_margins(&doc, &table, 0, 0), [2.0, 7.0, 3.0, 0.0]);
+    table.rows[0].cells[0].props.partial_margins = Some([Some(0.0), None, None, Some(4.0)]);
+    assert_eq!(cell_margins(&doc, &table, 0, 0), [0.0, 7.0, 3.0, 4.0]);
+}
+
 mod shape_alpha;
