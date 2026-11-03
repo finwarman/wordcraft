@@ -458,18 +458,6 @@ impl<'e> Breaker<'e> {
     fn measure(&self, pl: &ParaLayout, range: (usize, usize)) -> Measure {
         let rp = &self.rp;
         let Extents { mut asc, mut desc, obj_asc } = self.extents(pl, range);
-        let (c0, c1) = range;
-        let picture_only = matches!(rp.line_spacing, LineSpacing::Multiple(m) if m >= 1.0)
-            && self.grid.is_none()
-            && obj_asc > asc
-            && pl.label.is_none()
-            && pl.clusters.get(c0..c1).is_some_and(|cs| {
-                cs.iter().all(|c| match c.kind {
-                    ClKind::Object(i) => !pl.maths.iter().any(|(k, _)| *k == i),
-                    ClKind::Space | ClKind::Tab | ClKind::Marker => true,
-                    _ => false,
-                })
-            });
         let text_natural = asc + desc;
         let (text_asc, text_desc) = (asc.max(obj_asc), desc);
         let text_pictures = if obj_asc > asc { obj_asc + desc } else { 0.0 };
@@ -489,8 +477,10 @@ impl<'e> Breaker<'e> {
                 }
             }
         }
-        // Picture-only auto-spaced lines add the font's extra leading below the picture
-        // (Word Mac probes at single, 1.15 and double spacing). Labels and grids keep their floor.
+        // Keep the picture floor independent of list-label metrics and line-spacing multipliers.
+        // shortcut: Word leaves less than a full descent below a line of only pictures (0.5pt to
+        // 1.9pt in docxide-pdf's header fixtures case121/case123, where the descent is 3.3pt), and
+        // no rule tried so far (none, only the text's descent) matched both; it needs Word probes.
         let natural = asc + desc;
         let pictures = if obj_asc > asc { obj_asc + desc } else { 0.0 };
         // Document grid: the line takes whole line pitches, its text centred in them.
@@ -498,10 +488,7 @@ impl<'e> Breaker<'e> {
         let (height, centred) = match (rp.line_spacing, grid) {
             (LineSpacing::Multiple(m), Some(g)) => ((g.snap_height(natural) * m).max(g.snap_height(pictures)), true),
             (LineSpacing::AtLeast(v), Some(g)) => (g.snap_height(natural.max(pictures)).max(v), true),
-            (LineSpacing::Multiple(m), None) => {
-                let floor = if picture_only { obj_asc + text_natural * (m - 1.0).max(0.0) } else { text_pictures };
-                ((text_natural * m + label_extra).max(floor), false)
-            }
+            (LineSpacing::Multiple(m), None) => ((text_natural * m + label_extra).max(text_pictures), false),
             (LineSpacing::AtLeast(v), None) => (natural.max(text_pictures).max(v), false),
             (LineSpacing::Exactly(v), _) => (v, false),
         };
@@ -509,8 +496,7 @@ impl<'e> Breaker<'e> {
             let up = asc.max(obj_asc);
             self.top + ((height - up - desc) / 2.0).max(0.0) + up
         } else {
-            let cap = if picture_only { height } else { height - desc };
-            self.top + baseline_offset(rp.line_spacing, asc, height, desc).max(obj_asc.min(cap))
+            self.top + baseline_offset(rp.line_spacing, asc, height, desc).max(obj_asc.min(height - desc))
         };
         Measure { height, baseline, text_asc, text_desc }
     }
