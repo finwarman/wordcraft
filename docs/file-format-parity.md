@@ -1,6 +1,6 @@
 # File-format parity with Microsoft Word
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** trivial (symbol-font text exported as Unicode, #776; previously trivial: text-box margins, Resize shape to fit text and freeforms in groups, #743; previously trivial: formatted paste from the system clipboard's HTML and RTF, #687; previously trivial: independent complex-script formatting inheritance and round-trip regression tests; previously trivial: import/export fixes for TXT, RTF, ODT, HTML and LaTeX, #433–#440; previously major: first version; every format Word reads or writes, measured from the readers and writers on origin/main) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4, plus Word for Windows' extra formats
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-03 · **Change:** trivial (DOCX styles without defaults keep application text layout; previously trivial: symbol-font text exported as Unicode, #776; previously trivial: text-box margins, Resize shape to fit text and freeforms in groups, #743; previously trivial: formatted paste from the system clipboard's HTML and RTF, #687; previously trivial: independent complex-script formatting inheritance and round-trip regression tests; previously trivial: import/export fixes for TXT, RTF, ODT, HTML and LaTeX, #433–#440; previously major: first version; every format Word reads or writes, measured from the readers and writers on origin/main) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4, plus Word for Windows' extra formats
 
 Every format Word opens or saves, what WordCraft does with it, and how it's tested. Fidelity is the
 share of a typical real-world file's content and formatting that survives (read: shows correctly;
@@ -106,7 +106,7 @@ controls (omitted, explicitly empty, populated) and two reduced invoice controls
 identical text, glyph/image geometry, page sizes and embedded font-program hashes through
 two WordCraft save/reopen cycles. All fifteen variants open without repair warnings.
 Word PDFs and measurements remain local under ignored `plan/word/`; they are not fixtures.
-These checks cover preservation on Word reopen, not WordCraft pagination parity.
+Styles without run defaults retain the application character defaults. Missing paragraph defaults use application spacing during layout without being added on save. Explicit empty and partial defaults keep their own behavior. Editing previously omitted paragraph defaults writes the effective defaults so a later reopen keeps line spacing. Synthetic fixtures cover these cases and save/reopen behavior; this does not establish general pagination parity.
 The [public OOXML reference](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.paragraphpropertiesdefault?view=openxml-3.0.1)
 describes omission as leaving paragraph defaults application-defined. Real-world corpus
 coverage and WordCraft layout matching remain separate gaps.
@@ -163,6 +163,7 @@ raise readiness estimates. No Word-derived files are fixtures.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-03 | trivial | DOCX missing defaults retain application text size and spacing; explicit defaults and edited-default roundtrips are preserved. |
 | 2026-10-12 | trivial | Paste keeps the formatting of HTML and RTF on the system clipboard; Paste Special lists them and pictures (#687, #833) |
 | 2026-10-12 | trivial | ODT page size, orientation and margins read back from `styles.xml` on open, so they survive a save and reopen (#810) |
 | 2026-10-12 | minor | RTF reads 8-bit text in the document's or the font's code page (`\ansicpg`, `\fcharset`, `\cpg`) instead of always Windows-1252; a `.doc`/`.docx`/`.rtf` whose content is another of these formats opens by signature. Found on a private corpus of real Russian documents: 38 of 44 `.doc` files were RTF, all now open with their Cyrillic text |

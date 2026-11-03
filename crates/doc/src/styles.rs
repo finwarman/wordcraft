@@ -166,6 +166,16 @@ fn color(c: Rgb) -> Option<TextColor> {
     Some(TextColor::Rgb(c))
 }
 
+pub(crate) fn application_para() -> ParaProps {
+    ParaProps {
+        space_after: Some(8.0),
+        space_before: Some(0.0),
+        line_spacing: Some(LineSpacing::Multiple(1.15)),
+        widow_control: Some(true),
+        ..para()
+    }
+}
+
 impl StyleSheet {
     pub fn empty() -> Self {
         StyleSheet { default_chr: CharProps::default(), default_para: ParaProps::default(), default_para_present: true, styles: Vec::new() }
@@ -175,13 +185,7 @@ impl StyleSheet {
     pub fn builtin() -> Self {
         let mut s = StyleSheet {
             default_chr: CharProps { font: Some(BODY_FONT.into()), size: Some(12.0), kern: Some(1.0), lang: Some("en-US".into()), ..chr() },
-            default_para: ParaProps {
-                space_after: Some(8.0),
-                space_before: Some(0.0),
-                line_spacing: Some(LineSpacing::Multiple(1.15)),
-                widow_control: Some(true),
-                ..para()
-            },
+            default_para: application_para(),
             default_para_present: true,
             styles: Vec::new(),
         };
