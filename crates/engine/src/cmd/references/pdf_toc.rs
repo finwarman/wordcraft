@@ -1,6 +1,9 @@
 //! Admission checks for rebuilding a TOC in a disposable PDF session.
 
-use super::*;
+use super::{
+    CmdError, CmdResult, FieldCode, InlineObject, OBJ, Paragraph, Pos, Session, StoryRef, Value, json, level_range, toc_entries, toc_range,
+    update_toc,
+};
 
 const MAX_INSTRUCTION_BYTES: usize = 4096;
 const MAX_ENTRIES: usize = 10_000;
@@ -247,11 +250,52 @@ fn admit(s: &Session) -> Result<Admission, CmdError> {
     Ok(Admission::Refresh(Table { start, code, split_end }))
 }
 
+fn unwrap_gallery(s: &Session) -> Result<Option<Session>, CmdError> {
+    use wordcraft_doc::control::{ControlKind, ControlLock};
+    if s.doc.settings.protection.is_some() {
+        return Ok(None);
+    }
+    let fields = s.doc.field_ranges(StoryRef::Body);
+    let controls = s.doc.control_ranges(StoryRef::Body);
+    let Some(control) = controls.iter().find(|control| {
+        control.depth == 0
+            && control.control.lock == ControlLock::Unlocked
+            && matches!(&control.control.kind, ControlKind::Gallery { list: false, gallery, .. } if gallery == "Table of Contents")
+            && fields.iter().any(|field| {
+                is_toc(&field.instr)
+                    && !FieldCode::parse(&field.instr).is_table_of_figures()
+                    && field.depth == 0
+                    && field.start.path.depth() == 0
+                    && control.contains(&field.start)
+                    && control.end.path == field.end.path
+                    && field.end.off.checked_add(OBJ.len_utf8()) == Some(control.end.off)
+                    && (control.start.path == field.start.path && control.start.off.checked_add(OBJ.len_utf8()) == Some(field.start.off)
+                        || control.start.path.last().checked_add(1) == Some(field.start.path.last())
+                            && control.start.off == 0
+                            && s.doc.para_at(&control.start).is_some_and(|para| para.section.is_none() && para.objects.len() == 1))
+            })
+    }) else {
+        return Ok(None);
+    };
+    // Validate the unwrapped copy before changing the session. Locked or unsupported TOCs
+    // must retain their original content controls.
+    let mut prepared = Session::new(s.doc.clone());
+    for at in [&control.end, &control.start] {
+        let end = at.off.checked_add(OBJ.len_utf8()).ok_or_else(|| failed("TOC control offset overflow"))?;
+        prepared.doc.para_mut(at.story, &at.path)?.delete(at.off, end)?;
+    }
+    Ok(Some(prepared))
+}
+
 pub(super) fn refresh(s: &mut Session, v: &Value) -> CmdResult {
-    let table = match admit(s)? {
+    let prepared = unwrap_gallery(s)?;
+    let table = match admit(prepared.as_ref().unwrap_or(s))? {
         Admission::Keep(state) => return Ok(report(state)),
         Admission::Refresh(table) => table,
     };
+    if let Some(prepared) = prepared {
+        s.doc = prepared.doc;
+    }
     let sections: Vec<_> = s.doc.sections().into_iter().map(|(_, section)| section.clone()).collect();
     // Detach the admitted tail before deletion joins it onto the TOC's start paragraph.
     // Keep its formatting and section after the regenerated entries.

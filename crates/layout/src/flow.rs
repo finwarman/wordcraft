@@ -1,20 +1,29 @@
+#[cfg(test)]
+use super::REPLAY_STATS;
 use super::boxes::{BoxInput, BoxLayout, Edges, joined, layout_box, push_para};
 use super::cache::has_page_number_fields;
 use super::ctx::Ctx;
-use super::floats::{FloatAnchor, ObjFrame, ObjectPlacement, anchor_floats, body_wraps, continued_exclusions, place_objects};
+use super::floats::PlacedObjects;
+use super::floats::{FloatAnchor, ObjFrame, ObjectPlacement, anchor_floats, body_wraps, continued_exclusions, floating, place_objects};
+use super::floats::{body_exclusions, oversized_body_float};
+use super::foreground::append_foreground;
 use super::notes::{DECOR_STORY, NoteBox, para_notes};
 use super::page::{PageBuilder, PageFrame, item_bottom};
 use super::placed::Placed;
 use super::{
-    Arc, Block, Counters, Document, HashMap, InlineObject, Level, LineEnd, Page, ParaLayout, Paragraph, Path, Rect, StoryRef, TextDirection,
-    ViewMode, outline, para,
+    Anchor, Arc, Block, Counters, Document, HashMap, InlineObject, Level, LineEnd, Page, ParaLayout, Paragraph, Path, Rect, SectionStart, StoryRef,
+    TextDirection, ViewMode, Wrap, outline, para,
 };
+use super::{BodyExclusions, accept_wrap_relay};
 #[cfg(test)]
 use crate::WRAP_RELAYS;
 
 /// A closing mark before a continuous section takes no room after content. An otherwise empty
 /// section starting a new page retains its paragraph line.
 pub(crate) fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, body_top: f32) {
+    if place_break_mark(ctx, pb, p, block) {
+        return;
+    }
     if !pb.web && ctx.quiet_marks.binary_search(&block).is_ok() {
         let follows_section = block.checked_sub(1).and_then(|i| ctx.doc.body.get(i)).and_then(|b| b.as_para()).is_some_and(|p| p.section.is_some());
         let section = pb.sect_idx;
@@ -66,6 +75,39 @@ pub(crate) fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, blo
         return;
     }
     place_para_in_flow(ctx, pb, p, block, body_top);
+}
+
+fn place_break_mark(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize) -> bool {
+    if pb.web || !super::empty_break_page(pb) || !pb.next_starts_page || p.section.is_none() || !super::only_bookmarks(p) || ctx.has_label(p) {
+        return false;
+    }
+    let Some(page) = pb.pages.len().checked_sub(2) else { return false };
+    // The structural section mark stays with the preceding break, without filling its new page.
+    let owner = pb.para_end.filter(|(count, _, _)| *count == page + 1);
+    let (x, width) = owner.and(pb.break_column).unwrap_or_else(|| {
+        let prev = &pb.pages[page];
+        (prev.body.x, prev.body.w)
+    });
+    let pl = ctx.para_labelled(p, width, None, &[], None);
+    let prev = &mut pb.pages[page];
+    let x = x + mirror_shift(&pl.rp, prev.number, pb.web);
+    // Page alignment can move the body after its paragraph end was recorded.
+    let y = owner
+        .filter(|_| ctx.hf.sections.get(prev.section).is_some_and(|(_, sect)| sect.valign == wordcraft_doc::section::PageVAlign::Top))
+        .map(|(_, _, end)| end)
+        .or_else(|| {
+            prev.items.iter().rev().find_map(|item| match item {
+                Placed::Lines { story: StoryRef::Body, path, l1, .. }
+                    if pb.break_line.as_ref().is_some_and(|(owner, end)| path == owner && l1 == end) =>
+                {
+                    Some(super::notes::v_span(item).1)
+                }
+                _ => None,
+            })
+        });
+    let Some(y) = y else { return false };
+    push_para(&mut prev.items, (StoryRef::Body, &[block as u32]), &pl, (0, pl.lines.len()), (x, y), width, Edges::own(&pl, 0, pl.lines.len()));
+    true
 }
 
 /// Remove the list label from a mark's lines; optionally keep its other drawing items.
@@ -156,7 +198,7 @@ struct Flow<'a> {
     eq_start: u32,
     float_rects: HashMap<usize, Rect>,
     pl: Arc<ParaLayout>,
-    rel: Vec<para::Exclusion>,
+    rel: BodyExclusions,
     /// The page its fields were laid out for, and the width.
     laid_page: u32,
     laid_width: f32,
@@ -226,10 +268,64 @@ impl<'a> Flow<'a> {
         (self.laid_page, self.laid_width) = (pb.number, pb.col_w());
     }
 
+    // The shared single-column route has no pending notes or carry.
+    fn picture_shared_page(&self, pb: &PageBuilder) -> bool {
+        !pb.web
+            && pb.sect.start == SectionStart::Continuous
+            && pb.pages.last().is_some_and(|p| p.section != pb.sect_idx && pb.content_bottom > p.body.y + 0.01)
+            && pb.cols.len() == 1
+            && pb.top > self.body_top + 0.01
+            && pb.notes.is_empty()
+            && pb.carry.is_empty()
+    }
+
+    fn picture_overflows(&self, pb: &PageBuilder, float_capacity: f32) -> bool {
+        let p = self.p;
+        let picture_paragraph =
+            p.objects.iter().filter(|o| !matches!(o, InlineObject::BookmarkStart { .. } | InlineObject::BookmarkEnd { .. })).count() == 1
+                && p.text.chars().all(|c| c == wordcraft_doc::para::OBJ || c.is_whitespace());
+        picture_paragraph
+            && p.objects.iter().enumerate().any(|(i, o)| {
+                let picture = match o {
+                    InlineObject::Image { .. } => true,
+                    InlineObject::Group { children, .. } => children.iter().any(|c| matches!(c.obj, InlineObject::Image { .. })),
+                    _ => false,
+                };
+                picture
+                    && floating(o).is_some_and(|(_, _, f)| {
+                        f.v_rel == Anchor::Paragraph
+                            && !matches!(f.wrap, Wrap::Inline | Wrap::BehindText | Wrap::InFrontOfText)
+                            && self
+                                .float_rects
+                                .get(&i)
+                                .is_some_and(|r| r.bottom() > pb.bottom + 0.01 && r.bottom() - self.anchor_y <= float_capacity + 0.01)
+                    })
+            })
+    }
+
+    fn fit_picture(&mut self, ctx: &mut Ctx, pb: &mut PageBuilder) {
+        let shared_page = self.picture_shared_page(pb);
+        let partial_page_start = shared_page && pb.at_top();
+        // Single column, non-web mode and empty carry make next_room the fresh body capacity.
+        let float_capacity = if shared_page { pb.next_room(self.body_top) } else { pb.uncapped_bottom() - pb.top };
+        let float_overflows = self.picture_overflows(pb, float_capacity);
+        if !float_overflows || pb.web || pb.at_top() && !partial_page_start {
+            return;
+        }
+        pb.advance(self.block, self.body_top);
+        let before = self.pl.rp.space_before.min(0.0);
+        pb.y += before;
+        let y0 = pb.y;
+        self.reanchor(ctx, pb, (y0, before));
+        self.anchor_y = y0 - before;
+    }
+
     /// Lay the paragraph out again around the wrap areas `rel`, with its fields on their pages.
-    fn relay(&mut self, ctx: &mut Ctx, rel: &[para::Exclusion]) -> Arc<ParaLayout> {
+    fn relay(&mut self, ctx: &mut Ctx, rel: &BodyExclusions, boundary: Option<f32>) -> Arc<ParaLayout> {
         let (p, width, eq_start, label) = (self.p, self.laid_width, self.eq_start, &self.label);
-        with_page_map(ctx, &mut self.page_map, |ctx| again(ctx, eq_start, |ctx| ctx.para_labelled(p, width, None, rel, label.clone())))
+        with_page_map(ctx, &mut self.page_map, |ctx| {
+            again(ctx, eq_start, |ctx| ctx.para_relay(p, width, None, &rel.areas, label.clone(), (&rel.split, boundary)))
+        })
     }
 
     /// The space before the paragraph, after the one between it and the previous paragraph is
@@ -305,7 +401,13 @@ impl<'a> Flow<'a> {
     /// the space before applied (`before`, or what is left of it at the top of the next column).
     fn keep_together(&self, ctx: &mut Ctx, pb: &mut PageBuilder, rooms: Rooms, before: f32) -> f32 {
         let rp = &self.pl.rp;
-        let height = self.pl.height + rooms.top + rooms.bottom;
+        // A terminal page-break mark stays with the break and draws no bottom border there.
+        let break_mark = !pb.web
+            && self.pl.lines.len() >= 2
+            && self.pl.lines.get(self.pl.lines.len() - 2).is_some_and(|line| {
+                line.end == LineEnd::PageBreak && self.pl.lines.last().is_some_and(|mark| only_markers(self.p, mark.start..mark.stop))
+            });
+        let height = self.pl.height + rooms.top + if break_mark { 0.0 } else { rooms.bottom };
         if !(rp.keep_lines || (rp.keep_next && pb.y + height <= pb.bottom + 0.01)) {
             return before;
         }
@@ -328,7 +430,8 @@ impl<'a> Flow<'a> {
             return;
         }
         let Some((resume, t)) = self.pl.lines.get(self.l0).map(|l| (l.start, l.top)) else { return };
-        let here = continued_exclusions(&self.rel, &body_wraps(ctx, pb), pb.col_x(), pb.y, t, self.laid_width);
+        let areas = body_exclusions(ctx, pb, self.block, pb.y - t);
+        let here = continued_exclusions(&self.rel, &areas, t, self.laid_width);
         if here == self.rel {
             return;
         }
@@ -336,13 +439,18 @@ impl<'a> Flow<'a> {
         ctx.fields.page = self.laid_page;
         #[cfg(test)]
         WRAP_RELAYS.with(|c| c.set(c.get() + 1));
-        let relaid = self.relay(ctx, &here);
+        #[cfg(test)]
+        REPLAY_STATS.with(|c| c.borrow_mut().wrap_attempts += 1);
+        let relaid = self.relay(ctx, &here, Some(t));
         // Only if the rest still starts at the same line, at the same height (an outline
         // reaching above it could move the lines before down, and the column's areas with them).
-        if let Some(k) = relaid.lines.iter().position(|l| l.start == resume)
-            && relaid.lines.get(k).is_some_and(|l| (l.top - t).abs() < 0.01)
-        {
-            (self.pl, self.rel, self.l0) = (relaid, here, k);
+        if let Some(k) = accept_wrap_relay(&mut self.pl, &mut self.rel, relaid, here, resume, t) {
+            #[cfg(test)]
+            REPLAY_STATS.with(|c| c.borrow_mut().wrap_accepted += 1);
+            self.l0 = k;
+        } else {
+            #[cfg(test)]
+            REPLAY_STATS.with(|c| c.borrow_mut().wrap_rejected += 1);
         }
     }
 
@@ -362,7 +470,7 @@ impl<'a> Flow<'a> {
         self.page_map.push((resume, pb.number));
         ctx.fields.page = self.laid_page;
         let rel = self.rel.clone();
-        let relaid = self.relay(ctx, &rel);
+        let relaid = self.relay(ctx, &rel, None);
         match relaid.lines.iter().position(|l| l.start == resume) {
             Some(k) => (self.pl, self.l0) = (relaid, k),
             None => {
@@ -395,10 +503,12 @@ impl<'a> Flow<'a> {
             };
             let over = bottom + tail > limit + 0.01;
             let split = bottom > limit + 0.01 && notes_split(pb, (&fit.notes, &line_notes), bottom);
-            if over && fit.l1 > l0 && !split {
+            let only_break = self.only_break(l) && (l.end != LineEnd::PageBreak || free);
+            if over && fit.l1 > l0 && !split && !(only_break && l.end == LineEnd::PageBreak) {
                 break;
             }
-            if over && fit.l1 == l0 && !pb.fresh() && !split && !self.stays_at_bottom(pb, l) {
+            let closing_mark = pb.next_starts_page && self.p.section.is_some() && self.p.text.is_empty();
+            if over && fit.l1 == l0 && !pb.fresh() && !split && !only_break && !closing_mark {
                 break;
             }
             fit.notes.extend(line_notes);
@@ -410,18 +520,14 @@ impl<'a> Flow<'a> {
         fit
     }
 
-    /// Whether the line may overflow the page: one holding nothing but a page or column break stays
-    /// at the bottom of the page even when it doesn't fit (it only ends the page, and moving it
-    /// would leave a blank page behind it, as in Word), and so does an empty paragraph closing a
-    /// section before a new page (measured in Word: it stays on a full page instead of starting
-    /// one of its own).
-    fn stays_at_bottom(&self, pb: &PageBuilder, l: &para::Line) -> bool {
-        let p = self.p;
-        let only_break = matches!(l.end, LineEnd::PageBreak | LineEnd::ColumnBreak)
-            && p.text
+    /// Whether the line contains only page or column breaks.
+    fn only_break(&self, l: &para::Line) -> bool {
+        matches!(l.end, LineEnd::PageBreak | LineEnd::ColumnBreak)
+            && self
+                .p
+                .text
                 .get(l.start..l.stop)
-                .is_some_and(|t| t.chars().all(|c| matches!(c, wordcraft_doc::para::PAGE_BREAK | wordcraft_doc::para::COLUMN_BREAK)));
-        only_break || (pb.next_starts_page && p.section.is_some() && p.text.is_empty())
+                .is_some_and(|t| t.chars().all(|c| matches!(c, wordcraft_doc::para::PAGE_BREAK | wordcraft_doc::para::COLUMN_BREAK)))
     }
 
     /// Whether the line (just taken, `fit.l1` is after it) forces a break, noted in `fit`.
@@ -509,7 +615,7 @@ impl<'a> Flow<'a> {
             table_chr: None,
             pinned: None,
         };
-        let (behind, front) = place_objects(
+        let PlacedObjects { behind, inline, front } = place_objects(
             ctx,
             &ObjectPlacement {
                 story: StoryRef::Body,
@@ -523,9 +629,11 @@ impl<'a> Flow<'a> {
                 depth: 0,
             },
         );
-        items.extend(front);
-        items.extend(line_numbers(ctx, pb, &self.pl, (l0, l1), y));
-        add_items(pb, behind, items);
+        items.extend(inline);
+        // An absorbed terminal mark shares the break's counted line.
+        let numbered_end = if fit.mark_with_break { l1.saturating_sub(1) } else { l1 };
+        items.extend(line_numbers(ctx, pb, &self.pl, (l0, numbered_end), y));
+        add_items(pb, behind, items, front);
         if let (Some(f), Some(l)) = (self.pl.lines.get(l0), self.pl.lines.get(l1 - 1)) {
             pb.y = y + (l.top + l.height - f.top);
             pb.content_bottom = pb.content_bottom.max(pb.y);
@@ -534,7 +642,7 @@ impl<'a> Flow<'a> {
     }
 
     /// Start the next page or column if the lines just placed end one, or are not the last.
-    fn after_lines(&mut self, ctx: &mut Ctx, pb: &mut PageBuilder, forced: Option<LineEnd>, mark_with_break: bool) {
+    fn after_lines(&mut self, ctx: &mut Ctx, pb: &mut PageBuilder, forced: Option<LineEnd>, mark_with_break: bool, break_gap: f32) {
         let (block, body_top) = (self.block, self.body_top);
         // A paragraph that starts with a page break starts on the new page, its space before
         // there (Word).
@@ -544,12 +652,14 @@ impl<'a> Flow<'a> {
             });
         match forced {
             Some(LineEnd::PageBreak) if mark_with_break => {
+                pb.break_column = Some((pb.col_x(), pb.col_w()));
+                pb.break_line = Some((Path::top(block), self.l0));
                 pb.new_page(block, body_top);
                 pb.after_break_mark = true;
             }
             Some(LineEnd::PageBreak) if starts_with_break && !pb.web => {
                 pb.new_page(block, body_top);
-                pb.y += self.pl.rp.space_before.max(0.0);
+                pb.y += break_gap.max(0.0);
             }
             Some(LineEnd::PageBreak) => pb.new_page(block, body_top),
             Some(LineEnd::ColumnBreak) => {
@@ -696,16 +806,18 @@ fn line_numbers(ctx: &mut Ctx, pb: &mut PageBuilder, pl: &ParaLayout, (l0, l1): 
 }
 
 /// Add a piece's items to the last page: those `behind` the text at the front, the rest at the end.
-fn add_items(pb: &mut PageBuilder, behind: Vec<Placed>, items: Vec<Placed>) {
+fn add_items(pb: &mut PageBuilder, behind: Vec<Placed>, items: Vec<Placed>, front: Vec<(u32, u32, Vec<Placed>)>) {
     let n_behind = behind.len();
-    if let Some(pg) = pb.pages.last_mut() {
+    let prefix = pb.behind.last().map_or(0, |p| p.behind) + n_behind;
+    if let (Some(pg), Some(ranges)) = (pb.pages.last_mut(), pb.foreground.last_mut()) {
         for (i, it) in behind.into_iter().enumerate() {
             pg.items.insert(i.min(pg.items.len()), it);
         }
         pg.items.extend(items);
+        append_foreground(&mut pg.items, ranges, prefix, front);
     }
     if let Some(b) = pb.behind.last_mut() {
-        *b += n_behind;
+        b.behind += n_behind;
     }
 }
 
@@ -717,16 +829,27 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     if broke_before {
         pb.new_page(block, body_top);
     }
+    // Oversized corrected frames begin in fresh body room, after their anchor line.
+    if ctx.opts.view == ViewMode::Print
+        && !pb.at_top()
+        && f.float_rects.iter().any(|(&i, rect)| p.objects.get(i).is_some_and(|o| oversized_body_float(ctx.doc, o, rect.h, pb.sect)))
+    {
+        pb.advance(block, body_top);
+    }
+    let follows_paragraph = pb.prev.is_some();
     let before = f.gap_before(ctx, pb, broke_before);
     pb.y += before;
     let rooms = Rooms::of(ctx, block, &f.pl);
     let applied_before = f.keep_together(ctx, pb, rooms, before);
-    // A different top only matters when there is something to wrap around.
-    if spot(pb) != placed_at || ((pb.y - f.guess).abs() > 0.01 && !pb.excl.is_empty()) {
+    // Refresh wrapping floats at the effective top before checking picture overflow.
+    if spot(pb) != placed_at || ((pb.y - f.guess).abs() > 0.01 && !body_wraps(ctx, pb).is_empty()) {
         let y0 = pb.y;
         f.reanchor(ctx, pb, (y0, applied_before));
         f.anchor_y = y0 - applied_before;
     }
+    f.fit_picture(ctx, pb);
+    // Retain the published predecessor-dependent gap across the leading page break.
+    let break_gap = if ctx.doc.settings.suppress_break_spacing { if follows_paragraph { applied_before } else { 0.0 } } else { f.pl.rp.space_before };
     while f.l0 < f.n() {
         f.relay_wrap(ctx, pb);
         f.relay_pages(ctx, pb);
@@ -747,7 +870,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
         }
         let (forced, mark_with_break) = (fit.forced, fit.mark_with_break);
         f.emit(ctx, pb, rooms, (lead, fit, &notes));
-        f.after_lines(ctx, pb, forced, mark_with_break);
+        f.after_lines(ctx, pb, forced, mark_with_break, break_gap);
     }
     f.finish(pb, rooms);
 }
@@ -806,7 +929,7 @@ pub(crate) fn place_outline_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragr
         table_chr: None,
         pinned: None,
     };
-    let (behind, front) = place_objects(
+    let PlacedObjects { behind, inline, front } = place_objects(
         ctx,
         &ObjectPlacement {
             story: StoryRef::Body,
@@ -820,17 +943,12 @@ pub(crate) fn place_outline_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragr
             depth: 0,
         },
     );
-    items.extend(front);
+    items.extend(inline);
     let children = level < outline::BODY && outline::has_children(&o.levels, block);
     // Collapsed, or with something under it hidden by Show Level: the wavy line says so.
     let collapsed = children && o.hidden.get(block + 1).copied().unwrap_or(false);
     items.extend(outline::symbol_items(&pl, x, y, level, children, collapsed));
-    if let Some(pg) = pb.page() {
-        for (i, it) in behind.into_iter().enumerate() {
-            pg.items.insert(i.min(pg.items.len()), it);
-        }
-        pg.items.extend(items);
-    }
+    add_items(pb, behind, items, front);
     if let (Some(f), Some(l)) = (pl.lines.first(), l1.checked_sub(1).and_then(|k| pl.lines.get(k))) {
         pb.y = y + (l.top + l.height - f.top);
     }

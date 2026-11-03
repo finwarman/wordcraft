@@ -1,3 +1,6 @@
+use super::foreground::order_foreground;
+use super::{BackBodyWraps, PriorBodyWraps, ReplayInput};
+use super::{FloatReplay, MAX_FLOAT_PASSES, PagePrefix};
 use std::collections::VecDeque;
 
 use super::cache::{LayoutCache, Totals, env_hash, hash_of};
@@ -36,6 +39,7 @@ struct Tops {
     first: f32,
     foot: f32,
     first_foot: f32,
+    even_foot: f32,
 }
 
 /// A section being laid out: its index, its properties as laid out (turned for vertical text),
@@ -64,6 +68,8 @@ fn new_ctx<'a>(
     cache: &'a mut LayoutCache,
     opts: &'a LayoutOptions,
     (note_pages, totals): (&HashMap<u32, usize>, &Totals),
+    prior_wraps: &'a PriorBodyWraps,
+    back_wraps: &'a mut BackBodyWraps,
 ) -> Ctx<'a> {
     let notes = note_info(doc, opts.hides_deleted(StoryRef::Body), note_pages);
     let notes_hash = hash_of(&{
@@ -79,7 +85,7 @@ fn new_ctx<'a>(
         counters: Counters::default(),
         fields: FieldCtx {
             page: 1,
-            pages: totals.pages,
+            pages: super::num_pages(doc, totals.pages),
             section_pages: totals.section(0),
             section: 1,
             notes: Arc::new(notes),
@@ -102,8 +108,16 @@ fn new_ctx<'a>(
         stacked_marks: Vec::new(),
         mirror: false,
         table_keys: Vec::new(),
+        prior_wraps,
+        back_wraps,
+        frames: Default::default(),
         fitted: HashMap::new(),
+        fitted_order: Vec::new(),
+        measure_left: 0,
+        measure_depth: 0,
+        measure_exhausted: false,
         header_tables: HashMap::new(),
+        header_wraps: HashMap::new(),
         footer_wraps: HashMap::new(),
         pin: None,
         floats_above: HashMap::new(),
@@ -117,7 +131,7 @@ fn new_ctx<'a>(
 fn section_marks(doc: &Document, opts: &LayoutOptions, sections: &[(usize, &SectionProps)]) -> (Vec<usize>, Vec<usize>) {
     let (stacked, mut quiet): (Vec<_>, Vec<_>) = sections
         .windows(2)
-        .filter(|w| w[1].1.start == SectionStart::Continuous)
+        .filter(|w| w[1].1.start == SectionStart::Continuous && (Mode::of(opts.view).reflow || continues_on_page(w[0].1, w[1].1)))
         .map(|w| w[0].0)
         .filter(|end| doc.body.get(*end).and_then(|b| b.as_para()).is_some_and(|p| p.text.is_empty()))
         .partition(|end| {
@@ -157,7 +171,7 @@ fn reflow_sect(first: &SectionProps, opts: &LayoutOptions) -> SectionProps {
     s
 }
 
-fn new_page_builder<'p>(sect: &'p SectionProps, early: &'p EarlyFloats, web: bool, settle: bool) -> PageBuilder<'p> {
+fn new_page_builder<'p>(sect: &'p SectionProps, early: &'p EarlyFloats, web: bool, settle: bool, floats: &FloatReplay) -> PageBuilder<'p> {
     PageBuilder {
         pages: Vec::new(),
         sect,
@@ -175,10 +189,16 @@ fn new_page_builder<'p>(sect: &'p SectionProps, early: &'p EarlyFloats, web: boo
         orig_bottom: 0.0,
         prev: None,
         after_break_mark: false,
+        break_column: None,
+        break_line: None,
         next_starts_page: false,
         restart_at: None,
         excl: Vec::new(),
+        replay_excl: Vec::new(),
         float_tables: Vec::new(),
+        planned_tables: floats.planned.clone(),
+        placed_tables: Vec::new(),
+        late_table: false,
         line_no: 0,
         page_items_start: 0,
         block_marks: Vec::new(),
@@ -186,6 +206,7 @@ fn new_page_builder<'p>(sect: &'p SectionProps, early: &'p EarlyFloats, web: boo
         seps: NoteSeps::default(),
         para_end: None,
         behind: Vec::new(),
+        foreground: Vec::new(),
         max_y: 0.0,
         content_bottom: 0.0,
         balance: None,
@@ -193,6 +214,7 @@ fn new_page_builder<'p>(sect: &'p SectionProps, early: &'p EarlyFloats, web: boo
         sect_beneath: false,
         beneath: false,
         foot_top: f32::MAX,
+        even_foot_top: f32::MAX,
         early,
         seeded: 0,
         settle,
@@ -218,9 +240,13 @@ fn endnote_queue(ctx: &Ctx) -> VecDeque<(u32, usize)> {
 fn turned_sections(ctx: &mut Ctx, sections: &[(usize, &SectionProps)], web: bool) -> Vec<Option<SectionProps>> {
     sections
         .iter()
-        .map(|(_, s)| {
+        .enumerate()
+        .map(|(si, (_, s))| {
             (!web && s.text_direction.is_turned()).then(|| {
-                let top = body_top_for(ctx, s, s.headers.default);
+                // Page-colour ownership follows the resolved story, including inherited IDs.
+                let header = if ctx.doc.settings.page_color.is_some() { ctx.hf.heads.set(si).default } else { s.headers.default };
+                let base = ctx.hf.defining_width(false, si, header);
+                let top = with_pct_base(ctx, base, |ctx| body_top_for(ctx, s, header, si));
                 vertical::unturned_sect(s, top)
             })
         })
@@ -234,11 +260,21 @@ fn section_tops(ctx: &mut Ctx, hf: &HfLinks, (si, sect): (usize, &SectionProps),
     let (heads, feet) = (hf.heads.set(si), hf.feet.set(si));
     let hb = |i: Option<u32>| hf.defining_width(false, si, i);
     let fb = |i: Option<u32>| hf.defining_width(true, si, i);
-    let body = if fixed { sect.margin_top } else { with_pct_base(ctx, hb(heads.default), |c| body_top_for(c, sect, heads.default)) };
-    let first = if fixed || !sect.title_page { body } else { with_pct_base(ctx, hb(heads.first), |c| body_top_for(c, sect, heads.first)) };
+    let body = if fixed { sect.margin_top } else { with_pct_base(ctx, hb(heads.default), |c| body_top_for(c, sect, heads.default, si)) };
+    let first = if fixed || !sect.title_page { body } else { with_pct_base(ctx, hb(heads.first), |c| body_top_for(c, sect, heads.first, si)) };
     let foot = if fixed { f32::MAX } else { with_pct_base(ctx, fb(feet.default), |c| foot_top_for(c, sect, feet.default)) };
-    let first_foot = if fixed || !sect.title_page { foot } else { with_pct_base(ctx, fb(feet.first), |c| foot_top_for(c, sect, feet.first)) };
-    Tops { body, first, foot, first_foot }
+    let first_foot = if fixed || !sect.title_page || feet.first == feet.default {
+        foot
+    } else {
+        with_pct_base(ctx, fb(feet.first), |c| foot_top_for(c, sect, feet.first))
+    };
+    let even_foot = if fixed || !ctx.doc.settings.even_odd_headers || feet.even.or(feet.default) == feet.default {
+        foot
+    } else {
+        let id = feet.even.or(feet.default);
+        with_pct_base(ctx, fb(id), |c| foot_top_for(c, sect, id))
+    };
+    Tops { body, first, foot, first_foot, even_foot }
 }
 
 /// Set up the walk state for a section: its grid, field values and footnote separators.
@@ -264,8 +300,13 @@ fn end_previous_section<'p>(ctx: &mut Ctx, pb: &mut PageBuilder<'p>, hf: &HfLink
     pb.sect = prev;
     pb.sect_idx = si - 1;
     let (ph, pf) = (hf.heads.set(si - 1), hf.feet.set(si - 1));
-    let top = body_top_for(ctx, prev, ph.default);
-    pb.foot_top = foot_top_for(ctx, prev, pf.default);
+    let hb = hf.defining_width(false, si - 1, ph.default);
+    let fb = hf.defining_width(true, si - 1, pf.default);
+    let top = with_pct_base(ctx, hb, |c| body_top_for(c, prev, ph.default, si - 1));
+    pb.foot_top = with_pct_base(ctx, fb, |c| foot_top_for(c, prev, pf.default));
+    let even_id = if ctx.doc.settings.even_odd_headers { pf.even.or(pf.default) } else { pf.default };
+    let base = hf.defining_width(true, si - 1, even_id);
+    pb.even_foot_top = if even_id == pf.default { pb.foot_top } else { with_pct_base(ctx, base, |c| foot_top_for(c, prev, even_id)) };
     pb.new_page(block, top);
 }
 
@@ -286,6 +327,7 @@ fn start_section_page<'p>(ctx: &mut Ctx, pb: &mut PageBuilder<'p>, hf: &HfLinks<
         pb.restart_at = restart;
     }
     pb.foot_top = sec.tops.first_foot;
+    pb.even_foot_top = if sec.sect.title_page { sec.tops.first_foot } else { sec.tops.even_foot };
     pb.new_page(block, sec.tops.first);
 }
 
@@ -304,11 +346,18 @@ fn continue_page(pb: &mut PageBuilder, sect: &SectionProps, block: usize) {
 /// the builder needs to know about the sections after it. Newspaper columns are balanced when the
 /// next section starts on the same page (a continuous break), as in Word. That page is laid out
 /// again from the start of the block that reaches it, with shorter columns.
-fn prepare_section_end(pb: &mut PageBuilder, sections: &[(usize, &SectionProps)], (si, web): (usize, bool)) -> bool {
-    let next = sections.get(si + 1).map(|(_, s)| s.start);
-    let balance = !web && pb.cols.len() > 1 && pb.sect.valign == wordcraft_doc::section::PageVAlign::Top && next == Some(SectionStart::Continuous);
+fn continues_on_page(current: &SectionProps, next: &SectionProps) -> bool {
+    next.start == SectionStart::Continuous && current.page_w == next.page_w && current.page_h == next.page_h
+}
+
+fn prepare_section_end(pb: &mut PageBuilder, sections: &[(usize, &SectionProps)], (si, mode): (usize, Mode)) -> bool {
+    let next = sections
+        .get(si)
+        .zip(sections.get(si + 1))
+        .map(|((_, current), (_, next))| next.start == SectionStart::Continuous && (mode.reflow || continues_on_page(current, next)));
+    let balance = !mode.web && pb.cols.len() > 1 && pb.sect.valign == wordcraft_doc::section::PageVAlign::Top && next == Some(true);
     pb.col_break_page = None;
-    pb.next_starts_page = !web && next.is_some_and(|s| s != SectionStart::Continuous);
+    pb.next_starts_page = !mode.web && next == Some(false);
     balance
 }
 
@@ -378,6 +427,9 @@ fn finish_pages(pb: PageBuilder, doc: &Document, sections: &[(usize, &SectionPro
         pb.flush_notes();
     }
     pb.carry.clear();
+    for ((page, ranges), behind) in pb.pages.iter_mut().zip(&pb.foreground).zip(&pb.behind) {
+        order_foreground(&mut page.items, ranges, behind.behind);
+    }
     let mut pages = pb.pages;
     if !web {
         for p in &mut pages {
@@ -387,6 +439,16 @@ fn finish_pages(pb: PageBuilder, doc: &Document, sections: &[(usize, &SectionPro
         }
     }
     pages
+}
+
+fn standalone_page_break(p: &super::Paragraph) -> bool {
+    let Some(at) = p.text.find(wordcraft_doc::para::PAGE_BREAK) else { return false };
+    [0..at, at + wordcraft_doc::para::PAGE_BREAK.len_utf8()..p.text.len()].into_iter().all(|range| {
+        p.text.get(range.clone()).is_some_and(|text| {
+            text.char_indices()
+                .all(|(i, c)| c == wordcraft_doc::para::OBJ && p.object_at(range.start + i).is_some_and(wordcraft_doc::para::InlineObject::is_marker))
+        })
+    })
 }
 
 /// The web page is one long page as high as its text.
@@ -471,10 +533,11 @@ pub(crate) fn layout_pass(
     note_pages: &HashMap<u32, usize>,
     totals: &Totals,
     may_repeat: bool,
-    (early, may_rewrap): (&EarlyFloats, bool),
+    replay: ReplayInput<'_>,
 ) -> Pass {
+    let ReplayInput { prior: prior_wraps, found: back_wraps, early, may_rewrap, floats } = replay;
     reset_cache(doc, cache, opts);
-    let mut ctx = new_ctx(doc, cache, opts, (note_pages, totals));
+    let mut ctx = new_ctx(doc, cache, opts, (note_pages, totals), prior_wraps, back_wraps);
     let hf = Arc::clone(&ctx.hf);
     let sections = &hf.sections;
     let mode = Mode::of(opts.view);
@@ -485,22 +548,30 @@ pub(crate) fn layout_pass(
     let first_sect = sections.first().map_or(&default_sect, |(_, s)| *s);
     let web_sect = mode.reflow.then(|| reflow_sect(first_sect, opts));
     let sect_ref = web_sect.as_ref().unwrap_or(first_sect);
-    let mut pb = new_page_builder(sect_ref, early, mode.web, !may_rewrap && !mode.reflow);
+    let mut pb = new_page_builder(sect_ref, early, mode.web, !may_rewrap && !mode.reflow, floats);
     let mut endnotes = endnote_queue(&ctx);
     // Text boxes laid out in balancing attempts that were thrown away.
     let mut boxes_discarded = 0usize;
     let mut block = 0usize;
     let turned = turned_sections(&mut ctx, sections, mode.web);
     let mut prev_turn = TextDirection::Horizontal;
-    for (si, (end, sect)) in sections.iter().enumerate() {
-        let turn = if mode.reflow { TextDirection::Horizontal } else { sect.text_direction };
+    for (si, (end, physical_sect)) in sections.iter().enumerate() {
+        let turn = if mode.reflow { TextDirection::Horizontal } else { physical_sect.text_direction };
         let sect: &SectionProps = match turned.get(si) {
             Some(Some(t)) => t,
             _ if mode.reflow => sect_ref,
-            _ => sect,
+            _ => physical_sect,
         };
         let tops = section_tops(&mut ctx, &hf, (si, sect), mode.reflow || turn.is_turned());
-        let start = if si == 0 { SectionStart::NextPage } else { sect.start };
+        let start = if si == 0
+            || !mode.reflow
+                && physical_sect.start == SectionStart::Continuous
+                && sections.get(si - 1).is_some_and(|(_, prev)| !continues_on_page(prev, physical_sect))
+        {
+            SectionStart::NextPage
+        } else {
+            sect.start
+        };
         let sec = Sec { si, sect, start, tops };
         begin_section_state(&mut ctx, &mut pb, &sec, totals, mode.web);
         if mode.web && si > 0 {
@@ -512,8 +583,9 @@ pub(crate) fn layout_pass(
         }
         prev_turn = turn;
         pb.foot_top = sec.tops.foot;
+        pb.even_foot_top = sec.tops.even_foot;
         let last = (*end).min(doc.body.len().saturating_sub(1));
-        let balance = prepare_section_end(&mut pb, sections, (si, mode.web));
+        let balance = prepare_section_end(&mut pb, sections, (si, mode));
         let (next, discarded) = place_section_blocks(&mut ctx, &mut pb, &outline, (block, last), (balance, sec.tops.body));
         (block, boxes_discarded) = (next, boxes_discarded + discarded);
         section_endnotes(&mut ctx, &mut pb, &mut endnotes, (sect, si, block));
@@ -521,9 +593,32 @@ pub(crate) fn layout_pass(
     if pb.pages.is_empty() {
         pb.new_page(0, sect_ref.margin_top);
     }
+    // A final standalone break ends the content page without adding an unused sheet.
+    if !mode.web
+        && doc.body.len() > 1
+        && pb.carry.is_empty()
+        && endnotes.is_empty()
+        && doc.body.last().and_then(|b| b.as_para()).is_some_and(standalone_page_break)
+    {
+        pb.take_back_break_page();
+    }
     // The rest of the endnotes after the last paragraph.
     let rest: Vec<u32> = endnotes.into_iter().map(|(id, _)| id).collect();
     place_endnotes(&mut ctx, &mut pb, rest, block);
+    // Reflow stable page-relative placements. Clear reservations if an anchor changes
+    // pages, so a later pass cannot wrap text around an obsolete placement.
+    if !floats.disabled && (pb.late_table || !floats.planned.is_empty()) && floats.planned != pb.placed_tables {
+        let placed: HashMap<_, _> = pb.placed_tables.iter().map(|t| (t.block, t.page)).collect();
+        let moved = floats.planned.iter().any(|t| placed.get(&t.block) != Some(&t.page));
+        if moved || floats.attempts >= MAX_FLOAT_PASSES {
+            floats.planned.clear();
+            floats.disabled = true;
+        } else {
+            floats.planned = pb.placed_tables;
+            floats.attempts += 1;
+        }
+        return Pass::FloatReplay;
+    }
     let mut pages = finish_pages(pb, doc, sections, mode.web);
     if mode.web {
         fit_web_page(&mut pages);
@@ -555,7 +650,8 @@ struct Snap<'a> {
     pb: PageBuilder<'a>,
     pages: usize,
     items: usize,
-    behind: usize,
+    prefix: PagePrefix,
+    foreground: usize,
     counters: Counters,
     eq_count: u32,
     page_field: u32,
@@ -565,14 +661,15 @@ struct Snap<'a> {
 impl<'a> Snap<'a> {
     fn take(pb: &mut PageBuilder<'a>, ctx: &Ctx) -> Self {
         // The pages stay out of the copy: it would cost the whole document per block.
-        let (pages, behind) = (std::mem::take(&mut pb.pages), std::mem::take(&mut pb.behind));
+        let (pages, behind, foreground) = (std::mem::take(&mut pb.pages), std::mem::take(&mut pb.behind), std::mem::take(&mut pb.foreground));
         let copy = pb.clone();
-        (pb.pages, pb.behind) = (pages, behind);
+        (pb.pages, pb.behind, pb.foreground) = (pages, behind, foreground);
         Snap {
             pb: copy,
             pages: pb.pages.len(),
             items: pb.pages.last().map_or(0, |p| p.items.len()),
-            behind: pb.behind.last().copied().unwrap_or(0),
+            prefix: pb.behind.last().copied().unwrap_or_default(),
+            foreground: pb.foreground.last().map_or(0, Vec::len),
             counters: ctx.counters.clone(),
             eq_count: ctx.eq_count,
             page_field: ctx.fields.page,
@@ -583,19 +680,24 @@ impl<'a> Snap<'a> {
     /// Go back to this state: drop the pages added since and what was added to the last one
     /// (appended, or inserted at the front behind the text).
     fn restore(&self, pb: &mut PageBuilder<'a>, ctx: &mut Ctx) {
-        let (mut pages, mut behind) = (std::mem::take(&mut pb.pages), std::mem::take(&mut pb.behind));
+        let (mut pages, mut behind, mut foreground) =
+            (std::mem::take(&mut pb.pages), std::mem::take(&mut pb.behind), std::mem::take(&mut pb.foreground));
         pages.truncate(self.pages);
         behind.truncate(self.pages);
+        foreground.truncate(self.pages);
+        if let Some(ranges) = foreground.last_mut() {
+            ranges.truncate(self.foreground);
+        }
         if let Some(pg) = pages.last_mut() {
-            let k = behind.last().copied().unwrap_or(0).saturating_sub(self.behind).min(pg.items.len());
+            let k = behind.last().map_or(0, |p| p.behind).saturating_sub(self.prefix.behind).min(pg.items.len());
             pg.items.drain(..k);
             pg.items.truncate(self.items);
         }
         if let Some(b) = behind.last_mut() {
-            *b = self.behind;
+            *b = self.prefix;
         }
         *pb = self.pb.clone();
-        (pb.pages, pb.behind) = (pages, behind);
+        (pb.pages, pb.behind, pb.foreground) = (pages, behind, foreground);
         ctx.counters = self.counters.clone();
         ctx.eq_count = self.eq_count;
         ctx.fields.page = self.page_field;

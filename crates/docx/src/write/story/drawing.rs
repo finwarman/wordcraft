@@ -3,6 +3,7 @@ use super::{
     AltText, Anchor, Fill, Float, GradientFlip, GradientKind, InlineObject, PartRels, PathShape, Rgb, ShapeEffects, ShapeKind, W, Wrap, Writer, emu,
     n, rt,
 };
+use wordcraft_doc::pattern::PatternFill;
 
 pub(super) struct DrawingInfo<'a> {
     pub float: &'a Float,
@@ -112,19 +113,7 @@ impl Writer<'_> {
         }
         let alpha = geom.map_or(1.0, |f| f.alpha);
         let ink = geom.is_some_and(|f| f.is_ink());
-        if let Some(pattern) = extra.pattern.filter(|_| !ink && !kind.is_open()) {
-            w.open("a:pattFill", &[("prst", pattern.kind.ooxml())]);
-            for (tag, color) in [("a:fgClr", pattern.foreground), ("a:bgClr", pattern.background)] {
-                w.open(tag, &[]);
-                w.open("a:srgbClr", &[("val", &color.color.hex())]);
-                w.empty("a:alpha", &[("val", &color.alpha.min(wordcraft_doc::pattern::ALPHA_SCALE).to_string())]);
-                w.close("a:srgbClr");
-                w.close(tag);
-            }
-            w.close("a:pattFill");
-        } else {
-            write_fill(w, fill.as_ref().filter(|_| !ink && !kind.is_open()));
-        }
+        shape_fill(w, fill.as_ref().filter(|_| !ink && !kind.is_open()), extra.pattern.filter(|_| !ink && !kind.is_open()));
         match stroke {
             Some(c) => {
                 let width = emu(stroke_width.clamp(0.0, 100.0));
@@ -530,6 +519,22 @@ pub(in super::super) fn nv_props(w: &mut W, tag: &str, id: &str, name: &str, des
 
 /// A shape's fill: `a:solidFill` (with `a:alpha` when transparent), `a:gradFill` with everything
 /// read from the file, or `a:noFill`.
+fn shape_fill(w: &mut W, fill: Option<&Fill>, pattern: Option<PatternFill>) {
+    let Some(pattern) = pattern else {
+        write_fill(w, fill);
+        return;
+    };
+    w.open("a:pattFill", &[("prst", pattern.kind.ooxml())]);
+    for (tag, color) in [("a:fgClr", pattern.foreground), ("a:bgClr", pattern.background)] {
+        w.open(tag, &[]);
+        w.open("a:srgbClr", &[("val", &color.color.hex())]);
+        w.empty("a:alpha", &[("val", &color.alpha.min(wordcraft_doc::pattern::ALPHA_SCALE).to_string())]);
+        w.close("a:srgbClr");
+        w.close(tag);
+    }
+    w.close("a:pattFill");
+}
+
 pub(super) fn write_fill(w: &mut W, f: Option<&Fill>) {
     let pct = |v: f32| n((v * 1000.0).round() as i64);
     let color = |w: &mut W, c: Rgb, transparency: f32| {

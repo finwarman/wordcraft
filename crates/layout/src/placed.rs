@@ -6,19 +6,12 @@ pub enum Placed {
     /// Lines `l0..l1` of a paragraph; `y` is the top of line `l0`; `x` the column's left edge.
     /// Turned lines (a table cell's text direction) run as `turn` says from the page point
     /// (`x`, `y`): see [`turn_point`].
-    Lines {
-        story: StoryRef,
-        path: Path,
-        para: Arc<ParaLayout>,
-        l0: usize,
-        l1: usize,
-        x: f32,
-        y: f32,
-        turn: TextDirection,
-    },
+    Lines { story: StoryRef, path: Path, para: Arc<ParaLayout>, l0: usize, l1: usize, x: f32, y: f32, turn: TextDirection },
     Fill {
         rect: Rect,
         color: Rgb,
+        /// Paragraph shading owns its source; table and page backgrounds do not.
+        source: Option<(StoryRef, Path)>,
     },
     Rule {
         x0: f32,
@@ -26,17 +19,11 @@ pub enum Placed {
         x1: f32,
         y1: f32,
         border: Border,
+        /// Paragraph borders own their source; table and page borders do not.
+        source: Option<(StoryRef, Path)>,
     },
     /// A picture in `rect`, turned about the rect's centre by `spin` (as are shapes and charts).
-    Image {
-        rect: Rect,
-        media: String,
-        crop: [f32; 4],
-        story: StoryRef,
-        path: Path,
-        off: usize,
-        spin: Spin,
-    },
+    Image { rect: Rect, media: String, crop: [f32; 4], story: StoryRef, path: Path, off: usize, spin: Spin },
     Shape {
         rect: Rect,
         kind: wordcraft_doc::para::ShapeKind,
@@ -58,22 +45,11 @@ pub enum Placed {
     },
     /// A floating chart or diagram, drawn from its items inside `rect`. The object is the U+FFFC at
     /// byte `off` of paragraph `path` (its alt text).
-    Graphic {
-        rect: Rect,
-        graphic: Arc<wordcraft_doc::graphic::Graphic>,
-        story: StoryRef,
-        path: Path,
-        off: usize,
-        spin: Spin,
-    },
+    Graphic { rect: Rect, graphic: Arc<wordcraft_doc::graphic::Graphic>, story: StoryRef, path: Path, off: usize, spin: Spin },
     /// `items` clipped to `rect`: a floating Drawing Canvas's members, kept inside its frame.
     /// `rect` is the unturned frame and `items` sit in it; `spin` turns the clipped whole about
     /// the frame's centre.
-    Clip {
-        rect: Rect,
-        spin: Spin,
-        items: Vec<Placed>,
-    },
+    Clip { rect: Rect, spin: Spin, items: Vec<Placed> },
     /// A table cell's area (for hit testing and cell selection). A vertically merged cell is
     /// one `Cell` as tall as all its rows; its continuation rows get a `covered` `Cell` (their
     /// own row's height) so the rows keep a box each, but it isn't a cell of its own on screen.
@@ -93,6 +69,8 @@ pub enum Placed {
     /// `path` in `story`. `rect` is its unrotated frame; `spin` turns it about the centre.
     Object {
         rect: Rect,
+        /// Physical cell ownership, retained when foreground paint is reordered.
+        clip: Option<Rect>,
         spin: Spin,
         story: StoryRef,
         path: Path,
@@ -121,11 +99,15 @@ impl Placed {
                 rect.x += dx;
                 rect.y += dy;
             }
-            Placed::Object { rect, origin, .. } => {
+            Placed::Object { rect, origin, clip, .. } => {
                 rect.x += dx;
                 rect.y += dy;
                 origin.x += dx;
                 origin.y += dy;
+                if let Some(clip) = clip {
+                    clip.x += dx;
+                    clip.y += dy;
+                }
             }
             Placed::Clip { rect, items, .. } => {
                 rect.x += dx;
@@ -170,16 +152,18 @@ impl Placed {
                     *t = turn;
                 }
             }
-            Placed::Fill { rect, .. }
-            | Placed::Image { rect, .. }
-            | Placed::Shape { rect, .. }
-            | Placed::Graphic { rect, .. }
-            | Placed::Cell { rect, .. } => {
+            Placed::Fill { rect, .. } | Placed::Cell { rect, .. } => {
                 *rect = turn_rect(turn, x, y, *rect);
             }
-            Placed::Object { rect, origin, .. } => {
-                *rect = turn_rect(turn, x, y, *rect);
+            Placed::Image { rect, spin, .. } | Placed::Shape { rect, spin, .. } | Placed::Graphic { rect, spin, .. } => {
+                turn_drawing(rect, spin, turn, x, y);
+            }
+            Placed::Object { rect, spin, origin, clip, .. } => {
+                turn_drawing(rect, spin, turn, x, y);
                 (origin.x, origin.y) = turn_point(turn, x, y, origin.x, origin.y);
+                if let Some(clip) = clip {
+                    *clip = turn_rect(turn, x, y, *clip);
+                }
             }
             Placed::Clip { rect, items, .. } => {
                 *rect = turn_rect(turn, x, y, *rect);
@@ -193,6 +177,18 @@ impl Placed {
             }
         }
     }
+}
+
+// A drawing keeps its unrotated frame; carry its centre and compose the frame's turn.
+fn turn_drawing(rect: &mut Rect, spin: &mut Spin, turn: TextDirection, x: f32, y: f32) {
+    let (cx, cy) = turn_point(turn, x, y, rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+    let degrees = match turn {
+        TextDirection::Horizontal => 0.0,
+        TextDirection::Down => 90.0,
+        TextDirection::Up => 270.0,
+    };
+    *rect = Rect::new(cx - rect.w / 2.0, cy - rect.h / 2.0, rect.w, rect.h);
+    *spin = spin.within(Spin::new(degrees, false, false));
 }
 
 /// Where point (`u`, `v`) of a frame turned `turn` lands on the page, the frame's origin being

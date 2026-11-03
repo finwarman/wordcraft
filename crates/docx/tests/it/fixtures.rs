@@ -3967,24 +3967,6 @@ fn row_table_borders_round_trip() {
     assert_eq!(d.body, again.body);
 }
 
-/// A fill's `a:alpha` is its opacity: a translucent white wash over a picture stayed opaque and
-/// hid the picture.
-#[test]
-fn break_spacing_flag_roundtrips() {
-    for (flag, expected) in [
-        ("", false),
-        (r#"<w:suppressSpBfAfterPgBrk w:val="0"/>"#, false),
-        (r#"<w:suppressSpBfAfterPgBrk/>"#, true),
-        (r#"<w:suppressSpBfAfterPgBrk w:val="1"/>"#, true),
-    ] {
-        let settings = format!("<w:compat>{flag}</w:compat>");
-        let d = with_settings(Some(&settings));
-        assert_eq!(d.settings.suppress_break_spacing, expected, "{flag}");
-        let reopened = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
-        assert_eq!(reopened.settings.suppress_break_spacing, expected, "{flag}");
-    }
-}
-
 #[test]
 fn zero_effects_stay_zero_rotated() {
     const ANGLE_UNITS_PER_DEGREE: i32 = 60_000;
@@ -4195,6 +4177,22 @@ fn equation_in_alternate_content_is_read() {
     let p = paras(&d)[0];
     assert_eq!(equations(p), vec![("x+1".to_string(), false)]);
     assert!(!p.plain_text().contains("[picture]"));
+}
+
+#[test]
+fn break_spacing_flag_roundtrips() {
+    for (flag, expected) in [
+        ("", false),
+        (r#"<w:suppressSpBfAfterPgBrk w:val="0"/>"#, false),
+        (r#"<w:suppressSpBfAfterPgBrk/>"#, true),
+        (r#"<w:suppressSpBfAfterPgBrk w:val="1"/>"#, true),
+    ] {
+        let settings = format!("<w:compat>{flag}</w:compat>");
+        let d = with_settings(Some(&settings));
+        assert_eq!(d.settings.suppress_break_spacing, expected, "{flag}");
+        let reopened = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
+        assert_eq!(reopened.settings.suppress_break_spacing, expected, "{flag}");
+    }
 }
 
 /// A fill's `a:alpha` is its opacity: a translucent white wash over a picture stayed opaque and
@@ -4416,6 +4414,61 @@ fn vml_textbox_style_anchor_and_fit() {
     let tb = doc.parts.get(&story_id).unwrap();
     assert_eq!(tb.body.anchor, wordcraft_doc::props::VAlign::Center);
     assert!(tb.body.auto_fit);
+}
+
+#[test]
+fn named_frames_keep_flow() {
+    const ROUND_TRIPS: usize = 2;
+    const FRAME_STYLE: &str = "FrameInput";
+    let zero = r#"<w:framePr w:w="0" w:h="0" w:xAlign="left" w:y="0" w:hRule="exact" w:vAnchor="margin"/>"#;
+    let sized = r#"<w:framePr w:w="2400" w:h="1200" w:x="1440" w:y="2880" w:hAnchor="page" w:vAnchor="page" w:hRule="exact"/>"#;
+    for (frame, active) in [(zero, false), (sized, true)] {
+        let styles = format!(
+            r#"<w:styles {W_NS}><w:docDefaults><w:pPrDefault><w:pPr>{frame}<w:spacing w:after="160"/></w:pPr></w:pPrDefault></w:docDefaults>
+            <w:style w:type="paragraph" w:styleId="{FRAME_STYLE}"><w:name w:val="{FRAME_STYLE}"/><w:pPr>{frame}</w:pPr></w:style>
+            <w:style w:type="paragraph" w:styleId="Framed"><w:name w:val="Framed"/><w:pPr>{sized}</w:pPr></w:style></w:styles>"#
+        );
+        let header = format!(
+            r#"<w:hdr {W_NS}><w:p><w:pPr><w:pStyle w:val="{FRAME_STYLE}"/></w:pPr><w:r><w:t>Header alpha</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val="{FRAME_STYLE}"/></w:pPr><w:r><w:t>Header beta</w:t></w:r></w:p></w:hdr>"#
+        );
+        let footer =
+            format!(r#"<w:ftr {W_NS}><w:p><w:pPr><w:pStyle w:val="{FRAME_STYLE}"/></w:pPr><w:r><w:t>Footer delta</w:t></w:r></w:p></w:ftr>"#);
+        let body = format!(
+            r#"<w:p><w:pPr><w:pStyle w:val="{FRAME_STYLE}"/></w:pPr><w:r><w:t>Body one</w:t></w:r></w:p>
+            <w:p><w:pPr>{sized}</w:pPr><w:r><w:t>Direct frame</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Framed"/></w:pPr><w:r><w:t>Styled frame</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Framed"/>{zero}</w:pPr><w:r><w:t>Frame reset</w:t></w:r></w:p>
+            <w:sectPr><w:headerReference w:type="default" r:id="header"/><w:footerReference w:type="default" r:id="footer"/></w:sectPr>"#
+        );
+        let mut document = wordcraft_docx::read(&docx(
+            &body,
+            &[("styles", "styles", "styles.xml"), ("header", "header", "header1.xml"), ("footer", "footer", "footer1.xml")],
+            &[("word/styles.xml", &styles), ("word/header1.xml", &header), ("word/footer1.xml", &footer)],
+        ))
+        .unwrap();
+        for pass in 0..=ROUND_TRIPS {
+            let body = paras(&document);
+            let resolved = document.styles.resolve_para(&body[0].props);
+            assert_eq!(resolved.frame.is_some(), active);
+            // Main ignores document-default frames; a named style retains explicit dimensions.
+            assert!(document.styles.default_para.frame.is_none());
+            let stored = document.styles.get(FRAME_STYLE).unwrap().para.frame.as_ref().unwrap();
+            assert_eq!((stored.w, stored.h), if active { (Some(120.0), Some(60.0)) } else { (Some(0.0), Some(0.0)) });
+            assert_eq!(resolved.space_after, 8.0);
+            assert!(document.styles.resolve_para(&body[1].props).frame.is_some());
+            assert!(document.styles.resolve_para(&body[2].props).frame.is_some());
+            assert!(document.styles.resolve_para(&body[3].props).frame.is_none());
+            for id in [document.last_section.headers.default, document.last_section.footers.default] {
+                for block in &document.parts.get(&id.unwrap()).unwrap().blocks {
+                    let paragraph = block.as_para().unwrap();
+                    assert_eq!(document.styles.resolve_para(&paragraph.props).frame.is_some(), active);
+                }
+            }
+            if pass < ROUND_TRIPS {
+                document = wordcraft_docx::read(&wordcraft_docx::write(&document).unwrap()).unwrap();
+            }
+        }
+    }
 }
 
 /// A VML horizontal rule (`o:hr`, a web page's `<hr>` pasted into Word) is read as one: the whole

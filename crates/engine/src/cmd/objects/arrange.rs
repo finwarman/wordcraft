@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 use super::select::{edit_float, min_size, movable_story, obj_size, select_object, selected, with_obj};
 use super::{CmdError, CmdResult, Float, InlineObject, Pos, Selection, Session, StoryRef, Value, Wrap, json, p};
 
 /// Largest object offset or move, points.
 pub(super) const MAX_OFFSET: f32 = 4000.0;
+const MODERN_TEXTBOX_MODE: u32 = 15;
 
 /// Resize and/or move the selected object (dragging its frame or handles).
 pub(super) fn bounds(s: &mut Session, v: &Value) -> CmdResult {
@@ -116,8 +119,10 @@ pub(super) fn copy_to(s: &mut Session, v: &Value) -> CmdResult {
 /// Put the object at `pos` with its top-left at (x, y) on `page` (default: where it is), as a
 /// drag does in Word: it floats (an inline object gets Square wrapping) and anchors to the
 /// paragraph under its top edge, positioned relative to that paragraph's column and top. So the
-/// text it lands on flows around it, and it moves with that text. On a page where no paragraph
-/// starts, it anchors to the nearest line and is positioned on the page. Returns the object's
+/// text it lands on flows around it, and it moves with that text. A modern textbox dropped
+/// across body margins keeps its vertical Page anchor so its bounds do not snap the drop.
+/// On a page where no paragraph starts, it anchors to the nearest line and is positioned on
+/// the page. Returns the object's
 /// position afterwards.
 ///
 /// A drop across pages can be thrown back: while the object sits on its old page it wraps text
@@ -156,11 +161,17 @@ fn move_object_once(s: &mut Session, pos: &Pos, page: usize, x: f32, y: f32, (w,
     // Keep a corner of it on the page.
     let x = x.max(12.0 - w).min(pg.w - 12.0);
     let y = y.max(12.0 - h).min(pg.h.min(MAX_OFFSET) - 12.0);
-    // The paragraph under the middle of its top edge: in the column it mostly lands in.
-    let (anchor, on_page) = match anchor_paragraph(&s.doc, &layout, page, (x + w / 2.0, y), story) {
-        Some(path) => (Pos { story, path, off: 0 }, false),
-        None => (nearest_line(&layout, page, y, story).ok_or_else(|| CmdError::Params("no text on that page to anchor to".into()))?, true),
-    };
+    // Preserve an unchanged header/footer anchor, but still convert and reposition the object.
+    let (anchor, on_page) =
+        if matches!(story, StoryRef::Part(_)) && layout.object(pos, page).is_some_and(|hit| hit.page == page && hit.rect.x == x && hit.rect.y == y) {
+            (pos.clone(), false)
+        } else {
+            // The paragraph under the middle of its top edge: in the column it mostly lands in.
+            match anchor_paragraph(&s.doc, &layout, page, (x + w / 2.0, y), story) {
+                Some(path) => (Pos { story, path, off: 0 }, false),
+                None => (nearest_line(&layout, page, y, story).ok_or_else(|| CmdError::Params("no text on that page to anchor to".into()))?, true),
+            }
+        };
     // Move its character to the anchor (unless it's already in that paragraph).
     let at = if anchor.story == pos.story && anchor.path == pos.path && !on_page {
         pos.clone()
@@ -193,12 +204,15 @@ fn move_object_once(s: &mut Session, pos: &Pos, page: usize, x: f32, y: f32, (w,
     }
     // Then offsets from its paragraph, as laid out with the object there.
     s.touch();
-    let origin = s.layout().object(&at, page).ok_or_else(|| CmdError::Failed("the object isn't laid out".into()))?.origin;
+    let placed = s.layout();
+    let hit = placed.object(&at, page).ok_or_else(|| CmdError::Failed("the object isn't laid out".into()))?;
+    let origin = hit.origin;
+    let page_y = keep_drop_page_y(s, &at, hit.rect);
     edit_float(s, &at, |f| {
         f.h_rel = Anchor::Column;
-        f.v_rel = Anchor::Paragraph;
+        f.v_rel = if page_y { Anchor::Page } else { Anchor::Paragraph };
         f.x = (x - origin.x).clamp(-MAX_OFFSET, MAX_OFFSET);
-        f.y = (y - origin.y).clamp(-MAX_OFFSET, MAX_OFFSET);
+        f.y = (if page_y { y } else { y - origin.y }).clamp(-MAX_OFFSET, MAX_OFFSET);
     })?;
     Ok(at)
 }
@@ -275,6 +289,24 @@ pub(crate) fn anchor_paragraph(
     story: StoryRef,
 ) -> Option<wordcraft_doc::Path> {
     let pg = layout.pages.get(page)?;
+    // Root objects record their paragraph origin before applied spacing.
+    let origins: HashMap<_, _> = match story {
+        StoryRef::Part(id)
+            if doc.parts.get(&id).is_some_and(|p| matches!(p.kind, wordcraft_doc::PartKind::Header | wordcraft_doc::PartKind::Footer)) =>
+        {
+            pg.header
+                .iter()
+                .chain(&pg.footer)
+                .filter_map(|item| match item {
+                    wordcraft_layout::Placed::Object { story: s, path, origin, .. } if *s == story && path.depth() == 0 && origin.y.is_finite() => {
+                        Some((path, origin.y))
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+        _ => HashMap::new(),
+    };
     let items: Box<dyn Iterator<Item = &wordcraft_layout::Placed> + '_> = match story {
         StoryRef::Body => Box::new(pg.items.iter()),
         StoryRef::Part(_) => Box::new(pg.header.iter().chain(pg.footer.iter())),
@@ -283,7 +315,7 @@ pub(crate) fn anchor_paragraph(
     let pieces: Vec<(&wordcraft_doc::Path, f32, f32, bool)> = items
         .filter_map(|it| match it {
             wordcraft_layout::Placed::Lines { story: s, path, l0, x, y: top, .. } if *s == story && path.depth() == 0 => {
-                Some((path, *x, *top, *l0 == 0))
+                Some((path, *x, origins.get(path).copied().unwrap_or(*top), *l0 == 0))
             }
             _ => None,
         })
@@ -314,4 +346,25 @@ pub(crate) fn nearest_line(layout: &wordcraft_layout::DocLayout, page: usize, y:
     })?;
     let off = best.para.lines.get(best.li)?.start;
     Some(Pos { story, path: best.path.clone(), off })
+}
+
+fn keep_drop_page_y(s: &Session, at: &Pos, rect: wordcraft_geom::Rect) -> bool {
+    if at.story != StoryRef::Body || s.view.mode != wordcraft_layout::ViewMode::Print || s.doc.settings.compat_mode < MODERN_TEXTBOX_MODE {
+        return false;
+    }
+    let Some(o) = s.doc.para_at(at).and_then(|p| p.object_at(at.off)) else { return false };
+    let Some((_, _, float)) = o.frame() else { return false };
+    if !o.text_box().is_some_and(|id| s.doc.parts.get(&id).is_some_and(|part| part.kind == wordcraft_doc::PartKind::TextBox))
+        || float.spin().deg != 0.0
+        || matches!(float.wrap, Wrap::Inline | Wrap::BehindText | Wrap::InFrontOfText)
+    {
+        return false;
+    }
+    // Continuous sections share a page but retain their own textbox bounds.
+    let Some(&block) = at.path.0.first() else { return false };
+    let section = s.doc.section_index_of(block as usize);
+    s.doc.sections().get(section).is_some_and(|(_, sect)| {
+        let (top, bottom) = (sect.margin_top, sect.page_h - sect.margin_bottom);
+        top.is_finite() && bottom.is_finite() && bottom >= top && (rect.y < top || rect.bottom() > bottom)
+    })
 }

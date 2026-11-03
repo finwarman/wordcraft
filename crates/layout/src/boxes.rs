@@ -1,13 +1,15 @@
 use super::ctx::{Ctx, page_anchored};
+use super::floats::PlacedObjects;
 use super::floats::{
     ObjFrame, ObjectPlacement, WrapArea, align_in, float_rect, floating, left_out_objects, place_objects, rel_exclusions, wrap_area,
 };
+use super::foreground::{Foreground, append_foreground, extend_table_paint, order_foreground};
 use super::page::PageFrame;
 use super::placed::Placed;
 use super::table_flow::below;
 use super::{
     Anchor, Arc, Block, Blocks, Border, Document, Float, FloatAlign, HashMap, ParaLayout, Paragraph, Path, Rect, StoryRef, TableFloat, TextDirection,
-    Wrap, WrapText, para, table,
+    Wrap, WrapText, para, table, textbox,
 };
 
 /// Cell identity is independent of optional table-style formatting.
@@ -63,6 +65,8 @@ struct TableBlockContext<'ctx, 'state, 'doc> {
     depth: usize,
     y: &'state mut f32,
     items: &'state mut Vec<Placed>,
+    foreground: &'state mut Vec<Foreground>,
+    behind: usize,
     exclusions: &'state mut Vec<WrapArea>,
     float_tables: &'state mut Vec<Rect>,
     table_areas: &'state mut Vec<Rect>,
@@ -131,6 +135,8 @@ fn layout_table_block(input: TableBlockContext<'_, '_, '_>) -> bool {
         depth,
         y,
         items,
+        foreground,
+        behind,
         exclusions,
         float_tables,
         table_areas,
@@ -162,10 +168,12 @@ fn layout_table_block(input: TableBlockContext<'_, '_, '_>) -> bool {
             }
             (rect.x, rect.y)
         }
-        None => (layout.x, below(exclusions, *y, layout.x, layout.x + layout.width)),
+        None => (layout.x, below(exclusions, *y, layout.x, layout.x + layout.width, layout.rows.first().map_or(0.0, |r| r.height))),
     };
+    let anchor = items.len().saturating_sub(behind);
     let mut row_y = ty;
     for row in &layout.rows {
+        extend_table_paint(foreground, &row.foreground, items.len().saturating_sub(behind), anchor);
         for item in &row.items {
             let mut item = item.clone();
             item.translate(tx, row_y);
@@ -201,6 +209,7 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
     let mut items = Vec::new();
     // Pictures behind the text go first; `behind` counts them.
     let mut behind = 0;
+    let mut foreground = Vec::new();
     // Wrap areas of the box's floating objects.
     let mut excl: Vec<WrapArea> = Vec::new();
     // Areas of the box's floating tables, which other floating tables may have to avoid.
@@ -280,6 +289,7 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                     if left_out(oi) {
                         continue;
                     }
+                    let (w, h) = textbox::fit_size(ctx, o, w, h, depth);
                     if let Some(pin) = ctx.pin.as_ref().filter(|pin| in_cell && pin.story == story && float.outside_cell && page_anchored(float)) {
                         let page =
                             PageFrame { sect: &pin.sect, margin_top: pin.margin_top, origin: (0.0, 0.0), number: pin.number, mirror: pin.mirror };
@@ -316,7 +326,7 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                 // Pictures, shapes and text boxes: drawn, their areas and text boxes' text.
                 if !p.objects.is_empty() {
                     let at = ObjFrame { page: frame, col: (0.0, width), para_y: para_top, table_chr: table.map(|t| &t.chr), pinned: Some(&pinned) };
-                    let (back, front) = place_objects(
+                    let PlacedObjects { behind: back, inline, front } = place_objects(
                         ctx,
                         &ObjectPlacement {
                             story,
@@ -330,7 +340,7 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                             depth,
                         },
                     );
-                    for placed in back.iter().chain(front.iter()) {
+                    for placed in back.iter().chain(inline.iter()).chain(front.iter().flat_map(|(_, _, items)| items)) {
                         if let Placed::Object { rect, spin, wrap, .. } = placed
                             && !matches!(wrap, Wrap::Inline | Wrap::BehindText | Wrap::InFrontOfText)
                         {
@@ -340,7 +350,8 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                     let at = behind.min(items.len());
                     behind += back.len();
                     items.splice(at..at, back);
-                    items.extend(front);
+                    items.extend(inline);
+                    append_foreground(&mut items, &mut foreground, behind, front);
                 }
                 // Automatic space after: none after the last paragraph of a cell or box.
                 let after = if pl.rp.after_auto && i + 1 == blocks.len() { 0.0 } else { pl.rp.space_after };
@@ -362,6 +373,8 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                     depth,
                     y: &mut y,
                     items: &mut items,
+                    foreground: &mut foreground,
+                    behind,
                     exclusions: &mut excl,
                     float_tables: &mut float_tables,
                     table_areas: &mut table_areas,
@@ -376,7 +389,15 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
     }
     let floats_bottom = float_tables.iter().map(|r| r.bottom()).fold(float_objects_bottom, f32::max);
     ctx.hide_deleted = outer_hide;
-    BoxLayout { items, height: y.max(0.0), floats_bottom, last_top: last_top.max(0.0), table_areas, page_table_wraps }
+    if in_cell {
+        for group in &mut foreground {
+            group.range = group.range.start.saturating_add(behind)..group.range.end.saturating_add(behind);
+        }
+    } else {
+        order_foreground(&mut items, &foreground, behind);
+        foreground.clear();
+    }
+    BoxLayout { items, foreground, height: y.max(0.0), floats_bottom, last_top: last_top.max(0.0), table_areas, page_table_wraps, exclusions: excl }
 }
 
 /// The width a text frame without one takes: its widest line, with the paragraph's indents.
@@ -430,7 +451,9 @@ fn frame_float(fr: &wordcraft_doc::props::TextFrame) -> Float {
 /// floating tables end (a table cell grows to hold them) and where its last block starts (the
 /// height without it).
 pub(crate) struct BoxLayout {
+    pub(crate) exclusions: Vec<WrapArea>,
     pub(crate) items: Vec<Placed>,
+    pub(super) foreground: Vec<Foreground>,
     pub(crate) table_areas: Vec<Rect>,
     pub(crate) page_table_wraps: Vec<WrapArea>,
     pub(crate) height: f32,
@@ -518,53 +541,7 @@ pub(crate) const BOX_INSET_Y: f32 = 3.6;
 /// dropped (whole lines; a line that only partly fits too) and so is anything starting below.
 /// The first line always stays, so even a tiny box shows the start of its text.
 pub(crate) fn fit_box(items: Vec<Placed>, height: f32) -> Vec<Placed> {
-    let limit = height + 0.5;
-    let mut out = Vec::with_capacity(items.len());
-    let mut kept_line = false;
-    for it in items {
-        if let Some(r) = it.turned_bounds() {
-            // Turned text (in a table cell) stays whole.
-            if r.y < limit {
-                out.push(it);
-            }
-            continue;
-        }
-        match it {
-            Placed::Lines { story, path, para, l0, l1, x, y, turn } => {
-                let Some(first) = para.lines.get(l0) else { continue };
-                let mut end = l0;
-                for k in l0..l1 {
-                    let Some(l) = para.lines.get(k) else { break };
-                    if y + (l.top - first.top) + l.height > limit && kept_line {
-                        break;
-                    }
-                    end = k + 1;
-                    kept_line = true;
-                }
-                if end > l0 {
-                    out.push(Placed::Lines { story, path, para, l0, l1: end, x, y, turn });
-                }
-            }
-            Placed::Fill { rect, color } if rect.y < limit => {
-                out.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, rect.h.min(limit - rect.y)), color });
-            }
-            Placed::Rule { x0, y0, x1, y1, border } if y0.min(y1) < limit => {
-                out.push(Placed::Rule { x0, y0: y0.min(limit), x1, y1: y1.min(limit), border });
-            }
-            Placed::Image { rect, .. }
-            | Placed::Shape { rect, .. }
-            | Placed::Graphic { rect, .. }
-            | Placed::Clip { rect, .. }
-            | Placed::Cell { rect, .. }
-            | Placed::Object { rect, .. }
-                if rect.y < limit =>
-            {
-                out.push(it);
-            }
-            _ => {}
-        }
-    }
-    out
+    super::fit_lines(items, height, super::LineFit::Complete)
 }
 
 /// Word joins neighbouring paragraphs with the same borders and indents into one box: the top
@@ -586,7 +563,10 @@ pub(crate) fn joined(doc: &Document, blocks: &Blocks, i: usize, j: Option<usize>
 /// The room a paragraph's top or bottom border takes in the text flow: its distance from the
 /// text plus its width (Word).
 fn border_room(b: Option<Border>) -> f32 {
-    b.filter(Border::is_visible).map_or(0.0, |b| b.space + b.width)
+    b.filter(Border::is_visible).map_or(0.0, |b| {
+        let extent = b.space + b.width;
+        if extent.is_finite() { extent.max(0.0) } else { 0.0 }
+    })
 }
 
 /// How a piece of a paragraph meets the paragraphs around it: the room taken by its top and
@@ -635,26 +615,26 @@ pub(crate) fn push_para(
     if let Some(c) = pl.rp.shading {
         let pad = pl.rp.borders.as_ref().map(|b| b.left.map(|l| l.space).unwrap_or(4.0)).unwrap_or(0.0);
         let (sl, sr) = (lx.min(left - pad), rx.max(right + pad));
-        items.push(Placed::Fill { rect: Rect::new(sl, top, sr - sl, bottom - top), color: c });
+        items.push(Placed::Fill { rect: Rect::new(sl, top, sr - sl, bottom - top), color: c, source: Some((story, Path(path.to_vec()))) });
     }
     items.push(Placed::Lines { story, path: Path(path.to_vec()), para: pl.clone(), l0, l1, x, y, turn: TextDirection::Horizontal });
     if let Some(b) = &pl.rp.borders {
         // All four lines lie beyond their distance from the text; top and bottom reach the corners.
         if let Some(t) = b.top.filter(|t| e.top > 0.0 && t.is_visible()) {
             let ty = y - t.space - t.width / 2.0;
-            items.push(Placed::Rule { x0: lx, y0: ty, x1: rx, y1: ty, border: t });
+            items.push(Placed::Rule { x0: lx, y0: ty, x1: rx, y1: ty, border: t, source: Some((story, Path(path.to_vec()))) });
         }
         if let Some(t) = b.bottom.filter(|t| e.bottom > 0.0 && t.is_visible()) {
             let by = y + h + t.space + t.width / 2.0;
-            items.push(Placed::Rule { x0: lx, y0: by, x1: rx, y1: by, border: t });
+            items.push(Placed::Rule { x0: lx, y0: by, x1: rx, y1: by, border: t, source: Some((story, Path(path.to_vec()))) });
         }
         if let Some(t) = b.left.filter(Border::is_visible) {
             let bx = lx + t.width / 2.0;
-            items.push(Placed::Rule { x0: bx, y0: top, x1: bx, y1: bottom, border: t });
+            items.push(Placed::Rule { x0: bx, y0: top, x1: bx, y1: bottom, border: t, source: Some((story, Path(path.to_vec()))) });
         }
         if let Some(t) = b.right.filter(Border::is_visible) {
             let bx = rx - t.width / 2.0;
-            items.push(Placed::Rule { x0: bx, y0: top, x1: bx, y1: bottom, border: t });
+            items.push(Placed::Rule { x0: bx, y0: top, x1: bx, y1: bottom, border: t, source: Some((story, Path(path.to_vec()))) });
         }
     }
     y + h

@@ -4966,6 +4966,84 @@ fn an_object_dropped_near_the_bottom_of_a_page_lands_there() {
 }
 
 #[test]
+fn textbox_drop_anchor_scope() {
+    use wordcraft_doc::para::Anchor;
+    let mut s = Session::new(wordcraft_doc::Document::from_text(&vec!["Original drop control text."; 30].join("\n")));
+    run(&mut s, "insert.textBox", json!({"text": "Box"}));
+    select_box(&mut s);
+    run(&mut s, "arrange.bounds", json!({"width": 450, "height": 300}));
+    for (y, anchor) in [(600.0, Anchor::Page), (400.0, Anchor::Paragraph), (-20.0, Anchor::Page), (400.0, Anchor::Paragraph)] {
+        select_box(&mut s);
+        run(&mut s, "arrange.bounds", json!({"page": 0, "x": 80, "y": y}));
+        let hit = box_area(&mut s);
+        assert_eq!(hit.page, 0);
+        assert!((hit.rect.y - y).abs() < 0.01, "{y}: {:?}", hit.rect);
+        let (_, object) = crate::cmd::objects::selected(&s).unwrap();
+        let (_, _, float) = object.frame().unwrap();
+        assert_eq!((float.h_rel, float.v_rel), (Anchor::Column, anchor));
+    }
+}
+
+#[test]
+fn continuous_drop_uses_owner() {
+    use wordcraft_doc::para::Anchor;
+    use wordcraft_doc::section::{SectionProps, SectionStart};
+    for (page_bottom, owner_bottom, anchor) in [(72.0, 200.0, Anchor::Page), (200.0, 72.0, Anchor::Paragraph)] {
+        let mut doc = wordcraft_doc::Document::from_text(&vec!["Original continuous drop control."; 30].join("\n"));
+        doc.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap().section =
+            Some(Box::new(SectionProps { margin_bottom: page_bottom, ..Default::default() }));
+        doc.last_section.start = SectionStart::Continuous;
+        doc.last_section.margin_bottom = owner_bottom;
+        let mut s = Session::new(doc);
+        s.sel = crate::Selection::caret(Pos::body(1, 0));
+        run(&mut s, "insert.textBox", json!({"text": "Box"}));
+        select_box(&mut s);
+        run(&mut s, "arrange.bounds", json!({"width": 150, "height": 120}));
+        select_box(&mut s);
+        run(&mut s, "arrange.bounds", json!({"page": 0, "x": 80, "y": 500}));
+        let hit = box_area(&mut s);
+        assert_eq!(hit.page, 0);
+        let (pos, object) = crate::cmd::objects::selected(&s).unwrap();
+        assert_eq!(s.doc.section_index_of(pos.path.last()), 1);
+        assert_eq!(s.layout().pages[hit.page].section, 0);
+        assert!((hit.rect.y - 500.0).abs() < 0.01, "page bottom {page_bottom}, owner bottom {owner_bottom}: {:?}", hit.rect);
+        let (_, _, float) = object.frame().unwrap();
+        assert_eq!((float.h_rel, float.v_rel), (Anchor::Column, anchor));
+    }
+}
+
+#[test]
+fn picture_drop_stays_literal() {
+    use wordcraft_doc::para::{Anchor, InlineObject};
+    let mut doc = wordcraft_doc::Document::from_text(&vec!["Original picture control text."; 30].join("\n"));
+    doc.insert_object(
+        &Pos::body(0, 0),
+        InlineObject::Image {
+            media: "original-picture".into(),
+            w: 450.0,
+            h: 300.0,
+            alt: String::new(),
+            float: Default::default(),
+            crop: [0.0; 4],
+            ole: None,
+        },
+        &Default::default(),
+    )
+    .unwrap();
+    let mut s = Session::new(doc);
+    s.sel = crate::Selection { anchor: Pos::body(0, 0), focus: Pos::body(0, wordcraft_doc::para::OBJ.len_utf8()) };
+    for y in [400.0, 600.0, 760.0] {
+        run(&mut s, "arrange.bounds", json!({"page": 0, "x": 80, "y": y}));
+        let (pos, object) = crate::cmd::objects::selected(&s).unwrap();
+        let (_, _, float) = object.frame().unwrap();
+        assert_eq!((float.h_rel, float.v_rel), (Anchor::Column, Anchor::Paragraph));
+        let hit = s.layout().object(&pos, 0).unwrap();
+        assert_eq!(hit.page, 0);
+        assert!((hit.rect.x - 80.0).abs() < 0.01 && (hit.rect.y - y).abs() < 0.01, "{y}: {:?}", hit.rect);
+    }
+}
+
+#[test]
 fn nudging_an_aligned_object_moves_it_from_where_it_is() {
     use wordcraft_doc::para::{Anchor, FloatAlign};
     let mut s = s();
@@ -9175,8 +9253,8 @@ fn review_language_validates_tags_and_marks_text_unchecked() {
     assert_eq!(run(&mut s, "format.state", json!({}))["lang"], "pl");
     run(&mut s, "review.language", json!({}));
     assert_eq!(run(&mut s, "format.state", json!({}))["lang"], "en-US");
-    // A language without proofing tools: no marks.
-    run(&mut s, "review.language", json!({"lang": "fr-FR"}));
+    // A private-use language avoids dictionaries installed on the test host.
+    run(&mut s, "review.language", json!({"lang": "qaa"}));
     assert_eq!(run(&mut s, "review.issues", json!({})), json!([]));
 }
 
@@ -11980,4 +12058,69 @@ fn page_down_extends_a_selection_that_ends_in_collapsed_outline_text() {
     assert_eq!(s.sel.anchor, anchor, "the anchor stays");
     assert!(s.sel.focus.path.0[0] > 6, "Page Down extends the selection a page on: {:?}", s.sel.focus);
     assert!(s.layout().caret(&s.sel.focus).is_some(), "to a place the outline shows");
+}
+
+#[test]
+fn page_steps_skip_hidden_cells() {
+    use wordcraft_doc::para::{Float, InlineObject};
+    use wordcraft_doc::props::{CharProps, HeightRule, LineSpacing};
+    use wordcraft_doc::{Block, Document, Paragraph, Path, Table};
+    use wordcraft_layout::Placed;
+    const STEP: f32 = 72.0;
+    for view in ["view.webLayout", "view.draft", "view.outline"] {
+        for height in [5.0, 80.0] {
+            let mut doc = Document::from_text("Before\nAfter");
+            let chr = CharProps { font: Some("Source Sans 3".into()), size: Some(10.0), ..Default::default() };
+            doc.styles.default_chr = chr.clone();
+            doc.last_section.page_h = 3.0 * STEP;
+            doc.last_section.margin_top = STEP;
+            doc.last_section.margin_bottom = STEP;
+            doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().props.space_before = Some(100.0);
+            let mut paragraph = Paragraph::new();
+            let object = InlineObject::Image {
+                media: "page-step-clip-probe".into(),
+                w: 20.0,
+                h: 20.0,
+                alt: String::new(),
+                float: Float::default(),
+                crop: [0.0; 4],
+                ole: None,
+            };
+            paragraph.insert_object(0, object, &chr).unwrap();
+            paragraph.props.line_spacing = Some(LineSpacing::Exactly(80.0));
+            paragraph.props.space_after = Some(0.0);
+            let mut table = Table::new(1, 1, 200.0);
+            table.props.style = None;
+            table.props.cell_margins = Some([0.0; 4]);
+            table.props.borders = Some(Default::default());
+            table.rows[0].props.height = Some(height);
+            table.rows[0].props.height_rule = HeightRule::Exact;
+            table.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(paragraph)];
+            doc.insert_block(StoryRef::Body, &Path::top(1), Block::Table(table)).unwrap();
+            let mut session = Session::new(doc);
+            run(&mut session, view, json!({}));
+            let layout = session.layout();
+            assert_eq!(layout.pages.len(), 1, "{view}: use the continuous-page route");
+            let path = Path(vec![1, 0, 0, 0]);
+            let line = wordcraft_layout::hit::page_lines(&layout.pages[0], StoryRef::Body).into_iter().find(|line| line.path == &path).unwrap();
+            let clipped = layout.pages[0].items.iter().any(|item| matches!(item, Placed::Cell { clip: true, .. }));
+            assert_eq!(clipped, height == 5.0, "{view}: the exact-cell fixture must distinguish clipping");
+            for dir in [-1, 1] {
+                let origin = Pos::body(if dir < 0 { 2 } else { 0 }, 0);
+                session.sel = crate::Selection::caret(origin.clone());
+                session.page_hint = 0;
+                let caret = layout.caret_on(&origin, 0).unwrap();
+                let cell = Pos { story: StoryRef::Body, path: path.clone(), off: line.para.off_at_x(line.li, caret.x - line.x) };
+                assert_eq!(layout.caret_on(&cell, 0).is_some(), height == 80.0, "{view}: goal-caret visibility");
+                if height == 5.0 {
+                    let target_y = caret.top + 1.0 + dir as f32 * STEP;
+                    assert!(target_y >= line.top && target_y <= line.bottom, "{view}: the retained hidden band must attract the old page route");
+                }
+                run(&mut session, if dir < 0 { "caret.pageUp" } else { "caret.pageDown" }, json!({}));
+                let expected = if height == 80.0 { path.clone() } else { Path::top(if dir < 0 { 0 } else { 2 }) };
+                assert_eq!(session.sel.focus.path, expected, "{view}: {height}, direction {dir}");
+                assert!(session.layout().caret_on(&session.sel.focus, 0).is_some(), "page movement must land on a visible caret");
+            }
+        }
+    }
 }

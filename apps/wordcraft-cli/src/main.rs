@@ -428,6 +428,28 @@ fn run_source_paths(rest: &[String], script: Option<&script::Script>) -> (Option
 
 /// Run the subcommand named by `args` (the command line after the program name). Files named
 /// there are opened by their real names, which may not be valid Unicode.
+fn check_toc_options(rest: &[String], output: &str) -> Result<bool, Failure> {
+    let refresh = rest.iter().any(|a| a == "--refresh-toc");
+    if refresh && !output.to_ascii_lowercase().ends_with(".pdf") {
+        return Err("--refresh-toc requires PDF output".into());
+    }
+    if refresh && rest.iter().any(|a| a == "--update-fields") {
+        return Err("--refresh-toc cannot be combined with --update-fields".into());
+    }
+    Ok(refresh)
+}
+
+// Conversion owns its session and never writes refreshed fields back to the source.
+fn update_convert_fields(s: &mut Session, rest: &[String], params: &Value) -> Result<(), Failure> {
+    if rest.iter().any(|a| a == "--refresh-toc") {
+        refresh_pdf_toc(s, params)?;
+    }
+    if rest.iter().any(|a| a == "--update-fields") {
+        s.run("references.updateFields", &json!({})).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
     let script_path = script_operand(args);
     let (args, file) = text_args(args)?;
@@ -448,22 +470,10 @@ fn run<S: AsRef<OsStr>>(args: &[S]) -> Result<(), Failure> {
             let paths = positionals(&rest, CONVERT_OPTIONS);
             let (i, o) = (paths.first().ok_or_else(missing_argument)?.to_string(), paths.get(1).ok_or_else(missing_argument)?.to_string());
             let markup = rest.iter().any(|a| a == "--markup");
-            let refresh_toc = rest.iter().any(|a| a == "--refresh-toc");
-            if refresh_toc && !o.to_ascii_lowercase().ends_with(".pdf") {
-                return Err("--refresh-toc requires PDF output".into());
-            }
-            if refresh_toc && rest.iter().any(|a| a == "--update-fields") {
-                return Err("--refresh-toc cannot be combined with --update-fields".into());
-            }
+            check_toc_options(&rest, &o)?;
             let password = password_from(&rest)?;
             let mut s = open(&i, password.as_deref())?;
-            // This session is disposable; PDF generation never saves back to the input.
-            if refresh_toc {
-                refresh_pdf_toc(&mut s, &json!({"forPdf": true, "markup": markup}))?;
-            }
-            if rest.iter().any(|a| a == "--update-fields") {
-                s.run("references.updateFields", &json!({})).map_err(|e| e.to_string())?;
-            }
+            update_convert_fields(&mut s, &rest, &json!({"forPdf": true, "markup": markup}))?;
             let r = if o.to_ascii_lowercase().ends_with(".png") {
                 s.run("file.exportPng", &json!({"path": o, "page": 1, "markup": markup}))
             } else {

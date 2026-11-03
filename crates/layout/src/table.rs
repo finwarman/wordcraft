@@ -2,6 +2,7 @@
 //! table-style conditional formatting. Rows are laid out as free-standing boxes; pagination
 //! moves whole rows or splits them between lines (`split_row`).
 
+use super::foreground::{Foreground, PaintLayer, extend_foreground, remap_foreground};
 use wordcraft_doc::numbering::Counters;
 use wordcraft_doc::props::{Align, Border, Borders, HeightRule, Rgb, TextDirection, VAlign, VMerge};
 use wordcraft_doc::styles::{PartSet, TablePart, TableStyleProps};
@@ -9,15 +10,29 @@ use wordcraft_doc::{Block, Blocks, Paragraph, Row, StoryRef, Table};
 use wordcraft_geom::Rect;
 
 use crate::para::{CellText, ClKind, ParaLayout};
-use crate::{BoxInput, BoxLayout, Ctx, Placed, layout_box};
+use crate::{BoxInput, BoxLayout, Ctx, Placed, fit_exact_cell, layout_box};
+
+mod exact_width;
+#[cfg(test)]
+mod exact_width_controls;
+mod incomplete_grid;
+mod merge_flow;
+mod rounded_width;
+pub(crate) use merge_flow::MergeFlow;
+#[cfg(test)]
+mod title_width_controls;
 
 /// Largest preferred table width, as a share of the text column, that a file can ask for.
 const MAX_WIDTH_SHARE: f32 = 10.0;
 
+#[derive(Clone)]
 pub struct RowLayout {
     pub height: f32,
+    /// Minimum retained on continuation fragments that can hold it.
+    pub(crate) min_height: f32,
     /// Items relative to the table's top-left (x) and the row's top (y).
     pub items: Vec<Placed>,
+    pub(super) foreground: Vec<Foreground>,
     /// The room the row keeps below its text: the bottom cell margin and border band. Part of a
     /// row split across pages keeps it too.
     pub bottom: f32,
@@ -30,7 +45,10 @@ pub struct RowLayout {
 }
 
 /// A cell of a [`RowLayout`].
+#[derive(Clone)]
 pub struct CellPart {
+    pub(crate) valign: VAlign,
+    pub(crate) merge: Option<(usize, usize)>,
     /// Top cell margin and visible border band retained on a continuation.
     pub(crate) top: f32,
     /// Its items in the row's `items` (its fill, text, borders and cell area).
@@ -128,17 +146,29 @@ fn table_style(ctx: &Ctx, t: &Table) -> Option<TableStyleProps> {
 
 /// The table's default cell margins: its own, else its style's, else Word's.
 fn default_margins(t: &Table, style: Option<&TableStyleProps>) -> [f32; 4] {
-    t.props.cell_margins.or(style.and_then(|s| s.parts.cell_margins)).unwrap_or(DEFAULT_MARGINS)
+    let defaults = style.and_then(|s| s.parts.cell_margins).unwrap_or(DEFAULT_MARGINS);
+    t.props
+        .cell_margins
+        .unwrap_or_else(|| t.props.partial_cell_margins.map_or(defaults, |sides| std::array::from_fn(|i| sides[i].unwrap_or(defaults[i]))))
+}
+
+fn row_margins(row: &wordcraft_doc::Row, defaults: [f32; 4]) -> [f32; 4] {
+    let Some(props) = row.props.exceptions.as_ref() else { return defaults };
+    props
+        .cell_margins
+        .unwrap_or_else(|| props.partial_cell_margins.map_or(defaults, |sides| std::array::from_fn(|i| sides[i].unwrap_or(defaults[i]))))
 }
 
 /// The margins (top, left, bottom, right; points) of cell `cell` of row `row`: its own, else the
-/// table's defaults. The layout uses the left and right ones as they are (the app's ruler
+/// row's exceptions, else the table's defaults. The layout uses the left and right ones as they are (the app's ruler
 /// measures a cell's indents from them) but gives every cell in a row the row's largest top and
 /// bottom margins.
 pub fn cell_margins(doc: &wordcraft_doc::Document, t: &Table, row: usize, cell: usize) -> [f32; 4] {
     let style = t.props.style.as_deref().and_then(|id| doc.styles.table_style(id));
     let defaults = default_margins(t, style.as_ref());
-    t.rows.get(row).and_then(|r| r.cells.get(cell)).map_or(defaults, |cell| cell.props.resolved_margins(defaults))
+    let Some(row) = t.rows.get(row) else { return defaults };
+    let defaults = row_margins(row, defaults);
+    row.cells.get(cell).map_or(defaults, |cell| cell.props.resolved_margins(defaults))
 }
 
 /// The most paragraphs [`measure_table_columns`] lays out: a huge table is measured by its first
@@ -203,10 +233,12 @@ pub fn measure_table_columns(doc: &wordcraft_doc::Document, t: &Table) -> Vec<(f
     let ncols = grid_cols(t).clamp(1, wordcraft_doc::table::MAX_COLS);
     let fields = crate::FieldCtx::default();
     let mut cols = vec![(0.0f32, 0.0f32); ncols];
+    let mut starts = vec![false; ncols];
     // Cells spanning several columns: (first column, span, min, max), applied after the others.
     let mut spanned: Vec<(usize, usize, f32, f32)> = Vec::new();
     let mut budget = MEASURE_BUDGET;
     'rows: for (ri, row) in t.rows.iter().enumerate() {
+        let margins_def = row_margins(row, margins_def);
         let mut g = row.first_grid();
         for cell in &row.cells {
             let span = cell.span();
@@ -256,6 +288,9 @@ pub fn measure_table_columns(doc: &wordcraft_doc::Document, t: &Table) -> Vec<(f
                 }
             }
             let (min, max) = ((min + side).min(1584.0), (max + side).min(1584.0));
+            if let Some(start) = starts.get_mut(g) {
+                *start = true;
+            }
             if span == 1 {
                 if let Some(c) = cols.get_mut(g) {
                     c.0 = c.0.max(min);
@@ -283,10 +318,12 @@ pub fn measure_table_columns(doc: &wordcraft_doc::Document, t: &Table) -> Vec<(f
     }
     // A column no cell starts in still needs room for its margins.
     let floor = margins_def[1].max(0.0) + margins_def[3].max(0.0) + EMPTY_TEXT;
-    cols.iter_mut().for_each(|c| {
-        c.0 = c.0.max(floor);
-        c.1 = c.1.max(c.0);
-    });
+    for (column, started) in cols.iter_mut().zip(starts) {
+        if !started {
+            column.0 = column.0.max(floor);
+        }
+        column.1 = column.1.max(column.0);
+    }
     cols
 }
 
@@ -316,7 +353,9 @@ pub(crate) fn first_cell_left_margin(ctx: &Ctx, t: &Table) -> f32 {
 }
 
 fn first_cell_left_margin_in(t: &Table, def: [f32; 4]) -> f32 {
-    t.rows.first().and_then(|r| r.cells.first()).map_or(def, |cell| cell.props.resolved_margins(def))[1]
+    let Some(row) = t.rows.first() else { return def[1] };
+    let def = row_margins(row, def);
+    row.cells.first().map_or(def, |cell| cell.props.resolved_margins(def))[1]
 }
 
 /// What a table style gives the cells in one set of parts: shading, vertical alignment and each
@@ -379,6 +418,7 @@ fn region_borders(parts: &[(TablePart, Borders)], (ri, nrows): (usize, usize), (
 
 struct CellBox {
     items: Vec<Placed>,
+    foreground: Vec<Foreground>,
     h: f32,
     x: f32,
     w: f32,
@@ -409,7 +449,9 @@ struct TableFrame {
 // Nested measurement needs the same preferred weights as layout before sharing span minima.
 fn preferred_grid(t: &Table, avail: f32) -> Vec<f32> {
     let ncols = grid_cols(t).max(1);
-    let mut grid: Vec<f32> = if t.grid.len() == ncols {
+    let mut grid: Vec<f32> = if let Some(grid) = incomplete_grid::recover(t) {
+        grid
+    } else if t.grid.len() == ncols {
         // Grid units can be narrower than a text box, including omitted row-end columns.
         t.grid
             .iter()
@@ -514,6 +556,8 @@ fn table_frame(ctx: &mut Ctx, t: &Table, avail: f32, depth: usize, style: Option
 
 pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], avail: f32, depth: usize) -> TableLayout {
     let style = table_style(ctx, t);
+    let prepared = exact_width::prepare(t, style.as_ref());
+    let t = prepared.as_ref();
     // Cell text formatting and looks per set of style parts, built once per table.
     let mut cell_text: Vec<(Region, CellText)> = Vec::new();
     let mut looks: Vec<(Region, RegionLook)> = Vec::new();
@@ -524,11 +568,15 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
     let mut rows: Vec<Vec<CellBox>> = Vec::with_capacity(nrows);
     let mut heights: Vec<f32> = Vec::with_capacity(nrows);
     let mut bottoms: Vec<f32> = Vec::with_capacity(nrows);
+    let mut minimums = Vec::with_capacity(nrows);
     let mut edges: Vec<f32> = Vec::with_capacity(nrows);
     for (ri, row) in t.rows.iter().enumerate() {
+        let margins_def = row_margins(row, margins_def);
         let mut g = row.first_grid();
         let mut cells = Vec::with_capacity(row.cells.len());
         let mut rh = 0.0f32;
+        let mut row_top_band = 0.0f32;
+        let mut mark_height: Option<f32> = None;
         // The tallest cell margins plus border bands in the row.
         let mut row_insets = 0.0f32;
         let mut row_below = 0.0f32;
@@ -629,28 +677,36 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             let insets = margins[0] + margins[2] + band_t + band_b;
             let turn = cell.props.text_direction;
             let mut turned = None;
-            let (items, h) = if cell.props.vmerge == VMerge::Continue {
-                (Vec::new(), 0.0)
+            let (items, foreground, h) = if cell.props.vmerge == VMerge::Continue {
+                (Vec::new(), Vec::new(), 0.0)
             } else if turn.is_turned() {
                 collapsed = false;
                 // Turned text: its lines run along the cell's height. An exact row height sets
-                // their length; otherwise they get the length the text needs unwrapped and the row
-                // grows to fit (the second pass lays them out again if the row ends up taller).
+                // their length. A minimum height wraps text when it fits across the column;
+                // otherwise the row grows to fit its unwrapped text.
                 let snap = (ctx.counters.clone(), ctx.eq_count);
-                let len = match (row.props.height, row.props.height_rule) {
-                    (Some(h), HeightRule::Exact) if h > 0.0 => (h + row_bottom - insets).clamp(4.0, TURNED_LIMIT),
+                let preferred = row.props.height.filter(|h| h.is_finite() && *h > 0.0).map(|h| h.clamp(4.0, TURNED_LIMIT));
+                let wrapped = preferred.filter(|_| !ctx.boxes.inside() && row.props.height_rule == HeightRule::AtLeast).filter(|h| {
+                    let probe = layout_box(ctx, BoxInput::cell(story, &cell.blocks, &cpath, *h, text, depth));
+                    (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
+                    probe.height.max(probe.floats_bottom) <= cw + 0.01
+                });
+                let len = match (row.props.height, row.props.height_rule, wrapped) {
+                    (Some(h), HeightRule::Exact, _) if h > 0.0 => (h + row_bottom - insets).clamp(4.0, TURNED_LIMIT),
+                    (_, _, Some(h)) => h,
                     _ => {
                         let probe = layout_box(ctx, BoxInput::cell(story, &cell.blocks, &cpath, TURNED_MAX, text, depth)).items;
                         (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
                         natural_length(&probe).clamp(4.0, TURNED_MAX)
                     }
                 };
-                let BoxLayout { items, height, floats_bottom, .. } = layout_box(ctx, BoxInput::cell(story, &cell.blocks, &cpath, len, text, depth));
+                let BoxLayout { items, foreground, height, floats_bottom, .. } =
+                    layout_box(ctx, BoxInput::cell(story, &cell.blocks, &cpath, len, text, depth));
                 let across = height.max(floats_bottom);
                 turned = Some(Turned { turn, len, across, snap, region, ci, top: margins[0] + band_t });
-                (items, len)
+                (items, foreground, len)
             } else {
-                let BoxLayout { mut items, mut height, floats_bottom, last_top, .. } =
+                let BoxLayout { mut items, foreground, mut height, floats_bottom, last_top, .. } =
                     layout_box(ctx, BoxInput::cell(story, &cell.blocks, &cpath, cw, text, depth));
                 // A hidden end-of-cell mark: an empty last paragraph takes no room (Word for
                 // Windows: a row of empty such cells is only its borders).
@@ -663,13 +719,25 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                     it.translate(x0 + margins[1], margins[0] + band_t);
                 }
                 // The cell grows to hold its floating tables.
-                (items, height.max(floats_bottom))
+                (items, foreground, height.max(floats_bottom))
             };
             let h = h + insets;
             let end = h - margins[2] - band_b;
             if cell.props.vmerge != VMerge::Restart {
                 rh = rh.max(h);
             }
+            if cell.props.vmerge == VMerge::None
+                && !cell.props.hide_mark
+                && !turn.is_turned()
+                && cell.blocks.len() == 1
+                && let Some(Placed::Lines { para, .. }) = items.first()
+                && items.iter().all(|it| matches!(it, Placed::Lines { para, .. } if para.text_len == 0 && para.label.is_none()))
+            {
+                // Paragraph spacing already contributes to the cell's own height.
+                let strut = para.height + margins[0] + margins[2] + band_b;
+                mark_height = Some(mark_height.unwrap_or(0.0).max(strut));
+            }
+            row_top_band = row_top_band.max(band_t);
             row_insets = row_insets.max(insets);
             row_below = row_below.max(margins[2] + band_b);
             if ri + 1 < nrows {
@@ -677,6 +745,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             }
             cells.push(CellBox {
                 items,
+                foreground,
                 h,
                 x: x0,
                 w: x1 - x0,
@@ -698,21 +767,42 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         // a 30pt row with 5pt margins and 0.5pt borders is 40.5pt tall even when its text needs less.
         // An exact height gains only the bottom margin: it runs from the top border to the bottom
         // of the text area (a 35pt row with 4pt margins steps 39pt).
+        // An empty cell strut clears the row's largest top border band. Nonempty
+        // content keeps its own border inset, even beside a thicker border.
+        let rh = mark_height.map_or(rh, |h| rh.max(h + row_top_band));
         let rh = match (row.props.height, row.props.height_rule) {
             (Some(h), HeightRule::Exact) if h > 0.0 => h + row_bottom,
             (Some(h), _) if h > 0.0 => rh.max(h + row_insets),
             _ => rh,
         };
+        minimums.push(match (row.props.height, row.props.height_rule) {
+            (Some(h), HeightRule::AtLeast) if h > 0.0 => h + row_insets,
+            _ => 0.0,
+        });
         bottoms.push(row_below);
         edges.push(row_edge);
         heights.push(if collapsed && !cells.is_empty() { rh.max(0.0) } else { rh.max(4.0) });
         rows.push(cells);
     }
-    grow_vertical_merges(&rows, &mut heights);
-    finish_table_rows(ctx, TableRows { story, table: t, path, depth, cell_text, rows, heights, bottoms, edges, x, total })
+    grow_vertical_merges(&t.rows, &rows, &mut heights);
+    finish_table_rows(ctx, TableRows { story, table: t, path, depth, cell_text, rows, heights, bottoms, minimums, edges, x, total })
 }
 
-fn grow_vertical_merges(rows: &[Vec<CellBox>], heights: &mut [f32]) {
+fn merge_key(t: &Table, mut row: usize, column: usize) -> Option<(usize, usize)> {
+    loop {
+        let cell = t.cell_at_grid(row, column)?;
+        if t.grid_col(row, cell) != column {
+            return None;
+        }
+        match t.rows.get(row)?.cells.get(cell)?.props.vmerge {
+            VMerge::None => return None,
+            VMerge::Restart => return Some((row, column)),
+            VMerge::Continue => row = row.checked_sub(1)?,
+        }
+    }
+}
+
+fn grow_vertical_merges(model_rows: &[Row], rows: &[Vec<CellBox>], heights: &mut [f32]) {
     // Vertically merged cells: grow the last row of the merge if the content is taller.
     for ri in 0..rows.len() {
         let restarts: Vec<(usize, f32, usize)> =
@@ -721,6 +811,13 @@ fn grow_vertical_merges(rows: &[Vec<CellBox>], heights: &mut [f32]) {
             let mut end = ri;
             while rows.get(end + 1).is_some_and(|r| r.iter().any(|c| c.g == g && c.vmerge == VMerge::Continue)) {
                 end += 1;
+            }
+            // Exact rows clip a merged cell's overflow instead of moving following content.
+            if model_rows
+                .get(ri..=end)
+                .is_some_and(|rows| rows.iter().all(|row| row.props.height_rule == HeightRule::Exact && row.props.height.is_some_and(|h| h > 0.0)))
+            {
+                continue;
             }
             let have: f32 = heights.get(ri..=end).map(|s| s.iter().sum()).unwrap_or(0.0);
             if h > have
@@ -741,13 +838,14 @@ struct TableRows<'a> {
     rows: Vec<Vec<CellBox>>,
     heights: Vec<f32>,
     bottoms: Vec<f32>,
+    minimums: Vec<f32>,
     edges: Vec<f32>,
     x: f32,
     total: f32,
 }
 
 fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
-    let TableRows { story, table: t, path, depth, cell_text, rows, heights, bottoms, edges, x, total } = input;
+    let TableRows { story, table: t, path, depth, cell_text, rows, heights, bottoms, minimums, edges, x, total } = input;
     // Grid columns holding a vertical-merge continuation, per row.
     let cont: Vec<Vec<usize>> = t
         .rows
@@ -771,6 +869,7 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
         let exact = t.rows.get(ri).is_some_and(|r| r.props.height_rule == HeightRule::Exact && r.props.height.is_some_and(|h| h > 0.0));
         let mut items = Vec::new();
         let mut parts = Vec::with_capacity(cells.len());
+        let mut foreground = Vec::new();
         for (ci, c) in cells.into_iter().enumerate() {
             let first = items.len();
             // A restart cell spans several rows: its height is their sum.
@@ -786,7 +885,9 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
             if c.vmerge != VMerge::Continue
                 && let Some(f) = c.fill
             {
-                items.push(Placed::Fill { rect, color: f });
+                let start = items.len();
+                items.push(Placed::Fill { rect, color: f, source: None });
+                foreground.push(Foreground { range: start..items.len(), layer: PaintLayer::CellFill, z: 0, floor: 0 });
             }
             // Behind-text frames count towards vertical alignment even without inline content.
             // They do not increase the row's flow height.
@@ -805,6 +906,7 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
             };
             let end = (c.vmerge != VMerge::Continue && c.turned.is_none()).then_some(c.end + dy);
             let mut cell_items = c.items;
+            let mut cell_foreground = c.foreground;
             if let Some(tn) = c.turned {
                 dy = 0.0;
                 let m = c.margins;
@@ -820,7 +922,7 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
                     // Same list numbers as the first layout: lay it out from the same counters.
                     let now = (std::mem::replace(&mut ctx.counters, tn.snap.0), std::mem::replace(&mut ctx.eq_count, tn.snap.1));
                     let b = layout_box(ctx, BoxInput::cell(story, &cell.blocks, &cpath, len, text, depth));
-                    (cell_items, across) = (b.items, b.height.max(b.floats_bottom));
+                    (cell_items, cell_foreground, across) = (b.items, b.foreground, b.height.max(b.floats_bottom));
                     (ctx.counters, ctx.eq_count) = now;
                 }
                 // Lines stack across the cell from its start edge (right for top-to-bottom text,
@@ -838,10 +940,23 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
                 for it in &mut cell_items {
                     it.turn(tn.turn, ox, oy);
                 }
+            } else if exact {
+                cell_items = fit_exact_cell(cell_items, span_h - c.margins[2], story);
             }
+            extend_foreground(&mut foreground, &cell_foreground, items.len());
             let content = items.len();
             for mut it in cell_items {
                 it.translate(0.0, dy);
+                if exact
+                    && c.h > span_h + 0.01
+                    && let Placed::Object { clip, .. } = &mut it
+                {
+                    let outer = Rect::new(c.x, 0.0, c.w, span_h);
+                    *clip = Some(clip.map_or(outer, |inner| {
+                        let (x, y) = (outer.x.max(inner.x), outer.y.max(inner.y));
+                        Rect::new(x, y, (outer.right().min(inner.right()) - x).max(0.0), (outer.bottom().min(inner.bottom()) - y).max(0.0))
+                    }));
+                }
                 items.push(it);
             }
             let align = (dy > 0.0).then_some(CellAlign { content: content..items.len(), valign: c.valign, dy, height: align_h });
@@ -853,17 +968,17 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
             let (hx0, hx1) = (x0 - half(b.left), x1 + half(b.right));
             let top_vis = c.vmerge != VMerge::Continue;
             if top_vis && let Some(e) = b.top.filter(Border::is_visible) {
-                items.push(Placed::Rule { x0: hx0, y0, x1: hx1, y1: y0, border: e });
+                items.push(Placed::Rule { x0: hx0, y0, x1: hx1, y1: y0, border: e, source: None });
             }
             let last_of_merge = c.vmerge == VMerge::None || !cont.get(ri + 1).is_some_and(|v| v.contains(&c.g));
             if last_of_merge && let Some(e) = b.bottom.filter(Border::is_visible) {
-                items.push(Placed::Rule { x0: hx0, y0: y1, x1: hx1, y1, border: e });
+                items.push(Placed::Rule { x0: hx0, y0: y1, x1: hx1, y1, border: e, source: None });
             }
             if let Some(e) = b.left.filter(Border::is_visible) {
-                items.push(Placed::Rule { x0, y0, x1: x0, y1, border: e });
+                items.push(Placed::Rule { x0, y0, x1: x0, y1, border: e, source: None });
             }
             if let Some(e) = b.right.filter(Border::is_visible) {
-                items.push(Placed::Rule { x0: x1, y0, x1, y1, border: e });
+                items.push(Placed::Rule { x0: x1, y0, x1, y1, border: e, source: None });
             }
             items.push(Placed::Cell {
                 rect: Rect::new(c.x, 0.0, c.w, if c.vmerge == VMerge::Continue { rh } else { span_h }),
@@ -875,11 +990,14 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
                 clip: exact && c.h > span_h + 0.01,
             });
             let top = c.margins[0] + c.borders.top.filter(Border::is_visible).map_or(0.0, |b| b.width.clamp(0.0, 12.0));
-            parts.push(CellPart { top, items: first..items.len(), end, align });
+            let merge = merge_key(t, ri, c.g);
+            parts.push(CellPart { top, items: first..items.len(), end, align, valign: c.valign, merge });
         }
         out.push(RowLayout {
             height: rh,
+            min_height: minimums.get(ri).copied().unwrap_or(0.0),
             items,
+            foreground,
             bottom: bottoms.get(ri).copied().unwrap_or(0.0),
             edge: edges.get(ri).copied().unwrap_or(0.0),
             cells: parts,
@@ -912,6 +1030,61 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
 /// Tables). Content of a cell aligned below the cut doesn't count.
 pub fn split_row_keeping_cells(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
     split_row_with(row, cut, true)
+}
+
+fn empty_cell_mark(item: &Placed, start: usize, para_count: usize) -> bool {
+    let Placed::Lines { para, l1, .. } = item else { return false };
+    if para_count > 1 || para.text_len != 0 || para.label.is_some() && (start..*l1).contains(&para.label_line()) {
+        return false;
+    }
+    if para.lines.get(start..*l1).is_some_and(|lines| {
+        lines.iter().any(|line| {
+            para.clusters
+                .get(line.c0..line.c1)
+                .is_some_and(|clusters| clusters.iter().any(|c| matches!(c.kind, crate::para::ClKind::Object(_)) && (c.adv > 0.0 || c.obj_h > 0.0)))
+        })
+    }) {
+        return false;
+    }
+    para.rp.borders.is_none_or(|b| {
+        !(start == 0 && b.top.is_some_and(|b| b.is_visible())
+            || *l1 == para.lines.len() && b.bottom.is_some_and(|b| b.is_visible())
+            || [b.left, b.right].into_iter().flatten().any(|b| b.is_visible()))
+    })
+}
+
+fn widow_defers_row(cells: &[std::borrow::Cow<'_, [Placed]>], splits: &[Vec<usize>], limit: f32) -> bool {
+    let fits = |bottom: f32| bottom <= limit + 0.01;
+    cells.iter().zip(splits).any(|(items, splits)| {
+        let first = items.iter().zip(splits).find_map(|(it, &split)| text_lines(it).map(|t| (t, split)));
+        let Some(((para, l0, l1, y), split)) = first else { return false };
+        split == l0
+            && para.rp.widow_control
+            && l1.saturating_sub(l0) > 1
+            && crate::item_bottom(y, para, l0, l1).is_some_and(|bottom| !fits(bottom))
+            && para.lines.get(l0).is_some_and(|l| fits(y + l.top - para.lines.get(l0).map_or(0.0, |f| f.top) + l.height))
+    })
+}
+
+fn record_item_range(map: &mut [std::ops::Range<usize>], source: usize, span: std::ops::Range<usize>) {
+    if let Some(range) = map.get_mut(source) {
+        *range = span;
+    }
+}
+
+fn row_rest_height(row: &RowLayout, cut: f32, ends: &[Option<f32>], moved: &[f32], shifts: &[f32]) -> (f32, f32) {
+    let full = (row.height - shifts.iter().copied().fold(f32::MAX, f32::min)).max(4.0);
+    let mut need = row.height - cut;
+    for ((end, &m), &s) in ends.iter().zip(moved).zip(shifts) {
+        if m < f32::MAX {
+            need = need.max(end.map_or(row.height, |e| e + row.bottom) - s);
+        }
+    }
+    // Word reapplies an at-least height on the continuation. Oversized minimums
+    // that cannot fit the first fragment keep their existing distributed height.
+    let min_height = if row.min_height <= cut + 0.01 { row.min_height } else { 0.0 };
+    let height = need.clamp(4.0, full).max(min_height);
+    (height, min_height)
 }
 
 fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLayout, RowLayout)> {
@@ -949,29 +1122,23 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
     // would fit there, takes the whole row on with it: Word doesn't leave the other cells behind
     // beside an empty one (observed with synthetic documents). Trailing space alone can move
     // the last paragraph without deferring the whole row.
-    for (items, splits) in cells.iter().zip(&splits) {
-        let first = items.iter().zip(splits).find_map(|(it, &split)| text_lines(it).map(|t| (t, split)));
-        if let Some(((para, l0, l1, y), split)) = first
-            && split == l0
-            && para.rp.widow_control
-            && l1.saturating_sub(l0) > 1
-            && crate::item_bottom(y, para, l0, l1).is_some_and(|bottom| !fits(bottom))
-            && para.lines.get(l0).is_some_and(|l| fits(y + l.top - para.lines.get(l0).map_or(0.0, |f| f.top) + l.height))
-        {
-            return None;
-        }
+    if widow_defers_row(&cells, &splits, limit) {
+        return None;
     }
     align_in_part(row, &mut cells, &splits, &realign, &mut ends, cut);
     // The top of the first thing that moves on in each cell.
+    let mut moved_content = false;
     let mut moved = vec![f32::MAX; cells.len()];
     // Whether each cell keeps anything on this page, and whether a line or picture of it that
     // moves on starts above the cut but runs below it (its space after aside).
     let mut kept_cells = vec![false; cells.len()];
     let mut cut_through = vec![false; cells.len()];
     for ((((items, splits), m), kept), through) in cells.iter().zip(&splits).zip(&mut moved).zip(&mut kept_cells).zip(&mut cut_through) {
+        let para_count = items.iter().filter(|it| text_lines(it).is_some()).take(2).count();
         for (it, &split) in items.iter().zip(splits) {
             let mut runs_over = |top: f32, bottom: f32| *through |= top < limit - 0.01 && bottom > limit + 0.01;
-            let top = if let Some(r) = it.turned_bounds() {
+            let turned = it.turned_bounds();
+            let top = if let Some(r) = turned {
                 // Turned text moves as a whole, like a picture.
                 if fits(r.bottom()) {
                     *kept = true;
@@ -1010,13 +1177,20 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
                 }
             };
             if let Some(top) = top {
+                // Turned lines move whole; ordinary lines count only the suffix past the cut.
+                let start = match it {
+                    Placed::Lines { l0, .. } if turned.is_some() => *l0,
+                    _ => split,
+                };
+                moved_content |= !empty_cell_mark(it, start, para_count);
                 *m = m.min(top);
             }
         }
     }
     let kept_any = kept_cells.iter().any(|&k| k);
     let first_moved = moved.iter().copied().fold(f32::MAX, f32::min);
-    if !kept_any || first_moved == f32::MAX {
+    // Single empty cell marks alone do not create a continuation fragment.
+    if !kept_any || !moved_content || first_moved == f32::MAX {
         return None;
     }
     // A cell left with nothing here because its first line or picture runs below the cut.
@@ -1027,23 +1201,20 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
     let shifts: Vec<f32> = moved.iter().zip(&row.cells).map(|(&m, c)| ((if m < f32::MAX { m } else { first_moved }) - c.top).max(0.0)).collect();
     // The continuation is as tall as the cell needing the most room (what it moves on and the
     // bottom margin, the rest of the row for turned text), and at least the rest of the row.
-    let full = (row.height - shifts.iter().copied().fold(f32::MAX, f32::min)).max(4.0);
-    let mut need = row.height - cut;
-    for ((end, &m), &s) in ends.iter().zip(&moved).zip(&shifts) {
-        if m < f32::MAX {
-            need = need.max(end.map_or(row.height, |e| e + row.bottom) - s);
-        }
-    }
-    let height = need.clamp(4.0, full);
+    let (height, min_height) = row_rest_height(row, cut, &ends, &moved, &shifts);
     // What runs to the row's bottom (cell areas, shading, side borders) ends at the
     // continuation's.
     let rest = (row.height - height).max(0.0);
     let geo_shift = |bottom: f32, shift: f32| if bottom >= row.height - 0.01 { rest } else { shift };
     let (mut a, mut b) = (Vec::new(), Vec::new());
+    let map_len = if row.foreground.is_empty() { 0 } else { row.items.len() };
+    let (mut map_a, mut map_b) = (vec![0..0; map_len], vec![0..0; map_len]);
     let mut parts = Vec::with_capacity(cells.len());
     for ((((c, items), splits), &shift), end) in row.cells.iter().zip(&cells).zip(&splits).zip(&shifts).zip(&ends) {
         let start = b.len();
-        for (it, &split) in items.iter().zip(splits) {
+        for (index, (it, &split)) in items.iter().zip(splits).enumerate() {
+            let source = c.items.start.saturating_add(index);
+            let (start_a, start_b) = (a.len(), b.len());
             if let Some(r) = it.turned_bounds() {
                 let mut it = it.clone();
                 if fits(r.bottom()) {
@@ -1052,6 +1223,8 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
                     it.translate(0.0, -shift);
                     b.push(it);
                 }
+                record_item_range(&mut map_a, source, start_a..a.len());
+                record_item_range(&mut map_b, source, start_b..b.len());
                 continue;
             }
             match it {
@@ -1098,10 +1271,10 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
                 }
                 // Shading and cell areas: the part above the cut stays, the rest moves up with the
                 // continuation (a nested table's cell below the cut moves whole).
-                Placed::Fill { rect, color } => {
+                Placed::Fill { rect, color, source } => {
                     let (above, below) = split_rect(*rect, cut, geo_shift(rect.bottom(), shift));
-                    a.extend(above.map(|rect| Placed::Fill { rect, color: *color }));
-                    b.extend(below.map(|rect| Placed::Fill { rect, color: *color }));
+                    a.extend(above.map(|rect| Placed::Fill { rect, color: *color, source: source.clone() }));
+                    b.extend(below.map(|rect| Placed::Fill { rect, color: *color, source: source.clone() }));
                 }
                 Placed::Cell { rect, covered, table, row: r, cell, story, clip } => {
                     let (above, below) = split_rect(*rect, cut, geo_shift(rect.bottom(), shift));
@@ -1110,39 +1283,64 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
                     a.extend(above.map(cell_at));
                     b.extend(below.map(cell_at));
                 }
-                Placed::Rule { x0, y0, x1, y1, border } => {
+                Placed::Rule { x0, y0, x1, y1, border, source } => {
                     if (y0 - y1).abs() < 0.01 {
                         // Horizontal: the top edge stays, the bottom edge moves; both fragments close.
                         if *y0 <= 0.01 {
                             a.push(it.clone());
-                            b.push(Placed::Rule { x0: *x0, y0: 0.0, x1: *x1, y1: 0.0, border: *border });
+                            b.push(Placed::Rule { x0: *x0, y0: 0.0, x1: *x1, y1: 0.0, border: *border, source: source.clone() });
                         } else if *y0 >= row.height - 0.01 {
-                            a.push(Placed::Rule { x0: *x0, y0: cut, x1: *x1, y1: cut, border: *border });
-                            b.push(Placed::Rule { x0: *x0, y0: y0 - rest, x1: *x1, y1: y1 - rest, border: *border });
+                            a.push(Placed::Rule { x0: *x0, y0: cut, x1: *x1, y1: cut, border: *border, source: source.clone() });
+                            b.push(Placed::Rule { x0: *x0, y0: y0 - rest, x1: *x1, y1: y1 - rest, border: *border, source: source.clone() });
                         } else if *y0 <= cut {
                             a.push(it.clone());
                         } else {
-                            b.push(Placed::Rule { x0: *x0, y0: y0 - shift, x1: *x1, y1: y1 - shift, border: *border });
+                            b.push(Placed::Rule { x0: *x0, y0: y0 - shift, x1: *x1, y1: y1 - shift, border: *border, source: source.clone() });
                         }
                     } else {
                         let (t, bt) = (y0.min(*y1), y0.max(*y1));
                         if t < cut {
-                            a.push(Placed::Rule { x0: *x0, y0: t, x1: *x1, y1: bt.min(cut), border: *border });
+                            a.push(Placed::Rule { x0: *x0, y0: t, x1: *x1, y1: bt.min(cut), border: *border, source: source.clone() });
                         }
                         if bt > cut {
                             let shift = geo_shift(bt, shift);
-                            b.push(Placed::Rule { x0: *x0, y0: (t - shift).max(0.0), x1: *x1, y1: bt - shift, border: *border });
+                            b.push(Placed::Rule {
+                                x0: *x0,
+                                y0: (t - shift).max(0.0),
+                                x1: *x1,
+                                y1: bt - shift,
+                                border: *border,
+                                source: source.clone(),
+                            });
                         }
                     }
                 }
             }
+            record_item_range(&mut map_a, source, start_a..a.len());
+            record_item_range(&mut map_b, source, start_b..b.len());
         }
-        parts.push(CellPart { top: c.top, items: start..b.len(), end: end.map(|e| e - shift), align: None });
+        parts.push(CellPart { top: c.top, items: start..b.len(), end: end.map(|e| e - shift), align: None, valign: c.valign, merge: c.merge });
     }
     // The part left on the page is placed and never split again.
     Some((
-        RowLayout { height: cut, items: a, bottom: row.bottom, edge: 0.0, cells: Vec::new() },
-        RowLayout { height, items: b, bottom: row.bottom, edge: row.edge, cells: parts },
+        RowLayout {
+            height: cut,
+            min_height: 0.0,
+            items: a,
+            foreground: remap_foreground(&row.foreground, &map_a),
+            bottom: row.bottom,
+            edge: 0.0,
+            cells: Vec::new(),
+        },
+        RowLayout {
+            height,
+            min_height,
+            items: b,
+            foreground: remap_foreground(&row.foreground, &map_b),
+            bottom: row.bottom,
+            edge: row.edge,
+            cells: parts,
+        },
     ))
 }
 
@@ -1313,6 +1511,7 @@ fn column_content(ctx: &mut Ctx, t: &Table, style: Option<&TableStyleProps>, dep
     let mut spanning = Vec::new();
     let mut any = false;
     for (ri, row) in t.rows.iter().enumerate() {
+        let margins_def = row_margins(row, margins_def);
         let mut g = row.first_grid();
         for cell in &row.cells {
             let span = cell.span();
@@ -1344,16 +1543,16 @@ fn column_content(ctx: &mut Ctx, t: &Table, style: Option<&TableStyleProps>, dep
     any.then_some(cols)
 }
 
-// Share a span's extra minimum in preferred-column proportions. Each column keeps
-// its own text minimum; automatic tables share the extra equally.
+// Share a span's extra minimum by unused preferred width, so a fitting span never
+// widens a column past its preference. Automatic tables share the extra equally.
 fn share_span_min(cols: &mut [(f32, f32)], grid: Option<&[f32]>, need: f32) {
     let extra = (need - cols.iter().map(|c| c.0).sum::<f32>()).max(0.0);
-    let weight = |w: &f32| if w.is_finite() { w.clamp(0.0, UNBOUNDED) } else { 0.0 };
-    let total = grid.map_or(0.0, |grid| grid.iter().take(cols.len()).map(weight).sum::<f32>());
+    let weight = |w: f32, min: f32| if w.is_finite() { (w.clamp(0.0, UNBOUNDED) - min).max(0.0) } else { 0.0 };
+    let total = grid.map_or(0.0, |grid| grid.iter().zip(cols.iter()).map(|(w, c)| weight(*w, c.0)).sum::<f32>());
     if total > 0.0 {
         if let Some(grid) = grid {
             for (c, w) in cols.iter_mut().zip(grid) {
-                c.0 += extra * weight(w) / total;
+                c.0 += extra * weight(*w, c.0) / total;
             }
         }
         return;
@@ -1387,12 +1586,14 @@ fn blocks_content(ctx: &mut Ctx, blocks: &Blocks, text: Option<&CellText>, depth
             // A nested table: its fixed width, else its columns' but at least its preferred width
             // (its own, else its grid's when it has preferred widths at all).
             Block::Table(nt) if depth < 8 => {
+                let style = table_style(ctx, nt);
+                let prepared = exact_width::prepare(nt, style.as_ref());
+                let nt = prepared.as_ref();
                 let grid = if is_automatic(nt) { 0.0 } else { nt.grid.iter().filter(|w| w.is_finite()).map(|w| w.max(0.0)).sum() };
                 let width = nt.props.width.filter(|w| w.is_finite()).unwrap_or(grid).clamp(0.0, UNBOUNDED);
                 if nt.props.fixed && width > 0.0 {
                     (width, width)
                 } else {
-                    let style = table_style(ctx, nt);
                     let weights = preferred_grid(nt, width);
                     let cols = column_content(ctx, nt, style.as_ref(), depth + 1, &weights).unwrap_or_default();
                     let (l, h) = cols.iter().fold((0.0, 0.0), |(l, h), c| (l + c.0, h + c.1));
@@ -1456,26 +1657,178 @@ fn is_automatic(t: &Table) -> bool {
         && t.rows.iter().all(|r| r.cells.iter().all(|c| c.props.width.is_none() && c.props.width_pct.is_none()))
 }
 
-/// Consistent cell widths replace a stale grid without changing the table's total width.
-/// Conflicting widths, spans and percentages need the full shared-grid algorithm.
-fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
-    let Some(first) = t.rows.first() else { return };
-    if first.cells.len() != grid.len() {
-        return;
+// Complete point-width rows can retain their proportions after a percentage table is resized.
+fn point_row_total(t: &Table, columns: usize) -> Option<f32> {
+    if t.props.fixed || !t.props.width_pct.is_some_and(|p| p.is_finite() && p > 0.0) {
+        return None;
     }
-    let widths: Option<Vec<f32>> = first.cells.iter().map(|c| c.props.width.filter(|w| w.is_finite() && *w > 0.0)).collect();
-    let Some(widths) = widths else { return };
+    for row in &t.rows {
+        if row.first_grid() != 0
+            || row.props.grid_after != 0
+            || row.cells.iter().fold(0usize, |n, cell| n.saturating_add(cell.span())) != columns
+            || row.cells.iter().any(|cell| cell.props.width_pct.is_some() || !cell.props.width.is_some_and(|w| w.is_finite() && w > 0.0))
+        {
+            return None;
+        }
+    }
+    let total: f32 = t.rows.first()?.cells.iter().filter_map(|cell| cell.props.width).sum();
+    (total.is_finite() && total > 0.0).then_some(total)
+}
+
+// Complete point rows constrain internal boundaries. A full-grid header adds no interior edge.
+fn title_point_widths(t: &Table, grid: &[f32]) -> Option<Vec<f32>> {
+    const WIDTH_EPSILON: f32 = 0.01;
+    const MIN_COMPLETE_ROWS: usize = 2;
+    if t.props.fixed || t.props.width_pct.is_some() || grid.is_empty() {
+        return None;
+    }
+    let target = t.props.width.filter(|w| w.is_finite() && *w > 0.0)?;
+    if grid.iter().any(|w| !w.is_finite() || *w <= 0.0) {
+        return None;
+    }
+    let grid_total: f32 = grid.iter().sum();
+    if !grid_total.is_finite() || (target - grid_total).abs() > WIDTH_EPSILON {
+        return None;
+    }
+    let headers = t.rows.iter().take_while(|row| row.props.header).count();
+    if headers == 0 {
+        return None;
+    }
+    let mut widths: Option<Vec<f32>> = None;
+    let mut complete = 0usize;
+    for row in &t.rows {
+        if row.first_grid() != 0 || row.props.grid_after != 0 {
+            return None;
+        }
+        let mut covered = 0usize;
+        for cell in &row.cells {
+            if cell.props.width_pct.is_some() || !cell.props.width.is_some_and(|w| w.is_finite() && w > 0.0) {
+                return None;
+            }
+            covered = covered.checked_add(cell.span())?;
+        }
+        if covered != grid.len() {
+            return None;
+        }
+        if row.cells.len() != grid.len() || row.cells.iter().any(|cell| cell.span() != 1) {
+            continue;
+        }
+        let candidate: Vec<_> = row.cells.iter().filter_map(|cell| cell.props.width).collect();
+        if let Some(previous) = &widths {
+            if previous.iter().zip(&candidate).any(|(a, b)| (a - b).abs() > WIDTH_EPSILON) {
+                return None;
+            }
+        } else {
+            widths = Some(candidate);
+        }
+        complete += 1;
+    }
+    if complete < MIN_COMPLETE_ROWS {
+        return None;
+    }
+    let widths = widths?;
     let total: f32 = widths.iter().sum();
-    if !total.is_finite() || (total - grid.iter().sum::<f32>()).abs() > 0.01 {
+    if !total.is_finite() || total <= 0.0 {
+        return None;
+    }
+    let mut undersized_title = false;
+    for (index, row) in t.rows.iter().enumerate() {
+        let mut start = 0usize;
+        let mut declared = 0.0f32;
+        for cell in &row.cells {
+            let end = start.checked_add(cell.span())?;
+            let expected: f32 = widths.get(start..end)?.iter().sum();
+            let width = cell.props.width?;
+            if index < headers && row.cells.len() == 1 && cell.span() == grid.len() {
+                if width > total + WIDTH_EPSILON {
+                    return None;
+                }
+                undersized_title |= width + WIDTH_EPSILON < total;
+            } else {
+                declared += width;
+                let boundary: f32 = widths.get(..end)?.iter().sum();
+                if !declared.is_finite() || (width - expected).abs() > WIDTH_EPSILON || (declared - boundary).abs() > WIDTH_EPSILON {
+                    return None;
+                }
+            }
+            start = end;
+        }
+    }
+    undersized_title.then_some(widths)
+}
+
+/// Consistent cell boundaries replace a stale grid without changing its total width.
+/// Every boundary must be declared; missing or conflicting preferences keep the grid.
+fn apply_cell_widths(t: &Table, grid: &mut [f32]) {
+    if let Some(widths) = title_point_widths(t, grid) {
+        grid.copy_from_slice(&widths);
         return;
     }
-    if t.rows.iter().any(|r| {
-        r.cells.len() != grid.len()
-            || r.cells.iter().zip(&widths).any(|(c, w)| c.span() != 1 || c.props.width_pct.is_some() || c.props.width != Some(*w))
-    }) {
+    const WIDTH_EPSILON: f32 = 0.01;
+    let total: f32 = grid.iter().sum();
+    if grid.is_empty() || !total.is_finite() {
         return;
     }
-    grid.copy_from_slice(&widths);
+    let total = point_row_total(t, grid.len()).unwrap_or(total);
+    let mut edges = vec![None; grid.len() + 1];
+    edges[0] = Some(0.0);
+    edges[grid.len()] = Some(total);
+    for row in &t.rows {
+        let Some(pct_total) = rounded_pct_total(row, grid.len()) else { return };
+        let (mut g, mut x) = (0usize, 0.0f32);
+        for cell in &row.cells {
+            let width = match (cell.props.width_pct, cell.props.width) {
+                (Some(pct), _) => total * pct / pct_total,
+                (_, Some(width)) => width,
+                _ => return,
+            };
+            if !width.is_finite() || width <= 0.0 {
+                return;
+            }
+            if cell.props.width_pct.is_some()
+                && cell.props.width.is_some_and(|absolute| !absolute.is_finite() || (absolute - width).abs() > WIDTH_EPSILON)
+            {
+                return;
+            }
+            g = g.saturating_add(cell.span());
+            x += width;
+            let Some(edge) = edges.get_mut(g) else { return };
+            if !x.is_finite() || edge.is_some_and(|previous: f32| (previous - x).abs() > WIDTH_EPSILON) {
+                return;
+            }
+            if edge.is_none() {
+                *edge = Some(x);
+            }
+        }
+        if g != grid.len() {
+            return;
+        }
+    }
+    let widths: Option<Vec<f32>> = edges.windows(2).map(|pair| Some(pair[1]? - pair[0]?)).collect();
+    if let Some(widths) = widths.filter(|widths| widths.iter().all(|w| *w > 0.0)) {
+        grid.copy_from_slice(&widths);
+    }
+}
+
+// Word retains a complete percentage row rounded down by one OOXML fiftieth-percent unit.
+// Normalize that remainder before solving shared boundaries; real conflicts still reject the row.
+fn rounded_pct_total(row: &Row, columns: usize) -> Option<f32> {
+    const PERCENT_TOTAL: f64 = 100.0;
+    const OOXML_PCT_UNIT: f64 = 1.0 / 50.0;
+    if row.cells.iter().fold(0usize, |n, c| n.saturating_add(c.span())) != columns {
+        return Some(PERCENT_TOTAL as f32);
+    }
+    let total = row.cells.iter().try_fold((0.0, 0.0), |(sum, error), cell| {
+        let pct = cell.props.width_pct.filter(|p| p.is_finite() && *p > 0.0)?;
+        // Only the representation error of the supplied f32 values may cross the unit bound.
+        let step = if pct.next_up().is_finite() { f64::from(pct.next_up()) - f64::from(pct) } else { f64::from(pct) - f64::from(pct.next_down()) };
+        Some((sum + f64::from(pct), error + step / 2.0))
+    });
+    match total {
+        Some((sum, error)) if PERCENT_TOTAL - sum > error && PERCENT_TOTAL - sum <= OOXML_PCT_UNIT + error => Some(sum as f32),
+        Some((sum, error)) if (PERCENT_TOTAL - sum).abs() > error => None,
+        _ => Some(PERCENT_TOTAL as f32),
+    }
 }
 
 /// Word's autofit for a table whose widths may follow its content (`tblLayout` not fixed).
@@ -1550,5 +1903,216 @@ mod width_tests {
         let mut grid = [30.0, 40.0, 50.0];
         autofit(&mut grid, &[(10.0, 10.0), (20.0, 20.0), (30.0, 30.0)], &table, 120.0);
         assert_eq!(grid, [30.0, 40.0, 50.0]);
+    }
+}
+
+#[cfg(test)]
+mod cell_width_tests {
+    use super::*;
+
+    fn merged_width_table() -> Table {
+        let mut table = Table::new(3, 4, 400.0);
+        let rows = [vec![(4, 400.0)], vec![(2, 150.0), (1, 200.0), (1, 50.0)], vec![(1, 60.0), (1, 90.0), (2, 250.0)]];
+        for (row, widths) in table.rows.iter_mut().zip(rows) {
+            row.cells.truncate(widths.len());
+            for (cell, (span, width)) in row.cells.iter_mut().zip(widths) {
+                cell.props.span = span;
+                cell.props.width = Some(width);
+            }
+        }
+        table
+    }
+
+    #[test]
+    fn merged_rows_replace_stale_grid() {
+        let table = merged_width_table();
+        let mut grid = table.grid.clone();
+        apply_cell_widths(&table, &mut grid);
+        assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+    }
+
+    #[test]
+    fn percent_rows_replace_grid() {
+        let mut table = merged_width_table();
+        for cell in table.rows.iter_mut().flat_map(|row| &mut row.cells) {
+            cell.props.width_pct = cell.props.width.map(|width| width / 4.0);
+            cell.props.width = None;
+        }
+        let mut grid = table.grid.clone();
+        apply_cell_widths(&table, &mut grid);
+        assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+
+        table.rows[1].cells[0].props.width_pct = None;
+        table.rows[1].cells[0].props.width = Some(150.0);
+        grid.copy_from_slice(&table.grid);
+        apply_cell_widths(&table, &mut grid);
+        assert_eq!(grid, [60.0, 90.0, 200.0, 50.0]);
+    }
+
+    fn rounded_width_table() -> Table {
+        let mut table = Table::new(3, 6, 468.0);
+        table.grid = vec![25.0, 25.0, 30.0, 300.0, 44.0, 44.0];
+        for row in &mut table.rows {
+            for (cell, pct) in row.cells.iter_mut().zip([18.58, 7.28, 16.04, 18.36, 17.38, 22.34]) {
+                cell.props.width = None;
+                cell.props.width_pct = Some(pct);
+            }
+        }
+        table
+    }
+
+    #[test]
+    fn rounded_percent_rows_fit() {
+        for total in [468.0, 422.05, 1584.0] {
+            let table = rounded_width_table();
+            let mut grid: Vec<_> = table.grid.iter().map(|width| width * total / 468.0).collect();
+            apply_cell_widths(&table, &mut grid);
+            for (width, pct) in grid.iter().zip([18.58, 7.28, 16.04, 18.36, 17.38, 22.34]) {
+                assert!((width - total * pct / 99.98).abs() < 0.01, "{grid:?}");
+            }
+            assert!((grid.iter().sum::<f32>() - total).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn rounded_spans_share_edges() {
+        let mut table = rounded_width_table();
+        table.rows[0].cells.remove(1);
+        table.rows[0].cells[0].props.span = 2;
+        table.rows[0].cells[0].props.width_pct = Some(25.86);
+        let mut grid = table.grid.clone();
+        apply_cell_widths(&table, &mut grid);
+        assert!((grid[0] - 468.0 * 18.58 / 99.98).abs() < 0.01);
+        assert!((grid[1] - 468.0 * 7.28 / 99.98).abs() < 0.01);
+    }
+
+    #[test]
+    fn rounding_has_one_unit_limit() {
+        for (first, expected) in [
+            (18.58, Some(99.98)),
+            (18.5801, Some(99.9801)),
+            (18.599998, Some(100.0)),
+            (18.57999, None),
+            (18.5799, None),
+            (18.56, None),
+            (18.62, None),
+        ] {
+            let mut table = rounded_width_table();
+            table.rows[0].cells[0].props.width_pct = Some(first);
+            let total = rounded_pct_total(&table.rows[0], 6);
+            assert_eq!(total.is_some(), expected.is_some(), "first {first}: {total:?}");
+            if let (Some(actual), Some(expected)) = (total, expected) {
+                assert!((actual - expected).abs() < 0.00002, "first {first}: {actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_preferences_must_agree() {
+        for offset in [0.0, 2.0, f32::NAN] {
+            let mut table = rounded_width_table();
+            table.rows[0].cells[0].props.width = Some(468.0 * 18.58 / 99.98 + offset);
+            let mut grid = table.grid.clone();
+            apply_cell_widths(&table, &mut grid);
+            if offset == 0.0 {
+                assert!((grid[0] - 468.0 * 18.58 / 99.98).abs() < 0.01);
+            } else {
+                assert_eq!(grid, table.grid, "conflicting or invalid absolute width keeps the grid");
+            }
+        }
+    }
+
+    #[test]
+    fn overfull_percent_rows_keep_grid() {
+        for total in [1.0, 100.0, 468.0, 1000.0] {
+            let mut table = Table::new(2, 2, total);
+            for cell in table.rows.iter_mut().flat_map(|row| &mut row.cells) {
+                cell.props.width = None;
+                cell.props.width_pct = Some(50.001);
+            }
+            let mut grid = table.grid.clone();
+            apply_cell_widths(&table, &mut grid);
+            assert_eq!(grid, table.grid, "width {total}");
+        }
+    }
+
+    #[test]
+    fn percent_roundoff_keeps_widths() {
+        let mut table = Table::new(2, 3, 468.0);
+        let percentages = [33.34, 33.32, 33.34];
+        for row in &mut table.rows {
+            for (cell, pct) in row.cells.iter_mut().zip(percentages) {
+                cell.props.width = None;
+                cell.props.width_pct = Some(pct);
+            }
+        }
+        let mut grid = table.grid.clone();
+        apply_cell_widths(&table, &mut grid);
+        for (width, pct) in grid.iter().zip(percentages) {
+            assert!((width - 468.0 * pct / 100.0).abs() < 0.0001, "{grid:?}");
+        }
+        assert_ne!(grid, table.grid);
+    }
+
+    #[test]
+    fn rounding_keeps_conflict_guard() {
+        for case in 0..8 {
+            let mut table = rounded_width_table();
+            match case {
+                0 => table.rows[1].cells[0].props.width_pct = Some(18.56),
+                1 => table.rows[1].cells[0].props.width_pct = Some(18.60),
+                2 => table.rows[1].cells[0].props.width_pct = Some(f32::NAN),
+                3 => table.rows[1].cells[0].props.width_pct = None,
+                4 => table.rows[1].cells[0].props.width_pct = Some(0.0),
+                5 => table.rows[1].cells[0].props.span = 2,
+                6 => {
+                    table.rows[1].cells[0].props.width_pct = Some(19.58);
+                    table.rows[1].cells[3].props.width_pct = Some(17.36);
+                }
+                _ => table.rows.iter_mut().for_each(|row| row.cells[0].props.width_pct = Some(18.5799)),
+            }
+            let mut grid = table.grid.clone();
+            apply_cell_widths(&table, &mut grid);
+            assert_eq!(grid, table.grid, "case {case}");
+        }
+    }
+
+    #[test]
+    fn uncertain_widths_keep_grid() {
+        for case in 0..7 {
+            let mut table = merged_width_table();
+            match case {
+                0 => {
+                    table.rows[2].cells[1].props.width = Some(95.0);
+                    table.rows[2].cells[2].props.width = Some(245.0);
+                }
+                1 => table.rows[2].cells[1].props.width = None,
+                2 => table.rows[2].cells[1].props.width_pct = Some(20.0),
+                3 => table.rows.truncate(2),
+                4 => table.rows[2].cells[1].props.span = 2,
+                5 => table.rows[2].cells[1].props.width = Some(0.0),
+                _ => table.rows[2].cells[1].props.width = Some(f32::NAN),
+            }
+            let mut grid = table.grid.clone();
+            apply_cell_widths(&table, &mut grid);
+            assert_eq!(grid, table.grid, "case {case}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod restored_span_controls {
+    use super::*;
+
+    #[test]
+    fn span_respects_column_capacity() {
+        let grid = [150.0, 100.0, 25.0, 25.0];
+        let mut content = [(10.0, 10.0); 4];
+        share_span_min(&mut content, Some(&grid), 300.0);
+        assert!((content.iter().map(|c| c.0).sum::<f32>() - 300.0).abs() < 0.01);
+        for (cell, width) in content.iter().zip(grid) {
+            assert!(cell.0 <= width + 0.01, "minimum {} exceeds fitting column {width}", cell.0);
+            assert!(cell.0 >= 10.0);
+        }
     }
 }

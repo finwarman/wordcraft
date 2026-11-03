@@ -1,4 +1,5 @@
 use super::super::toc::toc_entry_style;
+use super::super::*;
 use super::*;
 use wordcraft_doc::{Document, SectionProps};
 
@@ -236,6 +237,58 @@ fn content_locks_survive_import() {
             assert_eq!(serde_json::to_value(refresh_doc(imported).unwrap().doc).unwrap(), before);
         }
     }
+}
+
+fn gallery_control(doc: &mut Document, lock: wordcraft_doc::control::ControlLock) {
+    use wordcraft_doc::control::{ContentControl, ControlKind};
+    let kind = ControlKind::Gallery { list: false, gallery: "Table of Contents".into(), category: String::new(), unique: false };
+    let control = ContentControl { block: true, lock, ..ContentControl::new(kind) };
+    doc.para_mut(StoryRef::Body, &Path::top(0))
+        .unwrap()
+        .insert_object(0, InlineObject::ControlStart { control: Box::new(control) }, &CharProps::default())
+        .unwrap();
+    let end = doc.para_mut(StoryRef::Body, &Path::top(2)).unwrap();
+    end.insert_object(end.len(), InlineObject::ControlEnd, &CharProps::default()).unwrap();
+}
+
+#[test]
+fn gallery_toc_refreshes() {
+    use wordcraft_doc::control::ControlLock;
+    let mut doc = control();
+    gallery_control(&mut doc, ControlLock::Unlocked);
+    let imported = wordcraft_docx::read(&wordcraft_docx::write(&doc).unwrap()).unwrap();
+    assert_eq!(imported.control_ranges(StoryRef::Body).len(), 1);
+    let before = serde_json::to_value(&imported).unwrap();
+    let session = refresh_doc(imported.clone()).unwrap();
+    assert!(session.doc.plain_text(StoryRef::Body).contains("Included\t1"));
+    assert!(!session.doc.plain_text(StoryRef::Body).contains("Stale entry"));
+    assert_eq!(session.doc.sections(), imported.sections());
+    assert_eq!(serde_json::to_value(&imported).unwrap(), before);
+}
+
+#[test]
+fn gallery_locked_toc_is_kept() {
+    use wordcraft_doc::control::ControlLock;
+    for lock in [ControlLock::Unlocked, ControlLock::SdtLocked, ControlLock::ContentLocked, ControlLock::SdtContentLocked] {
+        let mut doc = control();
+        gallery_control(&mut doc, lock);
+        if let InlineObject::FieldStart { locked, .. } = &mut doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().objects[0] {
+            *locked = true;
+        }
+        let before = serde_json::to_value(&doc).unwrap();
+        assert_eq!(serde_json::to_value(refresh_doc(doc).unwrap().doc).unwrap(), before);
+    }
+}
+
+#[test]
+fn gallery_outside_toc_is_kept() {
+    use wordcraft_doc::control::ControlLock;
+    let mut doc = control();
+    gallery_control(&mut doc, ControlLock::Unlocked);
+    doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().objects[0] =
+        InlineObject::FieldStart { instr: r#"TOC \c "Figure""#.into(), locked: false, dirty: false };
+    let before = serde_json::to_value(&doc).unwrap();
+    assert_eq!(serde_json::to_value(refresh_doc(doc).unwrap().doc).unwrap(), before);
 }
 
 #[test]
