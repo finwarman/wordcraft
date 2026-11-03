@@ -547,3 +547,66 @@ fn spaced_style_fallback_is_bounded() {
     session.doc.styles.get_mut("TOC 3").unwrap().kind = wordcraft_doc::styles::StyleKind::Character;
     assert_eq!(toc_entry_style(&session, 3), "TOC3", "character styles are not admitted");
 }
+
+#[test]
+fn preceding_blank_is_reused() {
+    for (text, expected_start) in [("", 0), ("Introduction", 1)] {
+        let mut doc = control();
+        let preceding = doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+        preceding.delete(0, preceding.len()).unwrap();
+        preceding.insert_text(0, text, &CharProps::default()).unwrap();
+        preceding.props.style = None;
+        let sections: Vec<_> = doc.sections().into_iter().map(|(_, section)| section.clone()).collect();
+        let session = refresh_doc(doc).unwrap();
+        assert_eq!(toc_range(&session), Some((expected_start, expected_start + 1)));
+        assert_eq!(session.doc.sections().into_iter().map(|(_, section)| section.clone()).collect::<Vec<_>>(), sections);
+        assert!(session.doc.plain_text(StoryRef::Body).contains("Excluded"));
+    }
+}
+
+#[test]
+fn toc_tail_keeps_page_break() {
+    for (text, end_index, heading_index) in [("Contents\nStale entry\nIncluded", 1, 2), ("Contents\nStale entry\n\nIncluded", 2, 3)] {
+        let mut doc = Document::from_text(text);
+        doc.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props.style = Some("TOCHeading".into());
+        let entry = doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap();
+        entry.props.style = Some("TOC1".into());
+        entry
+            .insert_object(0, InlineObject::FieldStart { instr: r#"TOC \o "1-1""#.into(), locked: false, dirty: false }, &CharProps::default())
+            .unwrap();
+        let end = doc.para_mut(StoryRef::Body, &Path::top(end_index)).unwrap();
+        end.props.style = Some("TOC1".into());
+        end.insert_object(end.len(), InlineObject::FieldEnd, &CharProps::default()).unwrap();
+        end.insert_text(end.len(), "\u{000c}", &CharProps::default()).unwrap();
+        doc.para_mut(StoryRef::Body, &Path::top(heading_index)).unwrap().props.style = Some("Heading1".into());
+        let session = refresh_doc(doc).unwrap();
+        let heading = session
+            .doc
+            .para_paths(StoryRef::Body)
+            .into_iter()
+            .find(|p| session.doc.para(StoryRef::Body, p).unwrap().plain_text() == "Included")
+            .unwrap();
+        let print = crate::print_fields::prepare(&session.doc, &Default::default()).unwrap();
+        let caret = print.layout.caret(&Pos::new(StoryRef::Body, heading, 0)).unwrap();
+        assert_eq!(caret.page, 1, "the break after the refreshed TOC remains before its heading");
+        assert_eq!(print.layout.pages.len(), 2);
+    }
+}
+
+#[test]
+fn toc_uses_section_page_format() {
+    use wordcraft_doc::section::NumFormat;
+    for (format, label) in [(NumFormat::UpperLetter, "A"), (NumFormat::LowerRoman, "i")] {
+        for instruction in [r#"TOC \o "1-2""#, r#"TOC \o "1-2" \h"#] {
+            let mut doc = control();
+            doc.last_section.page_num_format = format;
+            if let InlineObject::FieldStart { instr, .. } = &mut doc.para_mut(StoryRef::Body, &Path::top(1)).unwrap().objects[0] {
+                *instr = instruction.into();
+            }
+            let session = refresh_doc(doc).unwrap();
+            let (start, _) = toc_range(&session).unwrap();
+            let print = crate::print_fields::prepare(&session.doc, &Default::default()).unwrap();
+            assert_eq!(print.doc.body[start + 1].as_para().unwrap().plain_text(), format!("Included\t{label}"));
+        }
+    }
+}

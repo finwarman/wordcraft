@@ -81,6 +81,10 @@ fn supported_tail(para: &Paragraph, end: &Pos) -> bool {
         && matches!(para.objects.as_slice(), [InlineObject::FieldEnd, InlineObject::BookmarkStart { name }, InlineObject::BookmarkEnd { name: other }] if !name.is_empty() && name == other)
 }
 
+fn toc_break_tail(para: &Paragraph, tail: &str) -> bool {
+    para.section.is_none() && tail == "\u{000c}" && para.props.style.as_deref().is_some_and(|style| style.starts_with("TOC") && style != "TOCHeading")
+}
+
 fn internal_link_cache(object: &InlineObject) -> bool {
     let InlineObject::Field { instr, locked: false, code: false, form, .. } = object else { return false };
     if instr.len() > MAX_INSTRUCTION_BYTES || !form.is_empty() {
@@ -170,7 +174,7 @@ fn admit(s: &Session) -> Result<Admission, CmdError> {
         let para = s.doc.para_at(end).ok_or_else(|| failed("TOC end paragraph is missing"))?;
         let after = end.off.checked_add(OBJ.len_utf8()).ok_or_else(|| failed("TOC field offset overflow"))?;
         let tail = para.text.get(after..).ok_or_else(|| failed("TOC field end is invalid"))?;
-        if !tail.is_empty() && !supported_tail(para, end) {
+        if !tail.is_empty() && !supported_tail(para, end) && !toc_break_tail(para, tail) {
             return Err(failed("text after the TOC field end is unsupported"));
         }
         if !tail.is_empty() || para.section.is_some() {
@@ -234,7 +238,7 @@ fn admit(s: &Session) -> Result<Admission, CmdError> {
             return Err(failed("hidden or deleted TOC headings are unsupported"));
         }
     }
-    let moves_to_heading = end.is_some()
+    let moves_to_previous = end.is_some()
         && at.off == 0
         && at
             .path
@@ -242,9 +246,9 @@ fn admit(s: &Session) -> Result<Admission, CmdError> {
             .checked_sub(1)
             .and_then(|i| s.doc.body.get(i))
             .and_then(|block| block.as_para())
-            .is_some_and(|para| para.props.style.as_deref() == Some("TOCHeading"));
-    let start = at.path.last().saturating_sub(usize::from(moves_to_heading));
-    if moves_to_heading && s.doc.body.get(start).and_then(|block| block.as_para()).is_some_and(|para| para.section.is_some()) {
+            .is_some_and(|para| para.props.style.as_deref() == Some("TOCHeading") || para.is_empty() && para.objects.is_empty());
+    let start = at.path.last().saturating_sub(usize::from(moves_to_previous));
+    if moves_to_previous && s.doc.body.get(start).and_then(|block| block.as_para()).is_some_and(|para| para.section.is_some()) {
         return Err(failed("TOC heading ends a different section"));
     }
     Ok(Admission::Refresh(Table { start, code, split_end }))
@@ -303,7 +307,13 @@ pub(super) fn refresh(s: &mut Session, v: &Value) -> CmdResult {
         let mark = s.doc.para_at(&end).ok_or_else(|| failed("TOC end paragraph is missing"))?.mark.clone();
         let off = end.off.checked_add(OBJ.len_utf8()).ok_or_else(|| failed("TOC field offset overflow"))?;
         let tail = s.doc.split_paragraph(&Pos { off, ..end })?;
-        s.doc.para_mut(tail.story, &tail.path)?.mark = mark;
+        let para = s.doc.para_mut(tail.story, &tail.path)?;
+        para.mark = mark;
+        if para.text == "\u{000c}" && para.props.style.as_deref().is_some_and(|style| style.starts_with("TOC") && style != "TOCHeading") {
+            // A detached page break is not an entry for the TOC generator to replace.
+            para.props.style = None;
+            para.touch();
+        }
     }
     update_toc(s)?;
     if s.doc.sections().into_iter().map(|(_, section)| section.clone()).collect::<Vec<_>>() != sections {
@@ -328,10 +338,10 @@ pub(super) fn refresh(s: &mut Session, v: &Value) -> CmdResult {
             .layout
             .caret(&Pos::new(StoryRef::Body, entry.path.clone(), entry.lead))
             .and_then(|caret| print.layout.pages.get(caret.page))
-            .map(|page| page.number)
             .ok_or_else(|| failed("TOC heading has no printed page"))?;
+        let label = sections.get(page.section).map_or_else(|| page.number.to_string(), |section| section.page_num_format.format(page.number));
         let show_page = no_pages.is_none_or(|(a, b)| !(a..=b).contains(&(entry.level + 1)));
-        let expected = if show_page { format!("{}{sep}{page}", entry.text) } else { entry.text.clone() };
+        let expected = if show_page { format!("{}{sep}{label}", entry.text) } else { entry.text.clone() };
         if printed.doc.body.get(start + 1 + i).and_then(|block| block.as_para()).is_none_or(|para| para.plain_text() != expected) {
             return Err(failed("TOC page numbers did not settle in the final print layout"));
         }

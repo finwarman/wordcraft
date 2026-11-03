@@ -24,6 +24,8 @@ clearance, floating text-box auto-fit, arbitrary-angle text rotation and table
 shading below shared borders.
 A first-cell paragraph with page break before moves its whole in-flow table
 to the next page, unless the table already starts at the page top.
+PDF TOC refresh accepts an updater-reused blank paragraph and retains a page
+break after the last TOC entry. Lettered and Roman page labels follow their sections.
 The private report qualification covers rendering and content retention; it
 does not claim pixel-identical Word layout. The server renderer is pinned
 separately by its consumer.
