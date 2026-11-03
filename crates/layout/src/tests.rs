@@ -2132,12 +2132,12 @@ fn turned_lines(l: &DocLayout) -> &Placed {
     l.pages[0].items.iter().find(|it| matches!(it, Placed::Lines { path, .. } if path.0 == [1, 0, 1, 0])).unwrap()
 }
 
-/// Table Layout › Text Direction (#226): turned cell text runs along the cell's height, the row
-/// grows to fit it, and caret, clicks and drawing follow the turn.
+/// Table Layout › Text Direction (#226): turned cell text runs along a fixed-height cell,
+/// and caret, clicks and drawing follow the turn.
 #[test]
 fn turned_cell_text_runs_down_the_cell() {
     let text = "Turned cell text";
-    let d = turned_table(TextDirection::Down, text, None);
+    let d = turned_table(TextDirection::Down, text, Some(120.0));
     let l = lay(&d);
     let it = turned_lines(&l);
     assert!(matches!(it, Placed::Lines { turn: TextDirection::Down, l0: 0, l1: 1, .. }), "one unwrapped line: {it:?}");
@@ -2145,7 +2145,7 @@ fn turned_cell_text_runs_down_the_cell() {
     // Tall and narrow, against the cell's right edge (cell 2 spans x 228..384, 5.4pt margins).
     assert!(b.h > 60.0 && b.w < 20.0, "{b:?}");
     assert!((b.right() - (72.0 + 312.0 - 5.4)).abs() < 1.0 && b.x > 72.0 + 156.0, "{b:?}");
-    // The row grew to hold the text: the next paragraph starts below it.
+    // The next paragraph starts below the fixed-height row.
     let after = l.caret(&Pos::body(2, 0)).unwrap();
     assert!(after.top > b.bottom(), "{after:?} vs {b:?}");
     let cell = l.pages[0].items.iter().find_map(|i| if let Placed::Cell { rect, cell: 1, .. } = i { Some(*rect) } else { None }).unwrap();
@@ -2175,7 +2175,7 @@ fn turned_cell_text_runs_down_the_cell() {
 #[test]
 fn turned_up_cell_text_reads_bottom_to_top() {
     let text = "Bottom to top";
-    let d = turned_table(TextDirection::Up, text, None);
+    let d = turned_table(TextDirection::Up, text, Some(120.0));
     let l = lay(&d);
     let b = turned_lines(&l).turned_bounds().unwrap();
     // Against the cell's left edge; the text starts at the bottom and climbs.

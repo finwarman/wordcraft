@@ -84,6 +84,8 @@ struct Turned {
     ci: usize,
     /// Top margin plus top border band.
     top: f32,
+    /// Top and bottom margins plus border bands.
+    insets: f32,
 }
 
 /// The number of grid columns of `t` ([`Table::cols`]), which walks every row (each row counted
@@ -656,11 +658,14 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             } else if turn.is_turned() {
                 collapsed = false;
                 // Turned text: its lines run along the cell's height. An exact row height sets
-                // their length; otherwise they get the length the text needs unwrapped and the row
-                // grows to fit (the second pass lays them out again if the row ends up taller).
+                // their length. A minimum height also wraps text; otherwise they get the length
+                // the text needs unwrapped (the second pass lays them out again if the row grows).
                 let snap = (ctx.counters.clone(), ctx.eq_count);
-                let len = match (row.props.height, row.props.height_rule) {
-                    (Some(h), HeightRule::Exact) if h > 0.0 => (h + row_bottom - insets).clamp(4.0, TURNED_LIMIT),
+                let preferred = row.props.height.filter(|h| h.is_finite() && *h > 0.0).map(|h| h.clamp(4.0, TURNED_LIMIT));
+                let wrapped = preferred.filter(|_| row.props.height_rule == HeightRule::AtLeast);
+                let len = match (row.props.height, row.props.height_rule, wrapped) {
+                    (Some(h), HeightRule::Exact, _) if h > 0.0 => (h + row_bottom - insets).clamp(4.0, TURNED_LIMIT),
+                    (_, _, Some(h)) => h,
                     _ => {
                         let probe = layout_box(ctx, BoxInput::cell(story, &cell.blocks, &cpath, TURNED_MAX, text, depth)).items;
                         (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
@@ -669,8 +674,10 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 };
                 let BoxLayout { items, height, floats_bottom, .. } = layout_box(ctx, BoxInput::cell(story, &cell.blocks, &cpath, len, text, depth));
                 let across = height.max(floats_bottom);
-                turned = Some(Turned { turn, len, across, snap, region, ci, top: margins[0] + band_t });
-                (items, len)
+                turned = Some(Turned { turn, len, across, snap, region, ci, top: margins[0] + band_t, insets });
+                // Automatic rows take the unturned line height, not the string's advance.
+                let h = if preferred.is_none() { across } else { len };
+                (items, h)
             } else {
                 let BoxLayout { mut items, mut height, floats_bottom, last_top, .. } =
                     layout_box(ctx, BoxInput::cell(story, &cell.blocks, &cpath, cw, text, depth));
@@ -831,7 +838,7 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
                 dy = 0.0;
                 let m = c.margins;
                 // The lines run the cell's whole height (laid out again if the row grew).
-                let len = (span_h - (c.h - tn.len)).clamp(4.0, TURNED_LIMIT);
+                let len = (span_h - tn.insets).clamp(4.0, TURNED_LIMIT);
                 let mut across = tn.across;
                 if (len - tn.len).abs() > 0.01
                     && let Some(cell) = t.rows.get(ri).and_then(|r| r.cells.get(tn.ci))
