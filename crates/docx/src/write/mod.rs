@@ -717,9 +717,16 @@ fn styles_xml(doc: &Document) -> Vec<u8> {
     w.close("w:rPr");
     w.close("w:rPrDefault");
     if s.default_para_present || s.default_para != wordcraft_doc::props::ParaProps::default() {
+        let mut defaults = s.default_para.clone();
+        if !s.default_para_present {
+            // The first edit makes inherited application defaults explicit too.
+            let mut inherited = wordcraft_doc::styles::StyleSheet::default().default_para;
+            inherited.overlay(&defaults);
+            defaults = inherited;
+        }
         w.open("w:pPrDefault", &[]);
         w.open("w:pPr", &[]);
-        props::ppr_inner(&mut w, &s.default_para, false, None);
+        props::ppr_inner(&mut w, &defaults, false, None);
         w.close("w:pPr");
         w.close("w:pPrDefault");
     }

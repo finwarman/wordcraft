@@ -1603,14 +1603,15 @@ mod tests {
     #[test]
     fn legacy_font_effects_are_drawn() {
         use wordcraft_doc::CharProps;
-        // Dark and grey pixel counts, and the grey pixels' mean offset from the dark ones.
+        use wordcraft_doc::wordart::{TextEffects, TextFill};
+        // Count visible ink, but measure offsets before the letters occlude their shadow.
         let shot = |c: CharProps| {
             let mut d = Document::from_text("x");
             let cp = CharProps { size: Some(40.0), bold: Some(true), ..c };
             d.body = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("HHHH", cp))];
             let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions::default());
             let img = render_page(&d, &l.pages[0], 2.0, &RenderOptions::default());
-            let (mut dark, mut grey) = ((0.0, 0.0, 0.0f64), (0.0, 0.0, 0.0f64));
+            let (mut dark, mut grey) = (0.0, 0.0);
             for (x, y) in (100..800).flat_map(|x| (100..300).map(move |y| (x, y))) {
                 let v = img.pixel(x, y)[0];
                 let acc = match v {
@@ -1618,11 +1619,31 @@ mod tests {
                     100..=160 => &mut grey,
                     _ => continue,
                 };
-                *acc = (acc.0 + 1.0, acc.1 + f64::from(x), acc.2 + f64::from(y));
+                *acc += 1.0;
             }
-            let mean = |a: (f64, f64, f64)| (a.1 / a.0.max(1.0), a.2 / a.0.max(1.0));
-            let ((dx, dy), (gx, gy)) = (mean(dark), mean(grey));
-            (dark.0, grey.0, (gx - dx, gy - dy))
+            let center = |item: Draw| {
+                let img = render_items(&d, &[item], 50.0, 50.0, 350.0, 100.0, 2.0, &RenderOptions::default());
+                let (mut weight, mut x, mut y) = (0.0, 0.0, 0.0);
+                for py in 0..img.height {
+                    for px in 0..img.width {
+                        let a = f64::from(img.pixel(px, py)[3]);
+                        weight += a;
+                        x += f64::from(px) * a;
+                        y += f64::from(py) * a;
+                    }
+                }
+                assert!(weight > 0.0, "isolated layer has ink");
+                (x / weight, y / weight)
+            };
+            let offset = page_display(&d, &l.pages[0], &DisplayOptions::default()).into_iter().find_map(|item| {
+                let Draw::Art { path, fx, .. } = item else { return None };
+                let shadow = fx.shadow?;
+                let layer = |fx| Draw::Art { path: path.clone(), fx: Box::new(fx), color: Rgb::BLACK, alpha: 1.0, text_bg: None };
+                let (x, y) = center(layer(TextEffects::default()));
+                let (sx, sy) = center(layer(TextEffects { shadow: Some(shadow), fill: Some(TextFill::None), ..Default::default() }));
+                Some((sx - x, sy - y))
+            });
+            (dark, grey, offset)
         };
         let (plain_dark, plain_grey, _) = shot(CharProps::default());
         assert!(plain_dark > 2000.0, "plain {plain_dark}");
@@ -1633,9 +1654,11 @@ mod tests {
             (CharProps { emboss: Some(true), ..Default::default() }, 1.0),
             (CharProps { engrave: Some(true), ..Default::default() }, -1.0),
         ] {
-            let (_, grey, (ox, oy)) = shot(c);
+            let (_, grey, offset) = shot(c);
             assert!(grey > plain_grey * 2.0, "a grey copy: {grey} vs {plain_grey}");
-            assert!(ox * sign > 1.0 && oy * sign > 1.0, "grey copy offset {ox} {oy}");
+            let (ox, oy) = offset.unwrap();
+            let expected = 2.0_f64.sqrt() * 2.0; // 2 pt at 45 degrees, rendered at 2 px/pt.
+            assert!((ox * sign - expected).abs() < 0.25 && (oy * sign - expected).abs() < 0.25, "grey copy offset {ox} {oy}");
         }
     }
 

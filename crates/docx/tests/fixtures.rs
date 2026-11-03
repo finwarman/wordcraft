@@ -3,7 +3,7 @@
 use std::io::Write;
 
 use wordcraft_doc::para::{Anchor, FloatAlign, NoteKind, ShapeKind, Wrap};
-use wordcraft_doc::props::{Align, Border, BorderStyle, Rgb, TextColor, VMerge};
+use wordcraft_doc::props::{Align, Border, BorderStyle, LineSpacing, Rgb, TextColor, VMerge};
 use wordcraft_doc::{Block, Document, InlineObject, Paragraph, RevisionKind};
 
 const W_NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office""#;
@@ -76,6 +76,56 @@ fn repeated_style_ids_use_last() {
         assert_eq!(style.para.space_after, None);
         assert_eq!(document.styles.styles.iter().filter(|style| style.id == "Repeated").count(), 1);
         document = wordcraft_docx::read(&wordcraft_docx::write(&document).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn missing_defaults_keep_layout() {
+    let body = "<w:p><w:pPr><w:pStyle w:val=\"Body\"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Arial\"/></w:rPr><w:t>First</w:t></w:r></w:p>";
+    let plain = read_body(body);
+    let expected_char = plain.styles.resolve_char(Some("Body"), &Default::default());
+    let expected_para = plain.styles.resolve_para(&paras(&plain)[0].props);
+    for extra in
+        ["", "<w:style w:type=\"paragraph\" w:styleId=\"Heading1\"><w:name w:val=\"heading 1\"/><w:rPr><w:sz w:val=\"40\"/></w:rPr></w:style>"]
+    {
+        let styles = format!("<w:styles {W_NS}>{extra}</w:styles>");
+        let document = wordcraft_docx::read(&docx(body, &[("styles", "styles", "styles.xml")], &[("word/styles.xml", &styles)])).unwrap();
+        let actual_char = document.styles.resolve_char(Some("Body"), &Default::default());
+        let actual_para = document.styles.resolve_para(&paras(&document)[0].props);
+
+        assert_eq!(actual_char.size, expected_char.size);
+        assert_eq!(actual_para.space_after, expected_para.space_after);
+        assert_eq!(actual_para.line_spacing, expected_para.line_spacing);
+        assert!(!document.styles.default_para_present);
+        let written = wordcraft_docx::write(&document).unwrap();
+        assert!(!text(&unzip(&written), "word/styles.xml").contains("<w:pPrDefault>"));
+    }
+}
+
+#[test]
+fn keeps_explicit_defaults() {
+    for (defaults, size, after, line, present) in [
+        ("", 12.0, 8.0, 1.15, false),
+        ("<w:docDefaults/>", 12.0, 8.0, 1.15, false),
+        ("<w:docDefaults><w:rPrDefault/><w:pPrDefault/></w:docDefaults>", 10.0, 0.0, 1.0, true),
+        ("<w:docDefaults><w:rPrDefault><w:rPr><w:color w:val=\"234567\"/></w:rPr></w:rPrDefault></w:docDefaults>", 10.0, 8.0, 1.15, false),
+        ("<w:docDefaults><w:pPrDefault><w:pPr><w:spacing w:after=\"80\"/></w:pPr></w:pPrDefault></w:docDefaults>", 12.0, 4.0, 1.0, true),
+        ("<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val=\"36\"/></w:rPr></w:rPrDefault></w:docDefaults>", 18.0, 8.0, 1.15, false),
+    ] {
+        let styles = format!("<w:styles {W_NS}>{defaults}</w:styles>");
+        let mut document = wordcraft_docx::read(&docx("<w:p/>", &[("styles", "styles", "styles.xml")], &[("word/styles.xml", &styles)])).unwrap();
+        for _ in 0..2 {
+            let chr = document.styles.resolve_char(None, &Default::default());
+            let para = document.styles.resolve_para(&Default::default());
+            assert_eq!(chr.size, size, "{defaults}");
+            assert_eq!((para.space_after, para.line_spacing), (after, LineSpacing::Multiple(line)), "{defaults}");
+            assert_eq!(document.styles.default_para_present, present, "{defaults}");
+            if defaults.contains("234567") {
+                assert_eq!(chr.color, TextColor::Rgb(Rgb(0x23, 0x45, 0x67)));
+                assert_eq!(chr.kern, 0.0);
+            }
+            document = wordcraft_docx::read(&wordcraft_docx::write(&document).unwrap()).unwrap();
+        }
     }
 }
 
@@ -175,9 +225,13 @@ fn omitted_paragraph_defaults_can_be_edited() {
     let mut d = wordcraft_docx::read(&docx("<w:p/>", &[("rId1", "styles", "styles.xml")], &[("word/styles.xml", &styles)])).unwrap();
     assert!(!d.styles.default_para_present);
     d.styles.default_para.space_after = Some(12.0);
+    let before = d.styles.resolve_para(&Default::default());
     let again = wordcraft_docx::read(&wordcraft_docx::write(&d).unwrap()).unwrap();
     assert!(again.styles.default_para_present);
     assert_eq!(again.styles.default_para.space_after, Some(12.0));
+    let after = again.styles.resolve_para(&Default::default());
+    assert_eq!(after.line_spacing, before.line_spacing);
+    assert_eq!(after.widow_control, before.widow_control);
     let new = Document::new();
     assert_eq!(wordcraft_docx::read(&wordcraft_docx::write(&new).unwrap()).unwrap().styles.default_para, new.styles.default_para);
 }

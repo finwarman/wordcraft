@@ -275,9 +275,19 @@ impl ResolvedPara {
 const MAX_CHARS: f32 = 1584.0;
 
 impl StyleSheet {
+    // Omitted defaults use the application's layout without materializing it on save.
+    fn paragraph_defaults(&self) -> ParaProps {
+        if self.default_para_present {
+            return self.default_para.clone();
+        }
+        let mut defaults = crate::styles::application_para();
+        defaults.overlay(&self.default_para);
+        defaults
+    }
+
     /// Paragraph properties after defaults and the style chain (without direct formatting).
     pub fn para_style_props(&self, style: &str) -> (ParaProps, CharProps) {
-        self.para_style_props_over(style, self.default_para.clone(), self.default_chr.clone())
+        self.para_style_props_over(style, self.paragraph_defaults(), self.default_chr.clone())
     }
 
     /// The paragraph style chain of `style` applied over `pp` / `cp`.
@@ -311,7 +321,7 @@ impl StyleSheet {
     /// property the paragraph style chain sets, Normal included, beats the table style.
     pub fn resolve_para_in(&self, p: &ParaProps, table: Option<&ParaProps>) -> ResolvedPara {
         let style = p.style.clone().unwrap_or_else(|| "Normal".into());
-        let mut defaults = self.default_para.clone();
+        let mut defaults = self.paragraph_defaults();
         if let Some(t) = table {
             defaults.overlay(&ParaProps { style: None, ..t.clone() });
         }
