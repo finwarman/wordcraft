@@ -1,3 +1,4 @@
+use super::super::toc::toc_entry_style;
 use super::*;
 use wordcraft_doc::{Document, SectionProps};
 
@@ -438,15 +439,16 @@ fn numbered_style_keeps_one_line() {
         heading.props.style = Some("Heading3".into());
         heading.props.numbering = Some(NumRef { num, level: 0 });
         let imported = wordcraft_docx::read(&wordcraft_docx::write(&doc).unwrap()).unwrap();
-        assert_eq!(imported.styles.get("TOC3").is_some(), canonical);
-        assert_eq!(imported.styles.get("TOC 3").unwrap().para.tabs.as_ref().unwrap()[0].pos, 36.0);
+        // Import gives a lone spaced id the canonical id (#3889).
+        let spaced = if canonical { "TOC 3" } else { "TOC3" };
+        assert_eq!(imported.styles.get(spaced).unwrap().para.tabs.as_ref().unwrap()[0].pos, 36.0);
         let styles = imported.styles.clone();
         let session = refresh_doc(imported).unwrap();
         assert_eq!(session.doc.styles, styles, "no aliases or style definitions are created");
         let (start, end) = toc_range(&session).unwrap();
         assert_eq!((start, end), (0, 1));
         let entry = session.doc.body[1].as_para().unwrap();
-        assert_eq!(entry.props.style.as_deref(), Some(if canonical { "TOC3" } else { "TOC 3" }));
+        assert_eq!(entry.props.style.as_deref(), Some("TOC3"));
         assert_eq!(entry.plain_text(), "1.\tTANK DESCRIPTION\t1");
         let resolved = session.doc.styles.resolve_char(entry.props.style.as_deref(), &CharProps::default());
         assert_eq!((resolved.font.as_str(), resolved.size), ("Arial", 12.0));

@@ -14,7 +14,7 @@ use wordcraft_doc::props::{TextDirection, TextVert, VAlign};
 use wordcraft_doc::{Block, Blocks, Path, StoryRef, TextBody};
 use wordcraft_geom::Rect;
 
-use crate::{BoxContext, Ctx, Placed, fit_box, layout_box};
+use crate::{BoxInput, Ctx, Placed, fit_box, layout_box};
 
 /// Linked text boxes for one layout, worked out when a linked box is first laid out.
 #[derive(Default)]
@@ -90,37 +90,9 @@ fn lay(ctx: &mut Ctx, id: u32, blocks: &Blocks, len: f32, vert: TextVert, depth:
                 _ => b.clone(),
             })
             .collect();
-        return layout_box(ctx, story, &stacked, &[], STACK_WIDTH, BoxContext::Other, depth + 1, None).items;
+        return layout_box(ctx, BoxInput::other(story, &stacked, STACK_WIDTH, depth + 1, None)).items;
     }
-    layout_box(ctx, story, blocks, &[], len, BoxContext::Other, depth + 1, None).items
-}
-
-/// Measure an unlinked horizontal auto-fit shape before positioning and wrapping it.
-pub(super) fn fit_size(ctx: &mut Ctx, obj: &wordcraft_doc::para::InlineObject, w: f32, h: f32, depth: usize) -> (f32, f32) {
-    let Some(id) = obj.text_box() else { return (w, h) };
-    let Some(part) = ctx.doc.parts.get(&id) else { return (w, h) };
-    let body = part.body;
-    if !body.auto_fit || body.vert != TextVert::Horz {
-        return (w, h);
-    }
-    ctx.chains.build(ctx.doc);
-    if ctx.chains.member.contains_key(&id) || !ctx.boxes.enter(id) {
-        return (w, h);
-    }
-    let blocks = part.blocks.clone();
-    let (len, _) = frame(&body, w, h);
-    let counters = ctx.counters.clone();
-    let eq_count = ctx.eq_count;
-    let items = lay(ctx, id, &blocks, len, body.vert, depth);
-    (ctx.counters, ctx.eq_count) = (counters, eq_count);
-    ctx.boxes.leave();
-    let [_, top, _, bottom] = body.insets_pt();
-    // Word fits the frame to the text and both margins, including a visible outline's width.
-    let outline = match obj {
-        wordcraft_doc::para::InlineObject::Shape { stroke: Some(_), stroke_width, .. } => wordcraft_geom::finite(*stroke_width).max(0.0),
-        _ => 0.0,
-    };
-    (w, extent(&items) + top + bottom + outline)
+    layout_box(ctx, BoxInput::other(story, blocks, len, depth + 1, None)).items
 }
 
 /// The items showing text box `id` in its frame `rect` (page coordinates): its text, or its
@@ -143,6 +115,30 @@ pub(crate) fn box_items(ctx: &mut Ctx, id: u32, rect: Rect, depth: usize) -> Vec
         }
     };
     place(items, &body, rect, across)
+}
+
+/// The height of a `w` wide text box `id` that resizes to fit its text (`a:spAutoFit`): its text's
+/// depth plus its top and bottom margins, as Word fits it when laying the document out. `None`
+/// for a box that keeps its own height: one that doesn't resize, with turned text, or linked.
+pub(crate) fn fitted_height(ctx: &mut Ctx, id: u32, w: f32) -> Option<f32> {
+    let body = ctx.doc.parts.get(&id).map(|p| p.body)?;
+    if !body.auto_fit || body.vert.turn() != TextDirection::Horizontal || body.next.is_some() {
+        return None;
+    }
+    ctx.chains.build(ctx.doc);
+    if ctx.chains.member.contains_key(&id) || !ctx.boxes.enter(id) {
+        return None;
+    }
+    let blocks = ctx.doc.parts.get(&id).map(|p| p.blocks.clone()).unwrap_or_default();
+    let (len, _) = frame(&body, w, 0.0);
+    // Measuring doesn't count the box's list numbers and equations: `box_items` lays it out again.
+    let snap = (ctx.counters.clone(), ctx.eq_count);
+    let items = lay(ctx, id, &blocks, len, body.vert, 0);
+    (ctx.counters, ctx.eq_count) = snap;
+    ctx.boxes.leave();
+    let [_, t, _, b] = body.insets_pt();
+    let h = extent(&items) + t + b;
+    h.is_finite().then_some(h)
 }
 
 /// Move items laid out in a box's frame onto the page: aligned in the `across` room (top,
@@ -184,7 +180,6 @@ fn extent(items: &[Placed]) -> f32 {
             | Placed::Shape { rect, .. }
             | Placed::Graphic { rect, .. }
             | Placed::Clip { rect, .. }
-            | Placed::Spun { rect, .. }
             | Placed::Cell { rect, .. }
             | Placed::Object { rect, .. } => rect.bottom(),
         };
@@ -213,6 +208,21 @@ struct Cut {
     byte: usize,
 }
 
+/// Most line lengths (and text directions) a chain's story is laid out at. Each lays the whole
+/// story out again and is kept while the chain is split, so a chain of boxes that each differ in
+/// width would multiply its story's layout work and memory. Past 16, a box whose length isn't
+/// among them takes the nearest narrower one laid out in its text direction, so its lines still
+/// fit across it (they stop short of its far edge), else the narrowest, whose lines are longer
+/// than the box. Far above a real chain's few box sizes.
+pub(crate) const MAX_FLOW_WIDTHS: usize = 16;
+
+/// Line lengths are told apart to a twentieth of a point (a twip): resized boxes a hair apart
+/// share one layout. Stacked text is laid out at [`STACK_WIDTH`] whatever the box's size.
+fn flow_key(len: f32, vert: TextVert) -> (i32, TextVert) {
+    let len = if vert == TextVert::Stacked { STACK_WIDTH } else { len };
+    ((len * 20.0).round() as i32, vert)
+}
+
 /// Split the text of `chain`'s first box over its boxes.
 fn flow(ctx: &mut Ctx, chain: &[u32], depth: usize) -> Vec<Vec<Placed>> {
     let Some(&head) = chain.first() else { return Vec::new() };
@@ -226,7 +236,7 @@ fn flow(ctx: &mut Ctx, chain: &[u32], depth: usize) -> Vec<Vec<Placed>> {
     // time), sharing a layout with the boxes before it of the same length.
     let snap = (ctx.counters.clone(), ctx.eq_count);
     let mut after = None;
-    let mut layouts: Vec<((u32, TextVert), Vec<Placed>)> = Vec::new();
+    let mut layouts: Vec<((i32, TextVert), Vec<Placed>)> = Vec::new();
     let mut out = Vec::with_capacity(chain.len());
     // Where the next box's text starts: `Some(None)` at the beginning, `None` when all is shown.
     let mut start: Option<Option<Cut>> = Some(None);
@@ -238,8 +248,13 @@ fn flow(ctx: &mut Ctx, chain: &[u32], depth: usize) -> Vec<Vec<Placed>> {
         let body = ctx.doc.parts.get(id).map(|p| p.body).unwrap_or_default();
         let (w, h) = sizes.get(id).copied().unwrap_or((0.0, 0.0));
         let (len, across) = frame(&body, w, h);
-        let key = (len.to_bits(), body.vert);
-        let items = match layouts.iter().find(|(k, _)| *k == key) {
+        let key = flow_key(len, body.vert);
+        // Past the cap the box takes the nearest layout in its direction: the widest line length
+        // that fits it, else the narrowest. The first box in a direction is laid out (one more
+        // layout for each of the few directions at most).
+        let near = || layouts.iter().filter(|((_, v), _)| *v == key.1).min_by_key(|((k, _), _)| (*k > key.0, k.abs_diff(key.0)));
+        let kept = layouts.iter().find(|(k, _)| *k == key).or_else(|| if layouts.len() >= MAX_FLOW_WIDTHS { near() } else { None });
+        let items = match kept {
             Some((_, items)) => items.clone(),
             None => {
                 (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
@@ -309,7 +324,6 @@ fn from_y(items: Vec<Placed>, top: f32) -> Vec<Placed> {
             | Placed::Shape { rect, .. }
             | Placed::Graphic { rect, .. }
             | Placed::Clip { rect, .. }
-            | Placed::Spun { rect, .. }
             | Placed::Cell { rect, .. }
             | Placed::Object { rect, .. }
                 if rect.y >= lim =>

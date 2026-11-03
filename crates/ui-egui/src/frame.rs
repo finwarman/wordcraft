@@ -160,10 +160,9 @@ pub fn paint_outline(painter: &Painter, t: &Tokens, f: egui::Rect, deg: f32) {
 }
 
 /// A frame being turned to `deg`: its outline and the angle beside the rotation handle.
-/// `shown` is the angle the turn gives (a straightened frame's turn adds to the object's own).
-pub fn paint_turning(painter: &Painter, t: &Tokens, f: egui::Rect, deg: f32, shown: f32) {
+pub fn paint_turning(painter: &Painter, t: &Tokens, f: egui::Rect, deg: f32) {
     paint_outline(painter, t, f, deg);
-    let label = format!("{:.0}°", wordcraft_geom::normalize_degrees(shown.round()));
+    let label = format!("{:.0}°", wordcraft_geom::normalize_degrees(deg.round()));
     painter.text(rotate_handle(f, deg) + vec2(HANDLE_R + 6.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(11.0), t.accent);
 }
 
@@ -189,6 +188,19 @@ impl Drag {
     /// A drag of the frame at `start` on `page`, turned `deg`, grabbed at screen point `press`.
     pub fn new(grab: Grab, page: usize, start: Rect, deg: f32, press: Pos2) -> Drag {
         Drag { grab, page, start, press, to_page: page, rect: start, moved: false, deg: wordcraft_geom::normalize_degrees(deg) }
+    }
+
+    /// Move along the dominant pointer axis, keeping the grab point fixed in the document
+    /// when scrolling moves its page. The boolean says the movement is horizontal.
+    pub(crate) fn update_axis(&mut self, pointer: Pos2, pages: &[egui::Rect], scale: f32, min: f32, press_origin: Pos2) -> bool {
+        let delta = pointer - self.press;
+        let horizontal = delta.x.abs() >= delta.y.abs();
+        let press = self.press;
+        self.press += pages.get(self.page).map_or(egui::Vec2::ZERO, |p| p.min - press_origin);
+        let pointer = if horizontal { pos2(pointer.x, self.press.y) } else { pos2(self.press.x, pointer.y) };
+        self.update(pointer, pages, scale, min, false);
+        self.press = press;
+        horizontal
     }
 
     /// Follow the pointer with the rotation handle: the frame turns to face it, by whole degrees
