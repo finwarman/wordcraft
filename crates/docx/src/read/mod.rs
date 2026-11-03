@@ -740,6 +740,10 @@ impl Reader<'_> {
             self.pc.alias.insert(id.to_string(), "Normal".into());
         }
         let mut sheet = StyleSheet::empty();
+        let run_defaults = root.child("w:docDefaults").and_then(|dd| dd.child("w:rPrDefault"));
+        if run_defaults.is_none() {
+            sheet.default_chr = self.doc.styles.default_chr.clone();
+        }
         sheet.default_para_present = root.child("w:docDefaults").and_then(|dd| dd.child("w:pPrDefault")).is_some();
         if let Some(dd) = root.child("w:docDefaults") {
             if let Some(r) = dd.child("w:rPrDefault").and_then(|d| d.child("w:rPr")) {
