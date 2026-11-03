@@ -17597,3 +17597,47 @@ fn nested_shading_before_borders() {
     let border = items.iter().position(|it| matches!(it, Placed::Rule { .. })).unwrap();
     assert!(outer_fill < inner_first && inner_last < border, "nested shading stays below its own borders and above its parent shading");
 }
+
+enum TableStart {
+    Continue,
+    NewPage,
+}
+
+fn break_table(text: &str, start: TableStart) -> Arc<Block> {
+    let mut p = Paragraph::with_text(text, CharProps::default());
+    p.props.page_break_before = Some(matches!(start, TableStart::NewPage));
+    let mut t = Table::new(1, 1, 200.0);
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(p)];
+    Arc::new(Block::Table(t))
+}
+
+fn cell_pages(layout: &DocLayout) -> Vec<usize> {
+    layout.pages.iter().enumerate().flat_map(|(i, pg)| pg.items.iter().filter(|it| matches!(it, Placed::Cell { .. })).map(move |_| i)).collect()
+}
+
+#[test]
+fn table_break_before_cell() {
+    let mut d = Document::new();
+    d.body = vec![wordcraft_doc::para_block(Paragraph::with_text("Before", CharProps::default())), break_table("Heading", TableStart::NewPage)];
+    assert_eq!(cell_pages(&lay(&d)), vec![1]);
+}
+
+#[test]
+fn table_break_after_table() {
+    let mut d = Document::new();
+    d.body = vec![
+        break_table("First", TableStart::Continue),
+        wordcraft_doc::para_block(Paragraph::with_text("", CharProps::default())),
+        break_table("Second", TableStart::NewPage),
+    ];
+    assert_eq!(cell_pages(&lay(&d)), vec![0, 1]);
+}
+
+#[test]
+fn table_break_keeps_top() {
+    let mut d = Document::new();
+    d.body = vec![break_table("Heading", TableStart::NewPage)];
+    let layout = lay(&d);
+    assert_eq!(layout.pages.len(), 1);
+    assert_eq!(cell_pages(&layout), vec![0]);
+}

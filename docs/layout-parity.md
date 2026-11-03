@@ -22,6 +22,8 @@ The browser fork combines upstream `ffb155a0` with the retained table, field,
 section and floating-object fixes. It restores paragraph-anchored header
 clearance, floating text-box auto-fit, arbitrary-angle text rotation and table
 shading below shared borders.
+A first-cell paragraph with page break before moves its whole in-flow table
+to the next page, unless the table already starts at the page top.
 The private report qualification covers rendering and content retention; it
 does not claim pixel-identical Word layout. The server renderer is pinned
 separately by its consumer.
