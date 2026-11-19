@@ -45,4 +45,20 @@ pub(crate) fn caption(painter: &Painter, rect: Rect, t: &Tokens) {
         mesh.add_triangle(0, 2, 3);
         painter.add(egui::Shape::mesh(mesh));
     }
+    caption_glitter(painter, rect);
+}
+
+fn caption_glitter(painter: &Painter, rect: Rect) {
+    // One small static mesh, with no texture or animation. Keep the title's text band clear.
+    let tiles = (rect.width() / shared::CAPTION_GLITTER_PERIOD).ceil().clamp(0.0, 128.0) as usize;
+    let mut mesh = egui::Mesh::default();
+    for [x, y, w, h, alpha] in shared::CAPTION_GLITTER {
+        let y = if *y < shared::CAPTION_HEIGHT / 2.0 { *y } else { rect.height() - shared::CAPTION_HEIGHT + y };
+        let color = Color32::from_white_alpha((shared::CAPTION_GLITTER_OPACITY * alpha * 255.0 / 10000.0).round() as u8);
+        for tile in 0..tiles {
+            let at = rect.min + egui::vec2(tile as f32 * shared::CAPTION_GLITTER_PERIOD + x, y);
+            mesh.add_colored_rect(Rect::from_min_size(at, egui::vec2(*w, *h)), color);
+        }
+    }
+    painter.with_clip_rect(painter.clip_rect().intersect(rect)).add(egui::Shape::mesh(mesh));
 }
