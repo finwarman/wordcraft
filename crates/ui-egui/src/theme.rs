@@ -4,6 +4,9 @@ use std::sync::Arc;
 
 #[path = "application_icon.rs"]
 mod application_icon;
+#[path = "cursor_trail.rs"]
+mod cursor_trail;
+pub(crate) use cursor_trail::{Trail, TrailMode};
 #[path = "classic_surface.rs"]
 mod classic_surface;
 #[path = "theme_shared.rs"]
@@ -813,6 +816,8 @@ mod tests {
                 assert!(contrast(t.ruler_tick, bg) >= 4.5);
             }
             assert!(contrast(t.caption_ink(), t.title_bar) >= 4.5);
+            let middle = t.title_bar.lerp_to_gamma(t.title_end, super::shared::CAPTION_GRADIENT_BLEND / 100.0);
+            assert!(contrast(t.caption_ink(), middle) >= 4.5, "caption text must remain readable through the gradient middle");
             assert!(contrast(t.title_end, t.title_bar) >= 3.0, "disabled caption icons remain visible");
             assert!(contrast(t.on_accent, t.accent) >= 4.5, "selected File navigation remains readable");
             let style = ctx.global_style();

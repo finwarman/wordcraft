@@ -194,6 +194,8 @@ pub struct UiState {
     /// Animation effects (smooth scrolling, fades): on, off, or follow the system's setting, which
     /// is the default. An unknown saved value reads as the default.
     pub animations: theme::Animations,
+    /// Optional decorative pointer trail. Never changes document content.
+    pub(crate) cursor_sparkles: bool,
     /// The dark-mode switch `ui.json` held before `theme` (#115): read once to migrate, never written.
     #[serde(rename = "dark", skip_serializing)]
     pub(crate) legacy_dark: Option<bool>,
@@ -282,6 +284,7 @@ impl Default for UiState {
             theme: theme::Appearance::default(),
             interface_size: theme::InterfaceSize::default(),
             animations: theme::Animations::default(),
+            cursor_sparkles: false,
             legacy_dark: None,
             nav_tab: "headings".into(),
             author: String::new(),
@@ -388,6 +391,7 @@ pub struct WordApp {
     pub(crate) nav_search_focus: bool,
     styled: bool,
     templates: template_previews::Previews,
+    cursor_trail: theme::Trail,
     /// The CJK face order the installed UI fonts use (Chinese first, or Japanese first).
     fonts_hans: bool,
     fonts_classic: bool,
@@ -497,6 +501,7 @@ impl WordApp {
             nav_search_focus: false,
             styled: false,
             templates: template_previews::Previews::default(),
+            cursor_trail: theme::Trail::default(),
             fonts_hans: false,
             fonts_classic: false,
             ui_faces: Vec::new(),
@@ -951,6 +956,10 @@ impl WordApp {
         self.ui.animations.enabled(self.system_animations)
     }
 
+    fn sparkles_on(&self) -> bool {
+        self.ui.cursor_sparkles && self.animations_on() && self.system_animations != Some(false)
+    }
+
     /// What the system last said about its animation effects (`None`: it doesn't say).
     pub fn system_animations(&self) -> Option<bool> {
         self.system_animations
@@ -1067,6 +1076,16 @@ impl WordApp {
                     }
                 }
                 json!({"percent": self.ui.interface_size.percent()})
+            }
+            "ui.cursorSparkles" => {
+                if let Some(value) = p.get("value") {
+                    let Some(value) = value.as_bool() else {
+                        return Some(Err("`value` must be true or false".into()));
+                    };
+                    self.ui.cursor_sparkles = value;
+                }
+                self.read_system_animations();
+                json!({"value":self.ui.cursor_sparkles,"enabled":self.sparkles_on()})
             }
             "ui.animations" => {
                 // `system` (follow the system's animation setting), `on` or `off`; no value reads
@@ -1585,6 +1604,8 @@ impl WordApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.sent_title = title;
         }
+        let trail_mode = if self.sparkles_on() { theme::TrailMode::Enabled } else { theme::TrailMode::Suppressed };
+        self.cursor_trail.show(&ctx, trail_mode);
         self.frame_ms = now_ms() - t0;
         // Typing and formatting land here, after `logic` has reported.
         self.report_dirty();

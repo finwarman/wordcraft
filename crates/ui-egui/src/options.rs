@@ -174,6 +174,14 @@ fn general(app: &mut WordApp, ui: &mut Ui) {
     section(ui, "Interface");
     theme_picker(app, ui);
     interface_size_picker(app, ui);
+    let mut sparkles = app.ui.cursor_sparkles;
+    if ui
+        .checkbox(&mut sparkles, tl!("Cursor sparkles"))
+        .on_hover_text(tl!("Optional pointer trail. Stops while idle or hidden and respects Reduce Motion. Does not appear in documents or exports."))
+        .changed()
+    {
+        let _ = app.run("ui.cursorSparkles", json!({"value":sparkles}));
+    }
     ui.checkbox(&mut app.ui.mini_toolbar, tl!("Show the mini toolbar when text is selected"));
     let mut dark_page = app.session.view.dark_mode;
     if ui

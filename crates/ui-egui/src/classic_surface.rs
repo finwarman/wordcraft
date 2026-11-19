@@ -28,19 +28,21 @@ pub(crate) fn caption(painter: &Painter, rect: Rect, t: &Tokens) {
     if !t.classic {
         return;
     }
-    // Keep white caption text on the dark field; fade only beneath face-filled right controls.
-    let split = rect.left() + rect.width() * 0.75;
+    // Lighten the middle without losing white-title contrast before the right controls.
+    let split = rect.left() + rect.width() * shared::CAPTION_GRADIENT_START / 100.0;
+    let middle = rect.left() + rect.width() * shared::CAPTION_GRADIENT_MIDDLE / 100.0;
+    let blend = shared::CAPTION_GRADIENT_BLEND / 100.0;
+    let mid_color = t.title_bar.lerp_to_gamma(t.title_end, blend);
     painter.rect_filled(Rect::from_min_max(rect.min, pos2(split, rect.bottom())), 0.0, t.title_bar);
-    let mut mesh = egui::Mesh::default();
-    for (position, color) in [
-        (pos2(split, rect.top()), t.title_bar),
-        (rect.right_top(), t.title_end),
-        (rect.right_bottom(), t.title_end),
-        (pos2(split, rect.bottom()), t.title_bar),
-    ] {
-        mesh.colored_vertex(position, color);
+    for (left, right, start, end) in [(split, middle, t.title_bar, mid_color), (middle, rect.right(), mid_color, t.title_end)] {
+        let mut mesh = egui::Mesh::default();
+        for (position, color) in
+            [(pos2(left, rect.top()), start), (pos2(right, rect.top()), end), (pos2(right, rect.bottom()), end), (pos2(left, rect.bottom()), start)]
+        {
+            mesh.colored_vertex(position, color);
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(mesh));
     }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    painter.add(egui::Shape::mesh(mesh));
 }

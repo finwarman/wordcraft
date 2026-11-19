@@ -68,3 +68,9 @@ Keyboard/AccessKit regression checks cover named caption/status controls, AutoSa
 The displayed app name is WordCraft; the Fin installation filename, bundle identifier, profile and update identity remain separate. Original Classic/Pink document-and-pencil artwork uses the shared palette. A bounded pair of native images is decoded only on demand. The Dock redraws only when the theme changes and restores from the saved theme at launch. Finder and the closed-app icon remain Classic: custom Finder metadata failed strict signature verification in a disposable qualification bundle. Signed resources are never changed at runtime.
 
 Caption marks use font-independent geometry inside the bevel; maximize changes to Restore while maximized. Ribbon scroll controls sit on opaque framed rails, with accessible names and focus rings.
+
+## Optional cursor sparkles
+
+File / Options / General offers Cursor sparkles, off by default and saved per profile. The trail shares ClassicKit palette roles and metrics with Mail. At most32 small particles live for450ms, with idle decay repaint requests at most every33ms. Pointer-driven frames retain the native UI cadence. Dragging/clicking, missing pointer, inactive/minimized windows, animation effects Off and system Reduce Motion clear the decoration. After particles expire it requests no repaint. It uses a fixed array and painter geometry, no image textures, cursor hooks, worker or full-window backing surface. Document editing/export and pointer events are unchanged. ui.cursorSparkles reads/sets the saved preference and reports its effective enabled state.
+
+Caption gradients retain the original dark/light palette endpoints. The fade starts at15% and reaches40% blending at70%, then continues to the light right edge. This broadens the light field while keeping white central title text at least4.5:1 against the middle stop in both palettes. Shared metrics control both toolkit adapters.

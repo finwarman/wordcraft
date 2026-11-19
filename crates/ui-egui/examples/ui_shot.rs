@@ -33,8 +33,14 @@ fn main() {
     }
     let w = lines.iter().find_map(|l| l.get("width").and_then(|v| v.as_f64())).unwrap_or(1440.0) as f32;
     let h = lines.iter().find_map(|l| l.get("height").and_then(|v| v.as_f64())).unwrap_or(900.0) as f32;
-    let mut harness =
-        egui_kittest::Harness::builder().with_size(egui::vec2(w, h)).with_pixels_per_point(2.0).with_max_steps(1_000_000).wgpu().build_ui_state(
+    let step_dt = lines.first().and_then(|line| line.get("stepMs")).and_then(serde_json::Value::as_u64).unwrap_or(250).clamp(1, 250) as f32 / 1000.0;
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(w, h))
+        .with_pixels_per_point(2.0)
+        .with_step_dt(step_dt)
+        .with_max_steps(1_000_000)
+        .wgpu()
+        .build_ui_state(
             |ui, app: &mut WordApp| {
                 if !READY.load(std::sync::atomic::Ordering::Relaxed) {
                     return;

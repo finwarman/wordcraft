@@ -115,3 +115,16 @@ fn tab_visibility_is_discoverable() {
     assert!(h.state().session.ribbon.tabs().iter().any(|tab| tab.name == "Developer" && !tab.hidden));
     assert!(h.state_mut().run("ui.discord", json!({})).is_err());
 }
+
+#[test]
+fn sparkle_preference_survives() {
+    let mut h = harness([1440.0, 900.0]);
+    assert_eq!(h.state_mut().run("ui.cursorSparkles", json!({})).unwrap()["value"], false);
+    h.state_mut().services.animations_enabled = Some(Box::new(|| Some(false)));
+    let answer = h.state_mut().run("ui.cursorSparkles", json!({"value":true})).unwrap();
+    assert_eq!(answer["enabled"], false, "Reduce Motion overrides the decorative setting");
+    let prefs = h.state().prefs();
+    let restored: crate::UiState = serde_json::from_value(serde_json::to_value(prefs).unwrap()).unwrap();
+    assert!(restored.cursor_sparkles);
+    assert!(h.state_mut().run("ui.cursorSparkles", json!({"value":"true"})).is_err());
+}
