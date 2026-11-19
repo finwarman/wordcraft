@@ -807,6 +807,7 @@ mod tests {
     #[test]
     fn the_canvas_caret_glides_after_a_key() {
         let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Default::default());
+        a.ui.theme = crate::theme::Appearance::Light;
         a.run("text.insert", json!({"text": "Some text here"})).unwrap();
         // Animation effects off: the caret follows that switch.
         a.run("ui.animations", json!({"value": "off"})).unwrap();

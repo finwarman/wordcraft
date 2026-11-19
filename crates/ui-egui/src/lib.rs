@@ -22,10 +22,12 @@ macro_rules! tl {
 
 pub mod a11y;
 pub mod a11y_pane;
+pub mod app_updates;
 pub mod backstage;
 pub mod canvas;
 pub mod caret_glide;
 pub mod chrome;
+mod classic_menu;
 pub mod colors;
 pub mod content_controls;
 pub mod control;
@@ -88,6 +90,10 @@ pub use file_dialogs::{FileDialogAnswer, FileDialogRequest, open_filters};
 /// Platform services injected by the host (file dialogs, file I/O).
 #[derive(Default)]
 pub struct Services {
+    /// Host-owned update manager, launched only after an explicit action.
+    pub app_updates: Option<app_updates::UpdateHook>,
+    /// Installed classic UI faces, loaded once by the host without blocking the UI.
+    pub ui_faces: Option<theme::UiFontHook>,
     /// Desktop: discover configured printers on a worker.
     pub printers: Option<printing::Discover>,
     /// Desktop: submit the PDF with the chosen settings on a worker.
@@ -382,6 +388,9 @@ pub struct WordApp {
     styled: bool,
     /// The CJK face order the installed UI fonts use (Chinese first, or Japanese first).
     fonts_hans: bool,
+    fonts_classic: bool,
+    ui_faces: Vec<std::sync::Arc<wordcraft_fonts::FontFace>>,
+    ui_face_request: Option<std::sync::mpsc::Receiver<Vec<std::sync::Arc<wordcraft_fonts::FontFace>>>>,
     /// Whether the installed UI fonts include an installed CJK fallback font (#241).
     fonts_system_cjk: bool,
     /// CJK text is (about to be) on screen in a non-CJK interface, e.g. the language names in
@@ -428,6 +437,7 @@ pub struct WordApp {
     autosave_path: Option<std::path::PathBuf>,
     /// The file dialog the host is showing, and what its answer is for ([`file_dialogs`]).
     file_dialog: Option<file_dialogs::PendingDialog>,
+    update_request: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// The built-in file browser, when it is open, and the folder it showed last (#576).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_browser: file_browser::State,
@@ -485,6 +495,9 @@ impl WordApp {
             nav_search_focus: false,
             styled: false,
             fonts_hans: false,
+            fonts_classic: false,
+            ui_faces: Vec::new(),
+            ui_face_request: None,
             fonts_system_cjk: false,
             want_system_cjk: false,
             fonts_frames: 0,
@@ -515,6 +528,7 @@ impl WordApp {
             font_generation: wordcraft_fonts::FontDb::global().generation(),
             dialog_pick: None,
             file_dialog: None,
+            update_request: None,
             #[cfg(not(target_arch = "wasm32"))]
             file_browser: file_browser::State::default(),
             info_editing: None,
@@ -1029,7 +1043,7 @@ impl WordApp {
                 if let Some(v) = s("value") {
                     match theme::Appearance::from_code(v) {
                         Some(a) => self.ui.theme = a,
-                        None => return Some(Err(format!("unknown theme {v:?}; use light, dark or system"))),
+                        None => return Some(Err(format!("unknown theme {v:?}; use classic, pink, light, dark or system"))),
                     }
                 }
                 json!({"theme": self.ui.theme.code(), "dark": self.ui_is_dark()})
@@ -1114,6 +1128,7 @@ impl WordApp {
                         .into(),
                 ));
             }
+            app_updates::COMMAND => return Some(Ok(self.open_app_updates())),
             "ui.discord" => {
                 self.canvas.open_url = Some("https://discord.gg/artcraft".into());
                 json!({})
@@ -1321,6 +1336,7 @@ impl WordApp {
         // An installed CJK font is read only once CJK text is shown (#241): a CJK interface, the
         // language names in Options, or a file name the caption is drawing. A file opened later
         // in this frame (dialog, drop, control channel) is picked up again at the end.
+        self.poll_app_updates();
         self.ensure_caption_fonts();
         self.install_ui_fonts(ctx, lang);
         if let Some(answer) = self.desktop_theme.take_change() {
@@ -1341,6 +1357,7 @@ impl WordApp {
         if self.applied_theme != Some(effective) {
             theme::apply(ctx, effective);
             self.applied_theme = Some(effective);
+            self.applied_animations = None;
         }
         // Interface size (#475): egui's zoom factor multiplies the display scale the system reports
         // (native pixels per point), so it adds to it rather than replacing it. Keyboard zoom is
@@ -1405,9 +1422,29 @@ impl WordApp {
     /// Install the interface fonts when the language, the CJK fallback, or a caption fallback
     /// face has changed since the last install.
     fn install_ui_fonts(&mut self, ctx: &egui::Context, lang: i18n::Lang) {
+        let classic = self.ui.theme.classic();
+        if classic
+            && self.ui_face_request.is_none()
+            && let Some(load) = self.services.ui_faces.take()
+        {
+            self.ui_face_request = Some(load());
+        }
+        if let Some(reply) = &self.ui_face_request {
+            match reply.try_recv() {
+                Ok(faces) => {
+                    self.ui_faces = faces.into_iter().take(2).collect();
+                    self.ui_face_request = None;
+                    self.styled = false;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.ui_face_request = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         let system_cjk = self.fonts_system_cjk || self.want_system_cjk || lang.uses_cjk();
-        if !self.styled || lang.prefers_hans() != self.fonts_hans || system_cjk != self.fonts_system_cjk {
-            theme::install_fonts_extra(ctx, lang.prefers_hans(), system_cjk, &self.canvas.ime_faces);
+        if !self.styled || classic != self.fonts_classic || lang.prefers_hans() != self.fonts_hans || system_cjk != self.fonts_system_cjk {
+            let chrome = if classic { self.ui_faces.as_slice() } else { &[] };
+            theme::install_chrome_fonts(ctx, lang.prefers_hans(), system_cjk, &self.canvas.ime_faces, chrome);
+            self.fonts_classic = classic;
             self.fonts_hans = lang.prefers_hans();
             self.fonts_system_cjk = system_cjk;
             // Mod with -, = and 0 are Word shortcuts (optional hyphen, subscript, paragraph spacing);
@@ -1518,6 +1555,7 @@ impl WordApp {
             backstage::show(self, ui);
         } else {
             chrome::title_bar(self, ui);
+            classic_menu::show(self, ui);
             ribbon::show(self, ui);
             chrome::status_bar(self, ui);
             panes::show(self, ui);
@@ -2375,6 +2413,7 @@ mod tests {
         let ctx = egui::Context::default();
         let system = std::rc::Rc::new(std::cell::Cell::new(Some(false)));
         let mut a = app_with_system_animations(&system);
+        a.ui.theme = theme::Appearance::Light;
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 600.0));
         let mut t = 0.0;
         let mut frame = |a: &mut WordApp, events: Vec<egui::Event>| {
@@ -3753,7 +3792,7 @@ mod tests {
     #[test]
     fn interface_theme_migrates_and_survives_a_restart() {
         use theme::Appearance;
-        for (saved, want) in [(r#"{"dark": false}"#, Appearance::Light), (r#"{"dark": true}"#, Appearance::Dark), ("{}", Appearance::Light)] {
+        for (saved, want) in [(r#"{"dark": false}"#, Appearance::Light), (r#"{"dark": true}"#, Appearance::Dark), ("{}", Appearance::Classic)] {
             let mut a = app();
             a.apply_prefs(serde_json::from_str(saved).unwrap());
             assert_eq!(a.ui.theme, want, "{saved}");
@@ -3767,7 +3806,7 @@ mod tests {
         assert_eq!(b.ui.theme, Appearance::System);
         // An unknown saved value keeps the rest of the preferences.
         let odd: UiState = serde_json::from_str(r#"{"theme": "sepia", "tab": "Insert"}"#).unwrap();
-        assert_eq!((odd.theme, odd.tab.as_str()), (Appearance::Light, "Insert"));
+        assert_eq!((odd.theme, odd.tab.as_str()), (Appearance::Classic, "Insert"));
     }
 
     /// #475: the interface size is kept between runs; junk saved values read as 100 % and
@@ -3830,6 +3869,32 @@ mod tests {
         assert_eq!(a.run("ui.theme", json!({"value": "dark"})).unwrap()["theme"], "dark");
         assert_eq!(a.run("ui.dark", json!({})).unwrap()["theme"], "light", "ui.dark toggles the manual choice");
         assert_eq!(a.run("ui.theme", json!({})).unwrap()["theme"], "light");
+    }
+
+    #[test]
+    fn classic_fonts_load_once() {
+        use theme::Appearance;
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let called = calls.clone();
+        let services = Services {
+            ui_faces: Some(Box::new(move || {
+                called.set(called.get() + 1);
+                let (tx, rx) = std::sync::mpsc::channel();
+                tx.send(Vec::new()).unwrap();
+                rx
+            })),
+            ..Default::default()
+        };
+        let mut app = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), services);
+        let ctx = egui::Context::default();
+        app.ui.theme = Appearance::Light;
+        theme_frame(&ctx, &mut app, None);
+        assert_eq!(calls.get(), 0, "modern themes need no installed classic UI font");
+        for theme in [Appearance::Classic, Appearance::Pink, Appearance::Dark, Appearance::Classic] {
+            app.ui.theme = theme;
+            theme_frame(&ctx, &mut app, None);
+            assert_eq!(calls.get(), 1, "switching themes reuses the one answer");
+        }
     }
 
     /// One app frame with the OS appearance egui reports; returns the window commands it sent.

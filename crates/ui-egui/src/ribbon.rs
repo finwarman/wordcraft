@@ -198,6 +198,9 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
                 for (tab, custom) in &tabs {
                     let (tab, custom) = (tab.as_str(), *custom);
+                    if t.is_classic() && tab == "File" {
+                        continue;
+                    }
                     let contextual = !custom && wordcraft_engine::ribbon::CONTEXTUAL_TABS.contains(&tab);
                     // A custom tab's name is the user's own text: shown as typed.
                     let shown = if custom { tab } else { tl!(tab) };
@@ -207,12 +210,16 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                         crate::keytips::record_tab(r, tab, &mut app.keytip_rects);
                     }
                     let active = app.ui.tab == tab && !app.ui.backstage;
+                    if t.is_classic() {
+                        ui.painter().rect_filled(r, 0.0, if active { t.checked } else { t.tab_strip });
+                        crate::theme::bevel(ui.painter(), r, if active { crate::theme::Edge::Sunken } else { crate::theme::Edge::Raised }, &t);
+                    }
                     if resp.hovered() && !active {
                         ui.painter().rect_filled(r.shrink2(vec2(0.0, 4.0)), 4.0, t.hover);
                     }
                     let color = if contextual || active { t.accent_text } else { t.text };
                     ui.painter().text(r.center(), Align2::CENTER_CENTER, shown, if active { semibold(12.5) } else { medium(12.5) }, color);
-                    if active {
+                    if active && !t.is_classic() {
                         let u = Rect::from_center_size(pos2(r.center().x, r.max.y - 2.0), vec2(w - 16.0, 3.0));
                         ui.painter().rect_filled(u, 2.0, t.accent);
                     }
@@ -229,7 +236,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     let share = tl!("Share");
                     let share_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(share.to_string(), medium(12.0), t.text).size().x);
                     let (r, resp) = ui.allocate_exact_size(vec2((share_w + 36.0).max(74.0), 24.0), Sense::click());
-                    ui.painter().rect_filled(r, 4.0, if resp.hovered() { t.accent_text } else { t.accent });
+                    ui.painter().rect_filled(r, t.radius(4.0), if resp.hovered() { t.accent_text } else { t.accent });
                     icons::paint(
                         ui.painter(),
                         Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(14.0, 14.0)),
@@ -1741,6 +1748,7 @@ fn outlining(app: &mut WordApp, ui: &mut Ui) {
 
 fn help(app: &mut WordApp, ui: &mut Ui) {
     group(ui, "Help", None, app, |ui, app| {
+        big(ui, app, "update", "App updates", crate::app_updates::COMMAND, json!({}), false);
         big(ui, app, "help", "Help", "ui.dialog", json!({"name": "about"}), false);
         big(ui, app, "discord", "Community\nDiscord", "ui.discord", json!({}), false);
     });

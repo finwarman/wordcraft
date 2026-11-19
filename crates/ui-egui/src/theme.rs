@@ -2,6 +2,12 @@
 
 use std::sync::Arc;
 
+#[path = "classic_surface.rs"]
+mod classic_surface;
+#[path = "theme_shared.rs"]
+mod shared;
+pub(crate) use classic_surface::{Edge, bevel, caption};
+
 use egui::{Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Rect, Stroke, Visuals};
 
 /// WordCraft's app colour (and its darker ink for text on light backgrounds).
@@ -15,6 +21,8 @@ pub const APP_INK: Color32 = Color32::from_rgb(0x2B, 0x47, 0xB5);
 #[serde(from = "String", into = "String")]
 pub enum Appearance {
     #[default]
+    Classic,
+    Pink,
     Light,
     Dark,
     System,
@@ -22,15 +30,21 @@ pub enum Appearance {
 
 impl Appearance {
     /// In menu order.
-    pub const ALL: [Appearance; 3] = [Appearance::System, Appearance::Light, Appearance::Dark];
+    pub const ALL: [Appearance; 5] = [Appearance::Classic, Appearance::Pink, Appearance::System, Appearance::Light, Appearance::Dark];
 
     /// The value used in `ui.json` and by the `ui.theme` command.
     pub fn code(self) -> &'static str {
         match self {
+            Appearance::Classic => "classic",
+            Appearance::Pink => "pink",
             Appearance::Light => "light",
             Appearance::Dark => "dark",
             Appearance::System => "system",
         }
+    }
+
+    pub(crate) fn classic(self) -> bool {
+        matches!(self, Self::Classic | Self::Pink)
     }
 
     pub fn from_code(code: &str) -> Option<Appearance> {
@@ -40,6 +54,8 @@ impl Appearance {
     /// The English label (translated with `tl!` where shown).
     pub fn label(self) -> &'static str {
         match self {
+            Appearance::Classic => "Classic",
+            Appearance::Pink => "Pink",
             Appearance::Light => "Light",
             Appearance::Dark => "Dark",
             Appearance::System => "Use system setting",
@@ -50,7 +66,7 @@ impl Appearance {
     /// `System` falls back to light when the OS reports none.
     pub fn is_dark(self, system: Option<egui::Theme>) -> bool {
         match self {
-            Appearance::Light => false,
+            Appearance::Classic | Appearance::Pink | Appearance::Light => false,
             Appearance::Dark => true,
             Appearance::System => system == Some(egui::Theme::Dark),
         }
@@ -59,7 +75,7 @@ impl Appearance {
     /// The egui theme preference: `System` stays automatic rather than resolving to a fixed theme.
     pub fn preference(self) -> egui::ThemePreference {
         match self {
-            Appearance::Light => egui::ThemePreference::Light,
+            Appearance::Classic | Appearance::Pink | Appearance::Light => egui::ThemePreference::Light,
             Appearance::Dark => egui::ThemePreference::Dark,
             Appearance::System => egui::ThemePreference::System,
         }
@@ -197,6 +213,11 @@ impl From<Animations> for String {
 /// Every colour the UI uses; widgets never hard-code colours.
 #[derive(Clone, Copy, Debug)]
 pub struct Tokens {
+    classic: bool,
+    bevel_light: Color32,
+    bevel_shadow: Color32,
+    bevel_dark: Color32,
+    title_end: Color32,
     pub dark: bool,
     pub title_bar: Color32,
     pub ribbon: Color32,
@@ -241,6 +262,11 @@ pub struct Tokens {
 impl Tokens {
     pub fn light() -> Self {
         Tokens {
+            classic: false,
+            bevel_light: Color32::WHITE,
+            bevel_shadow: Color32::GRAY,
+            bevel_dark: Color32::DARK_GRAY,
+            title_end: Color32::TRANSPARENT,
             dark: false,
             title_bar: Color32::from_rgb(0xF0, 0xF0, 0xF0),
             ribbon: Color32::from_rgb(0xF9, 0xF9, 0xF9),
@@ -281,6 +307,11 @@ impl Tokens {
     }
     pub fn dark() -> Self {
         Tokens {
+            classic: false,
+            bevel_light: Color32::WHITE,
+            bevel_shadow: Color32::GRAY,
+            bevel_dark: Color32::DARK_GRAY,
+            title_end: Color32::TRANSPARENT,
             dark: true,
             title_bar: Color32::from_rgb(0x1F, 0x1F, 0x1F),
             ribbon: Color32::from_rgb(0x29, 0x29, 0x29),
@@ -320,10 +351,66 @@ impl Tokens {
             orange: Color32::from_rgb(0xF0, 0xA0, 0x50),
         }
     }
+    fn classic(p: shared::Palette) -> Self {
+        let c = |hex: u32| Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
+        Self {
+            classic: true,
+            bevel_light: c(p.light),
+            bevel_shadow: c(p.shadow),
+            bevel_dark: c(p.dark),
+            title_end: c(p.blue),
+            title_bar: c(p.navy),
+            ribbon: c(p.face),
+            tab_strip: c(p.face),
+            canvas: c(p.shadow),
+            panel: c(p.face),
+            border: c(p.shadow),
+            border_strong: c(p.dark),
+            text: c(p.ink),
+            text_dim: c(p.muted),
+            text_disabled: c(p.muted),
+            icon: c(p.ink),
+            hover: c(p.row),
+            pressed: c(p.selected_surface),
+            checked: c(p.selected_surface),
+            accent: c(p.selection),
+            accent_text: c(p.selection),
+            on_accent: c(p.title_ink),
+            input: c(p.input),
+            input_border: c(p.shadow),
+            group_label: c(p.muted),
+            ruler: c(p.face),
+            ruler_margin: c(p.shadow),
+            ruler_tick: c(p.ink),
+            status_bar: c(p.face),
+            selection: c(p.selection).gamma_multiply(0.28),
+            caret: Color32::BLACK,
+            menu: c(p.face),
+            dark: false,
+            ..Self::light()
+        }
+    }
+    pub(crate) fn is_classic(&self) -> bool {
+        self.classic
+    }
+    pub(crate) fn radius(&self, modern: f32) -> f32 {
+        if self.classic { shared::CORNER_RADIUS } else { modern }
+    }
+    pub(crate) fn caption_ink(&self) -> Color32 {
+        if self.classic { self.on_accent } else { self.text }
+    }
     pub fn get(ctx: &egui::Context) -> Tokens {
-        if ctx.global_style().visuals.dark_mode { Tokens::dark() } else { Tokens::light() }
+        match ctx.data(|d| d.get_temp::<Appearance>(egui::Id::new("classic_theme"))) {
+            Some(Appearance::Classic) => Self::classic(shared::CLASSIC),
+            Some(Appearance::Pink) => Self::classic(shared::PINK),
+            _ if ctx.global_style().visuals.dark_mode => Self::dark(),
+            _ => Self::light(),
+        }
     }
 }
+
+/// Host-owned, lazy installed-font lookup. The result contains at most two UI faces.
+pub type UiFontHook = Box<dyn FnOnce() -> std::sync::mpsc::Receiver<Vec<Arc<wordcraft_fonts::FontFace>>>>;
 
 /// Install the UI fonts (Inter, JetBrains Mono) and the craft-fonts CJK interface faces if built
 /// in, Japanese first.
@@ -351,6 +438,32 @@ pub fn install_fonts_with(ctx: &egui::Context, prefer_hans: bool, system_cjk: bo
 pub fn install_fonts_extra(ctx: &egui::Context, prefer_hans: bool, system_cjk: bool, faces: &[Arc<wordcraft_fonts::FontFace>]) {
     let mut fonts = font_definitions(prefer_hans, system_cjk);
     add_fallback_faces(&mut fonts, faces);
+    ctx.set_fonts(fonts);
+}
+
+/// Install a bounded, host-loaded classic UI family ahead of the existing language fallbacks.
+pub(crate) fn install_chrome_fonts(
+    ctx: &egui::Context,
+    prefer_hans: bool,
+    system_cjk: bool,
+    fallback: &[Arc<wordcraft_fonts::FontFace>],
+    chrome: &[Arc<wordcraft_fonts::FontFace>],
+) {
+    let mut fonts = font_definitions(prefer_hans, system_cjk);
+    add_fallback_faces(&mut fonts, fallback);
+    for (index, face) in chrome.iter().take(2).enumerate() {
+        let name = format!("classic {index}");
+        let mut data = FontData::from_owned(face.data().to_vec());
+        data.index = face.index();
+        fonts.font_data.insert(name.clone(), Arc::new(data));
+        let families =
+            if index == 0 { vec![FontFamily::Proportional] } else { vec![FontFamily::Name("medium".into()), FontFamily::Name("semibold".into())] };
+        for family in families {
+            if let Some(order) = fonts.families.get_mut(&family) {
+                order.insert(0, name.clone());
+            }
+        }
+    }
     ctx.set_fonts(fonts);
 }
 
@@ -567,18 +680,27 @@ fn tracked_job(text: &str, font: &FontId, tracking: f32, color: Color32) -> egui
 /// Setting a concrete theme for `System` would pin the native window too, and macOS then stops
 /// reporting appearance changes (#311).
 pub fn apply(ctx: &egui::Context, appearance: Appearance) {
-    ctx.set_visuals_of(egui::Theme::Light, visuals(&Tokens::light()));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("classic_theme"), appearance));
+    let light = match appearance {
+        Appearance::Classic => Tokens::classic(shared::CLASSIC),
+        Appearance::Pink => Tokens::classic(shared::PINK),
+        _ => Tokens::light(),
+    };
+    ctx.set_visuals_of(egui::Theme::Light, visuals(&light));
     ctx.set_visuals_of(egui::Theme::Dark, visuals(&Tokens::dark()));
     ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = egui::vec2(6.0, 4.0);
         s.spacing.button_padding = egui::vec2(8.0, 3.0);
-        s.spacing.interact_size = egui::vec2(24.0, 22.0);
+        s.spacing.interact_size = egui::vec2(24.0, if appearance.classic() { shared::CONTROL_HEIGHT } else { 22.0 });
         s.spacing.menu_margin = egui::Margin::same(6);
         s.text_styles.insert(egui::TextStyle::Body, regular(12.5));
         s.text_styles.insert(egui::TextStyle::Button, regular(12.5));
         s.text_styles.insert(egui::TextStyle::Small, regular(10.5));
         s.text_styles.insert(egui::TextStyle::Heading, semibold(17.0));
-        s.interaction.tooltip_delay = 0.45;
+        s.interaction.tooltip_delay = if appearance.classic() { shared::TOOLTIP_DELAY_MS / 1000.0 } else { 0.45 };
+        if appearance.classic() {
+            s.animation_time = 0.0;
+        }
     });
     ctx.options_mut(|o| {
         o.fallback_theme = egui::Theme::Light;
@@ -591,8 +713,9 @@ pub fn apply(ctx: &egui::Context, appearance: Appearance) {
 /// into view. Off, each of them happens at once.
 pub fn apply_animations(ctx: &egui::Context, on: bool) {
     let defaults = egui::Style::default();
+    let classic = Tokens::get(ctx).is_classic();
     ctx.all_styles_mut(|s| {
-        s.animation_time = if on { defaults.animation_time } else { 0.0 };
+        s.animation_time = if on && !classic { defaults.animation_time } else { 0.0 };
         s.scroll_animation = if on { defaults.scroll_animation } else { egui::style::ScrollAnimation::none() };
     });
 }
@@ -630,6 +753,19 @@ fn visuals(t: &Tokens) -> Visuals {
     v.widgets.open.weak_bg_fill = t.pressed;
     v.popup_shadow = egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(if t.dark { 120 } else { 40 }) };
     v.window_shadow = egui::Shadow { offset: [0, 8], blur: 28, spread: 0, color: Color32::from_black_alpha(if t.dark { 140 } else { 50 }) };
+    if t.classic {
+        v.weak_text_color = Some(t.text_dim);
+        let square = CornerRadius::ZERO;
+        v.window_corner_radius = square;
+        v.menu_corner_radius = square;
+        for widget in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open, &mut v.widgets.noninteractive] {
+            widget.corner_radius = square;
+        }
+        v.popup_shadow = egui::Shadow::NONE;
+        v.window_shadow = egui::Shadow::NONE;
+        v.widgets.inactive.bg_fill = t.ribbon;
+        v.widgets.inactive.weak_bg_fill = t.ribbon;
+    }
     v
 }
 
@@ -652,6 +788,28 @@ mod tests {
         };
         let (x, y) = (lum(a), lum(b));
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn classic_palette_contract() {
+        use super::*;
+        for appearance in [Appearance::Classic, Appearance::Pink] {
+            let ctx = egui::Context::default();
+            apply(&ctx, appearance);
+            apply_animations(&ctx, true);
+            let t = Tokens::get(&ctx);
+            assert!(t.is_classic());
+            for bg in [t.ribbon, t.menu, t.input] {
+                assert!(contrast(t.text, bg) >= 4.5);
+                assert!(contrast(t.text_dim, bg) >= 4.5);
+            }
+            assert!(contrast(t.caption_ink(), t.title_bar) >= 4.5);
+            let style = ctx.global_style();
+            assert_eq!(style.visuals.window_corner_radius, egui::CornerRadius::ZERO);
+            assert!(contrast(style.visuals.weak_text_color(), t.ribbon) >= 4.5);
+            assert_eq!(style.animation_time, 0.0);
+            assert_eq!(style.interaction.tooltip_delay, shared::TOOLTIP_DELAY_MS / 1000.0);
+        }
     }
 
     /// #655: text and knobs on filled accent controls (Share, avatar, AutoSave, keytips) reach 4.5:1

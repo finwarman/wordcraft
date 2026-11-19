@@ -11,9 +11,15 @@ fn qat_button(ui: &mut Ui, app: &mut WordApp, icon: &str, tip: &str, id: &str, e
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), Sense::click());
     if resp.hovered() && enabled {
-        ui.painter().rect_filled(r, 4.0, t.hover);
+        ui.painter().rect_filled(r, t.radius(4.0), t.hover);
     }
-    let c = if enabled { t.icon } else { t.text_disabled };
+    let c = if t.is_classic() && enabled {
+        if resp.hovered() { t.icon } else { t.caption_ink() }
+    } else if enabled {
+        t.icon
+    } else {
+        t.text_disabled
+    };
     icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(16.0, 16.0)), icon, c, if enabled { t.accent } else { c });
     let sc = crate::widgets::shortcut_text(app, id);
     let resp = resp.on_hover_text(if sc.is_empty() { tip.to_string() } else { format!("{tip} ({sc})") });
@@ -66,7 +72,7 @@ fn quick_access(ui: &mut Ui, app: &mut WordApp) {
     let (r, _) = ui.allocate_exact_size(vec2(26.0, 24.0), Sense::hover());
     let resp = ui.interact(r, qat_menu_button_id(), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(r, 4.0, t.hover);
+        ui.painter().rect_filled(r, t.radius(4.0), t.hover);
     }
     icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(16.0, 16.0)), "more", t.icon, t.accent);
     let resp = resp.on_hover_text(tl!("Customize Quick Access Toolbar"));
@@ -106,7 +112,7 @@ fn undo_list_button(ui: &mut Ui, app: &mut WordApp, enabled: bool) {
     let (r, _) = ui.allocate_exact_size(vec2(12.0, 24.0), Sense::hover());
     let resp = ui.interact(r, undo_list_button_id(), if enabled { Sense::click() } else { Sense::hover() });
     if resp.hovered() && enabled {
-        ui.painter().rect_filled(r, 4.0, t.hover);
+        ui.painter().rect_filled(r, t.radius(4.0), t.hover);
     }
     let c = if enabled { t.icon } else { t.text_disabled };
     icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(9.0, 9.0)), "dropdown", c, c);
@@ -209,6 +215,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
         .frame(egui::Frame::NONE.fill(t.title_bar).inner_margin(egui::Margin { left, right: 10, top: 0, bottom: 0 }))
         .show(ui, |ui| {
             let full = ui.max_rect();
+            crate::theme::caption(ui.painter(), full.expand2(vec2(f32::from(left), 0.0)), &t);
             // Drag the window by the title bar (integrated title bar on macOS).
             let drag = ui.interact(full, ui.id().with("title_drag"), Sense::click_and_drag());
             if drag.drag_started() {
@@ -226,7 +233,13 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                 // cover the document (#196, #176); clicking it then offers Save As where that helps.
                 let block = app.autosave_block();
                 let on = app.autosaves();
-                let label = if block.is_some() { t.text_dim.gamma_multiply(0.6) } else { t.text_dim };
+                let label = if t.is_classic() {
+                    t.caption_ink()
+                } else if block.is_some() {
+                    t.text_dim.gamma_multiply(0.6)
+                } else {
+                    t.text_dim
+                };
                 ui.label(egui::RichText::new(tl!("AutoSave")).font(regular(11.5)).color(label));
                 let (r, resp) = ui.allocate_exact_size(vec2(30.0, 16.0), Sense::click());
                 let (fill, stroke, knob_fill) = match (&block, on) {
@@ -258,14 +271,19 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Account / community.
                     let (r, resp) = ui.allocate_exact_size(vec2(control_h, control_h), Sense::click());
-                    ui.painter().circle_filled(r.center(), control_h / 2.0 - 1.0, t.accent);
+                    if t.is_classic() {
+                        ui.painter().rect_filled(r, 0.0, t.accent);
+                        crate::theme::bevel(ui.painter(), r, crate::theme::Edge::Raised, &t);
+                    } else {
+                        ui.painter().circle_filled(r.center(), control_h / 2.0 - 1.0, t.accent);
+                    }
                     let initials: String = app.session.user_initials().chars().take(2).collect();
                     ui.painter().text(r.center(), Align2::CENTER_CENTER, initials, semibold(10.5), t.on_accent);
-                    resp.on_hover_text(format!("{} — set your name in File › Options", app.session.author));
+                    resp.on_hover_text(format!("{}: set your name in File › Options", app.session.author));
                     ui.add_space(8.0);
                     if app.ui.show_discord {
                         let (r, resp) = ui.allocate_exact_size(vec2(84.0, 22.0), Sense::click());
-                        ui.painter().rect_filled(r, 11.0, if resp.hovered() { t.accent_text } else { t.accent });
+                        ui.painter().rect_filled(r, t.radius(11.0), if resp.hovered() { t.accent_text } else { t.accent });
                         icons::paint(
                             ui.painter(),
                             Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(14.0, 14.0)),
@@ -281,7 +299,13 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                     }
                     // Search ("Tell me").
                     let (r, resp) = ui.allocate_exact_size(vec2(260.0, control_h), Sense::click());
-                    ui.painter().rect(r, 6.0, if resp.hovered() { t.input } else { t.ribbon }, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+                    ui.painter().rect(
+                        r,
+                        t.radius(6.0),
+                        if resp.hovered() { t.input } else { t.ribbon },
+                        Stroke::new(1.0, t.border),
+                        egui::StrokeKind::Inside,
+                    );
                     icons::paint(
                         ui.painter(),
                         Rect::from_center_size(pos2(r.min.x + 16.0, r.center().y), vec2(16.0, 16.0)),
@@ -316,7 +340,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
             });
             // Centred title.
             let title = format!(
-                "{} — {}",
+                "{} - {}",
                 app.title_stem(),
                 if app.session.dirty {
                     tl!("Edited")
@@ -328,7 +352,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
             );
             let font = TypeRung::Chrome.semibold();
             let track = TypeRung::Chrome.tracking();
-            let w = text_width(ui.painter(), &title, &font, track, t.text);
+            let w = text_width(ui.painter(), &title, &font, track, t.caption_ink());
             let cx = full.center().x;
             if cx - w / 2.0 > qat_end + 10.0 && cx + w / 2.0 < right_start - 10.0 {
                 paint_text(
@@ -338,7 +362,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                     &title,
                     &font,
                     track,
-                    t.text,
+                    t.caption_ink(),
                 );
             }
         });
@@ -453,9 +477,9 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                     ] {
                         let (r, resp) = ui.allocate_exact_size(vec2(22.0, 20.0), Sense::click());
                         if on {
-                            ui.painter().rect_filled(r, 3.0, t.checked);
+                            ui.painter().rect_filled(r, t.radius(3.0), t.checked);
                         } else if resp.hovered() {
-                            ui.painter().rect_filled(r, 3.0, t.hover);
+                            ui.painter().rect_filled(r, t.radius(3.0), t.hover);
                         }
                         icons::paint(ui.painter(), r.shrink(3.0), icon, t.icon, t.accent);
                         if resp.on_hover_text(id.trim_start_matches("view.")).clicked() {
@@ -467,7 +491,7 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                     let focus_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(focus.to_string(), regular(11.5), t.text_dim).size().x);
                     let (r, resp) = ui.allocate_exact_size(vec2((focus_w + 26.0).max(56.0), 20.0), Sense::click());
                     if resp.hovered() {
-                        ui.painter().rect_filled(r, 3.0, t.hover);
+                        ui.painter().rect_filled(r, t.radius(3.0), t.hover);
                     }
                     icons::paint(ui.painter(), Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2(16.0, 16.0)), "focus", t.icon, t.accent);
                     let ffont = TypeRung::Caption.regular();
@@ -493,7 +517,7 @@ fn small_icon(ui: &mut Ui, icon: &str, tip: &str) -> bool {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(r, 3.0, t.hover);
+        ui.painter().rect_filled(r, t.radius(3.0), t.hover);
     }
     icons::paint(ui.painter(), r.shrink(3.0), icon, t.icon, t.accent);
     resp.on_hover_text(tip).clicked()

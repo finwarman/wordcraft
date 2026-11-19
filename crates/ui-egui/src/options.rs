@@ -111,9 +111,12 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                 let (r, resp) = ui.allocate_exact_size(vec2(170.0, 30.0), egui::Sense::click());
                 resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, label));
                 if active {
-                    ui.painter().rect_filled(r, 4.0, t.checked);
+                    ui.painter().rect_filled(r, t.radius(4.0), t.checked);
+                    if t.is_classic() {
+                        crate::theme::bevel(ui.painter(), r, crate::theme::Edge::Sunken, &t);
+                    }
                 } else if resp.hovered() {
-                    ui.painter().rect_filled(r, 4.0, t.hover);
+                    ui.painter().rect_filled(r, t.radius(4.0), t.hover);
                 }
                 let font = if active { semibold(14.0) } else { crate::theme::regular(14.0) };
                 ui.painter().text(egui::pos2(r.min.x + 12.0, r.center().y), egui::Align2::LEFT_CENTER, label, font, t.text);

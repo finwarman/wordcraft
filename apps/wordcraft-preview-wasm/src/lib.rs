@@ -30,10 +30,7 @@ impl Preview {
     pub fn render_page_png(&self, page: usize, scale: f32) -> Result<Vec<u8>, String> {
         let layout = self.session.export_layout_with(false);
         let index = page.checked_sub(1).ok_or("page is 1-based")?;
-        let pg = layout
-            .pages
-            .get(index)
-            .ok_or_else(|| format!("no page {page} (document has {} pages)", layout.pages.len()))?;
+        let pg = layout.pages.get(index).ok_or_else(|| format!("no page {page} (document has {} pages)", layout.pages.len()))?;
         let rendered = wordcraft_render::render_page(&self.session.doc, pg, scale, &Default::default());
         Ok(rendered.to_png())
     }

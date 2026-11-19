@@ -90,6 +90,9 @@ fn keytip_badge(ui: &Ui, rect: Rect, id: &str, name: &str) {
 
 /// Whether a command exists and is enabled.
 pub fn enabled(app: &WordApp, id: &str) -> bool {
+    if id == crate::app_updates::COMMAND {
+        return app.updates_ready();
+    }
     match app.session.registry.get(id) {
         Some(s) => (s.enabled)(&app.session).is_none(),
         // Zotero: one command at a time, and only in the desktop app.
@@ -100,6 +103,22 @@ pub fn enabled(app: &WordApp, id: &str) -> bool {
 }
 
 pub(crate) fn bg(ui: &Ui, r: Rect, resp: &Response, checked: bool, t: &Tokens) {
+    if t.is_classic() {
+        let down = resp.is_pointer_button_down_on() || checked;
+        let fill = if down {
+            t.pressed
+        } else if resp.hovered() {
+            t.hover
+        } else {
+            t.ribbon
+        };
+        ui.painter().rect_filled(r, 0.0, fill);
+        crate::theme::bevel(ui.painter(), r, if down { crate::theme::Edge::Sunken } else { crate::theme::Edge::Raised }, t);
+        if resp.has_focus() {
+            ui.painter().rect_stroke(r.shrink(3.0), 0.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+        }
+        return;
+    }
     let fill = if resp.is_pointer_button_down_on() {
         t.pressed
     } else if checked {
@@ -336,6 +355,9 @@ pub fn group_titled(ui: &mut Ui, id_title: &str, title: &str, launcher: Option<&
     });
     let r = inner.response.rect;
     let r = Rect::from_min_max(start, pos2(r.max.x, start.y + CONTENT_H + LABEL_H));
+    if t.is_classic() {
+        crate::theme::bevel(ui.painter(), r.expand(2.0), crate::theme::Edge::Raised, &t);
+    }
     let title_y = r.max.y - LABEL_H / 2.0;
     ui.painter().text(pos2(r.center().x, title_y), Align2::CENTER_CENTER, title, regular(11.0), t.group_label);
     if let Some(cmd) = launcher {
@@ -722,7 +744,8 @@ fn list_rows<'a>(
         };
         area = area.vertical_scroll_offset(offset.max(0.0));
     }
-    let fill = Tokens::get(ui.ctx()).checked;
+    let t = Tokens::get(ui.ctx());
+    let fill = t.checked;
     let shown = area.show_rows(ui, row_h, n, |ui, range| {
         ui.set_min_width(width + 60.0);
         for k in range {
@@ -732,7 +755,7 @@ fn list_rows<'a>(
                 Some(p) => {
                     if lit {
                         let r = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), row_h));
-                        ui.painter().rect_filled(r, 3.0, fill);
+                        ui.painter().rect_filled(r, t.radius(3.0), fill);
                     }
                     p(ui, it).clicked()
                 }

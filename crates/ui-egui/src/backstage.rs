@@ -25,7 +25,12 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         .exact_size(200.0)
         // Fixed width, as in Word: without this egui shows a resize handle that does nothing (#502).
         .resizable(false)
-        .frame(egui::Frame::NONE.fill(APP_COLOR).inner_margin(egui::Margin { left: 0, right: 0, top: if mac { 0 } else { 12 }, bottom: 12 }))
+        .frame(egui::Frame::NONE.fill(if t.is_classic() { t.ribbon } else { APP_COLOR }).inner_margin(egui::Margin {
+            left: 0,
+            right: 0,
+            top: if mac { 0 } else { 12 },
+            bottom: 12,
+        }))
         .show(ui, |ui| {
             let back = if mac {
                 // macOS (#222): the Backstage covers the title bar, so its top band is the title
@@ -38,7 +43,13 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 // The chevron's stroke starts at the content edge.
                 let c = pos2(band.min.x + crate::chrome::MAC_CONTENT_LEFT + 3.0, band.center().y);
                 let resp = ui.interact(Rect::from_center_size(c, vec2(22.0, band.height())), ui.id().with("backstage_back"), Sense::click());
-                icons::paint(ui.painter(), Rect::from_center_size(c, vec2(18.0, 18.0)), "chevronLeft", egui::Color32::WHITE, egui::Color32::WHITE);
+                icons::paint(
+                    ui.painter(),
+                    Rect::from_center_size(c, vec2(18.0, 18.0)),
+                    "chevronLeft",
+                    if t.is_classic() { t.text } else { egui::Color32::WHITE },
+                    if t.is_classic() { t.text } else { egui::Color32::WHITE },
+                );
                 resp
             } else {
                 let (r, resp) = ui.allocate_exact_size(vec2(200.0, 40.0), Sense::click());
@@ -46,8 +57,8 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     ui.painter(),
                     Rect::from_center_size(pos2(r.min.x + 26.0, r.center().y), vec2(18.0, 18.0)),
                     "chevronLeft",
-                    egui::Color32::WHITE,
-                    egui::Color32::WHITE,
+                    if t.is_classic() { t.text } else { egui::Color32::WHITE },
+                    if t.is_classic() { t.text } else { egui::Color32::WHITE },
                 );
                 resp
             };
@@ -62,16 +73,19 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tl!(label)));
                 let active = app.ui.backstage_page == id;
                 if active {
-                    ui.painter().rect_filled(r, 0.0, egui::Color32::from_white_alpha(46));
+                    ui.painter().rect_filled(r, 0.0, if t.is_classic() { t.checked } else { egui::Color32::from_white_alpha(46) });
+                    if t.is_classic() {
+                        crate::theme::bevel(ui.painter(), r, crate::theme::Edge::Sunken, &t);
+                    }
                 } else if resp.hovered() {
-                    ui.painter().rect_filled(r, 0.0, egui::Color32::from_white_alpha(26));
+                    ui.painter().rect_filled(r, 0.0, if t.is_classic() { t.hover } else { egui::Color32::from_white_alpha(26) });
                 }
                 ui.painter().text(
                     pos2(r.min.x + 22.0, r.center().y),
                     Align2::LEFT_CENTER,
                     tl!(label),
                     if active { semibold(14.0) } else { medium(14.0) },
-                    egui::Color32::WHITE,
+                    if t.is_classic() { t.text } else { egui::Color32::WHITE },
                 );
                 if resp.clicked() {
                     match id {
@@ -102,9 +116,15 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     let (r, resp) = ui.allocate_exact_size(vec2(200.0, 32.0), Sense::click());
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tl!(label)));
                     if resp.hovered() {
-                        ui.painter().rect_filled(r, 0.0, egui::Color32::from_white_alpha(26));
+                        ui.painter().rect_filled(r, 0.0, if t.is_classic() { t.hover } else { egui::Color32::from_white_alpha(26) });
                     }
-                    ui.painter().text(pos2(r.min.x + 22.0, r.center().y), Align2::LEFT_CENTER, tl!(label), regular(13.0), egui::Color32::WHITE);
+                    ui.painter().text(
+                        pos2(r.min.x + 22.0, r.center().y),
+                        Align2::LEFT_CENTER,
+                        tl!(label),
+                        regular(13.0),
+                        if t.is_classic() { t.text } else { egui::Color32::WHITE },
+                    );
                     if resp.clicked() {
                         if id == "discord" {
                             let _ = app.run("ui.discord", json!({}));
