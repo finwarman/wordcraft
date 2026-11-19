@@ -220,6 +220,7 @@ impl From<Animations> for String {
 #[derive(Clone, Copy, Debug)]
 pub struct Tokens {
     classic: bool,
+    caption_blend: f32,
     bevel_light: Color32,
     bevel_shadow: Color32,
     bevel_dark: Color32,
@@ -269,6 +270,7 @@ impl Tokens {
     pub fn light() -> Self {
         Tokens {
             classic: false,
+            caption_blend: 0.0,
             bevel_light: Color32::WHITE,
             bevel_shadow: Color32::GRAY,
             bevel_dark: Color32::DARK_GRAY,
@@ -314,6 +316,7 @@ impl Tokens {
     pub fn dark() -> Self {
         Tokens {
             classic: false,
+            caption_blend: 0.0,
             bevel_light: Color32::WHITE,
             bevel_shadow: Color32::GRAY,
             bevel_dark: Color32::DARK_GRAY,
@@ -361,6 +364,7 @@ impl Tokens {
         let c = |hex: u32| Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
         Self {
             classic: true,
+            caption_blend: p.caption_blend,
             bevel_light: c(p.light),
             bevel_shadow: c(p.shadow),
             bevel_dark: c(p.dark),
@@ -816,7 +820,7 @@ mod tests {
                 assert!(contrast(t.ruler_tick, bg) >= 4.5);
             }
             assert!(contrast(t.caption_ink(), t.title_bar) >= 4.5);
-            let middle = t.title_bar.lerp_to_gamma(t.title_end, super::shared::CAPTION_GRADIENT_BLEND / 100.0);
+            let middle = t.title_bar.lerp_to_gamma(t.title_end, t.caption_blend / 100.0);
             assert!(contrast(t.caption_ink(), middle) >= 4.5, "caption text must remain readable through the gradient middle");
             assert!(contrast(t.title_end, t.title_bar) >= 3.0, "disabled caption icons remain visible");
             assert!(contrast(t.on_accent, t.accent) >= 4.5, "selected File navigation remains readable");

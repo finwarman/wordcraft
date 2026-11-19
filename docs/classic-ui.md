@@ -82,3 +82,5 @@ Caption gradients retain the original dark/light palette endpoints. The fade sta
 ## Static caption glitter
 
 Classic/Pink captions share an original compiled pixel pattern with Mail. Edge stars/flecks leave the text band clear. Each caption uses at most128 horizontal repetitions of ten small rectangles in one mesh, with no image texture, animation timer, random state, event hook or idle repaint. Source geometry and opacity are bounded by the shared generator. Document rendering, accessibility and exports are unchanged.
+
+Pink now uses lighter blush surfaces, brighter rose selection/focus and a pale pink-lilac page workspace/ruler margin. Its palette-specific caption blend preserves white-title contrast; Classic colours and blend remain unchanged. The shared generated metadata adds no runtime theme parsing or timer.
