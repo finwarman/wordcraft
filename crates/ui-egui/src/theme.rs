@@ -2,10 +2,13 @@
 
 use std::sync::Arc;
 
+#[path = "application_icon.rs"]
+mod application_icon;
 #[path = "classic_surface.rs"]
 mod classic_surface;
 #[path = "theme_shared.rs"]
 mod shared;
+pub use application_icon::application_icon;
 pub(crate) use classic_surface::{Edge, bevel, caption};
 
 use egui::{Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Rect, Stroke, Visuals};
@@ -886,7 +889,7 @@ mod tests {
         assert!(semi.iter().any(|n| n.starts_with("fallback ")), "the caption is painted with semibold");
     }
 
-    /// #656: dialog primary buttons, the Discord pill, the table eraser and the Navigation search
+    /// #656: dialog primary buttons, the table eraser and the Navigation search
     /// highlight take their colours from the theme, not fixed light-theme values.
     #[test]
     fn interface_colours_come_from_the_theme() {

@@ -361,3 +361,5 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 | 2026-10-10 | major | Full re-measure; restructured to the progress-docs standard (stage banner, two numbers, dimensions, languages, upcoming, progress log); parity tables moved to `docs/target-app-parity.md`, milestones to `docs/roadmap.md` |
 | 2026-10-09 | minor | Recently landed: RTL, Ukrainian and Brazilian Portuguese |
 | 2026-10-06 | major | First honest estimate: 88% catalog, ~62% real parity, alpha ~85% of the way |
+
+Fin fork2181, 19 November 2026: theme-driven original Dock artwork and WordCraft display name preserve Fin identity. Visible Tabs… controls persistent visibility; Mailings/Developer default hidden. Discord integration removed. Caption glyphs and ribbon overflow controls gain explicit geometry/frames. Finder retains the signed Classic bundle icon. See docs/classic-ui.md.

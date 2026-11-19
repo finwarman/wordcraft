@@ -35,7 +35,7 @@ The reference language is late-1990s desktop tooling: square surfaces, explicit 
 
 The native host loads at most two installed UI faces once on a worker, each capped at 2MiB. Font installation occurs on a profile/language/fallback change. Pink and Classic share that font profile. No proprietary font is bundled. The document renderer retains its own font selection.
 
-Discord is hidden by default, including the Home footer. File, Edit and View hold export, editing mode and comments instead of duplicate prominent toolbar controls. The menu bar dispatches existing commands. The ribbon remains available so the skin does not remove features. View or Interface Theme changes the skin; File opens documents, print settings, recent files and Options. Keyboard shortcuts, native file dialogs and save guards use their existing paths.
+Discord controls, commands, links and settings are removed. Mailings and Developer start hidden; Tabs… shows visibility checkboxes and the full ribbon editor. Saved explicit layouts retain their choices. File, Edit and View hold export, editing mode and comments instead of duplicate prominent toolbar controls. The menu bar dispatches existing commands. The ribbon remains available so the skin does not remove features. View or Interface Theme changes the skin; File opens documents, print settings, recent files and Options. Keyboard shortcuts, native file dialogs and save guards use their existing paths.
 
 ## Fork identity and updates
 
@@ -62,3 +62,9 @@ The macOS surface uses egui-wgpu LOW_LATENCY with vsync. In repeated 1440x920/2x
 Native qualification now reports installed UI-face count/bytes/readiness and aggregate texture metadata through explicit ui.inspect calls. The native font worker remains enabled with WORDCRAFT_NO_PREFS; only preferences, the personal dictionary and custom added fonts are disabled. Earlier notes calling these bundled-font-only native runs were incorrect. The separate graphics example uses Services::default and bundled UI fallbacks.
 
 Keyboard/AccessKit regression checks cover named caption/status controls, AutoSave state, User settings, Back placement/keyboard activation and Close's unsaved prompt. The native macOS tree is inspected after installation. Live VoiceOver speech and a long idle/scrolling soak remain separate 2168 gates.
+
+## 2181 icons and controls
+
+The displayed app name is WordCraft; the Fin installation filename, bundle identifier, profile and update identity remain separate. Original Classic/Pink document-and-pencil artwork uses the shared palette. A bounded pair of native images is decoded only on demand. The Dock redraws only when the theme changes and restores from the saved theme at launch. Finder and the closed-app icon remain Classic: custom Finder metadata failed strict signature verification in a disposable qualification bundle. Signed resources are never changed at runtime.
+
+Caption marks use font-independent geometry inside the bevel; maximize changes to Restore while maximized. Ribbon scroll controls sit on opaque framed rails, with accessible names and focus rings.

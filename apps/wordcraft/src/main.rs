@@ -15,6 +15,8 @@ mod apple_events;
 mod clipboard;
 mod control_server;
 mod default_apps;
+#[cfg(target_os = "macos")]
+mod dock_icon;
 mod file_dialogs;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
@@ -37,6 +39,7 @@ struct App(
     Option<control_server::KeyFile>,
     file_dialogs::Launcher,
     #[cfg(target_os = "macos")] fmv_macos_events::Inbox,
+    #[cfg(target_os = "macos")] dock_icon::DockIcon,
 );
 
 impl eframe::App for App {
@@ -44,6 +47,8 @@ impl eframe::App for App {
         #[cfg(target_os = "macos")]
         apple_events::poll(&self.4, &mut self.0, ctx);
         self.0.logic(ctx);
+        #[cfg(target_os = "macos")]
+        self.5.update(self.0.ui.theme);
         self.3.show(frame);
         let prev = self.0.ui.window;
         self.0.ui.window = ctx.input(|i| WindowGeometry::track(prev, i.viewport(), i.viewport_rect().size()));
@@ -225,11 +230,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: &egui::Context) -> Services {
 
 /// Window, Dock and taskbar icon.
 fn app_icon() -> Option<egui::IconData> {
-    #[cfg(target_os = "macos")]
-    let png: &[u8] = include_bytes!("../../../assets/app-icon/wordcraft-macos-512.png");
-    #[cfg(not(target_os = "macos"))]
-    let png: &[u8] = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.wordcraft.png");
-    eframe::icon_data::from_png_bytes(png).map_err(|e| log::warn!("app icon: {e}")).ok()
+    Some(wordcraft_ui_egui::theme::application_icon(wordcraft_ui_egui::theme::Appearance::Classic))
 }
 
 /// The commit the build came from (short), or `dev`.
@@ -379,6 +380,8 @@ fn main() -> eframe::Result {
                 dialogs,
                 #[cfg(target_os = "macos")]
                 apple_events.connect(&cc.egui_ctx),
+                #[cfg(target_os = "macos")]
+                dock_icon::DockIcon::new(),
             )))
         }),
     )

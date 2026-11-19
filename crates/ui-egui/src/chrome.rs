@@ -4,7 +4,7 @@ use egui::{Align2, Rect, Sense, Stroke, Ui, pos2, vec2};
 use serde_json::json;
 use wordcraft_doc::StoryRef;
 
-use crate::theme::{Tokens, TypeRung, medium, paint_text, regular, semibold, text_width};
+use crate::theme::{Tokens, TypeRung, paint_text, regular, semibold, text_width};
 use crate::{WordApp, icons};
 
 fn qat_button(ui: &mut Ui, app: &mut WordApp, icon: &str, tip: &str, id: &str, enabled: bool) -> egui::Response {
@@ -232,10 +232,11 @@ enum WindowAction {
     Minimize,
 }
 fn window_controls(app: &mut WordApp, ui: &mut Ui, t: &Tokens) {
-    for (action, label, glyph) in [
-        (WindowAction::Close, "Close window", "×"),
-        (WindowAction::Maximize, "Maximize window", "□"),
-        (WindowAction::Minimize, "Minimize window", "_"),
+    let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+    for (action, label) in [
+        (WindowAction::Close, "Close window"),
+        (WindowAction::Maximize, if maximized { "Restore window" } else { "Maximize window" }),
+        (WindowAction::Minimize, "Minimize window"),
     ] {
         let (rect, response) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
@@ -246,7 +247,26 @@ fn window_controls(app: &mut WordApp, ui: &mut Ui, t: &Tokens) {
             if response.is_pointer_button_down_on() { crate::theme::Edge::Sunken } else { crate::theme::Edge::Raised },
             t,
         );
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, semibold(17.0), t.text);
+        // Geometric marks stay inside the bevel regardless of installed font metrics.
+        let center = rect.center();
+        let stroke = Stroke::new(1.5, t.text);
+        match action {
+            WindowAction::Close => {
+                ui.painter().line_segment([center + vec2(-4.0, -4.0), center + vec2(4.0, 4.0)], stroke);
+                ui.painter().line_segment([center + vec2(-4.0, 4.0), center + vec2(4.0, -4.0)], stroke);
+            }
+            WindowAction::Minimize => {
+                ui.painter().rect_filled(Rect::from_center_size(center + vec2(0.0, 3.0), vec2(10.0, 2.0)), 0.0, t.text);
+            }
+            WindowAction::Maximize => {
+                let window = Rect::from_center_size(center, vec2(9.0, 9.0));
+                if maximized {
+                    ui.painter().rect_stroke(window.translate(vec2(2.0, -2.0)), 0.0, stroke, egui::StrokeKind::Inside);
+                    ui.painter().rect_filled(window.translate(vec2(-1.0, 1.0)), 0.0, t.ribbon);
+                }
+                ui.painter().rect_stroke(window, 0.0, stroke, egui::StrokeKind::Inside);
+            }
+        }
         if response.has_focus() {
             ui.painter().rect_stroke(rect.shrink(3.0), 0.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
         }
@@ -259,7 +279,6 @@ fn window_controls(app: &mut WordApp, ui: &mut Ui, t: &Tokens) {
             }
             WindowAction::Minimize => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
             WindowAction::Maximize => {
-                let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
             }
         }
@@ -279,7 +298,7 @@ pub(crate) fn file_caption(app: &mut WordApp, ui: &mut Ui) {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
             ui.horizontal_centered(|ui| {
-                ui.label(egui::RichText::new("WordCraft Fin").font(semibold(13.0)).color(t.caption_ink()));
+                ui.label(egui::RichText::new("WordCraft").font(semibold(13.0)).color(t.caption_ink()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| window_controls(app, ui, &t));
             });
         });
@@ -383,23 +402,6 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                         let _ = app.run("file.options", json!({}));
                     }
                     ui.add_space(8.0);
-                    if app.ui.show_discord {
-                        let (r, resp) = ui.allocate_exact_size(vec2(84.0, 22.0), Sense::click());
-                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tl!("Discord")));
-                        ui.painter().rect_filled(r, t.radius(11.0), if resp.hovered() { t.accent_text } else { t.accent });
-                        icons::paint(
-                            ui.painter(),
-                            Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(14.0, 14.0)),
-                            "discord",
-                            t.on_accent,
-                            t.on_accent,
-                        );
-                        ui.painter().text(pos2(r.min.x + 24.0, r.center().y), Align2::LEFT_CENTER, tl!("Discord"), medium(11.5), t.on_accent);
-                        if resp.on_hover_text(tl!("Join the ArtCraft community on Discord")).clicked() {
-                            let _ = app.run("ui.discord", json!({}));
-                        }
-                        ui.add_space(8.0);
-                    }
                     // Search ("Tell me").
                     let search_width = ui.available_width().clamp(26.0, 260.0);
                     let (r, resp) = ui.allocate_exact_size(vec2(search_width, control_h), Sense::click());

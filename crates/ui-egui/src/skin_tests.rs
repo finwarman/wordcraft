@@ -42,7 +42,7 @@ fn toolbar_names_and_keyboard() {
 
 #[test]
 fn narrow_tabs_remain_reachable() {
-    let mut h = harness([760.0, 600.0]);
+    let mut h = harness([560.0, 600.0]);
     h.run_steps(4);
     h.get_by_label("More").click_accesskit();
     h.run_steps(3);
@@ -100,4 +100,18 @@ fn square_chrome_close_is_guarded() {
     h.run_steps(4);
     assert!(!h.state().quit_requested);
     assert_eq!(h.state().dialog.as_ref().map(crate::dialogs::Dialog::name), Some("saveChanges"));
+}
+
+#[test]
+fn tab_visibility_is_discoverable() {
+    let mut h = harness([1440.0, 900.0]);
+    h.run_steps(4);
+    assert!(h.query_by_role_and_label(Role::Tab, "Mailings").is_none());
+    assert!(h.query_by_role_and_label(Role::Tab, "Developer").is_none());
+    h.get_by_label("Tabs…").click_accesskit();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::CheckBox, "Developer").click_accesskit();
+    h.run_steps(4);
+    assert!(h.state().session.ribbon.tabs().iter().any(|tab| tab.name == "Developer" && !tab.hidden));
+    assert!(h.state_mut().run("ui.discord", json!({})).is_err());
 }

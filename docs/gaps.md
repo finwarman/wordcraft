@@ -147,3 +147,5 @@ The same gaps grouped the way the parity documents are, for agents working in on
 | 2026-10-10 | major | First version, from the full re-measure: 29 ranked gaps with evidence, impact and hours |
 | 2026-10-10 | trivial | #307: Draw tab pens, eraser and Hide Ink landed; ink gap narrowed |
 | 2026-10-12 | trivial | #811: large-table scrolling fixed; performance gap (#20) narrowed |
+
+Fin fork2181, 19 November 2026: theme-driven original Dock artwork and WordCraft display name preserve Fin identity. Visible Tabs… controls persistent visibility; Mailings/Developer default hidden. Discord integration removed. Caption glyphs and ribbon overflow controls gain explicit geometry/frames. Finder retains the signed Classic bundle icon. See docs/classic-ui.md.

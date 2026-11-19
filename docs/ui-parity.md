@@ -134,3 +134,5 @@ buttons, the remaining labels start with zero and use the same number of digits 
 `01`, `02` on a ten-button toolbar; `001` through `011` on a twenty-button toolbar). This keeps
 labels unambiguous. Those extra-number assignments have not been compared with Word.
 | 2026-10-11 | trivial | Draw: Lasso, Add Pen gallery, Ink to Shape and Ink Replay (#395) |
+
+Fin fork2181, 19 November 2026: theme-driven original Dock artwork and WordCraft display name preserve Fin identity. Visible Tabs… controls persistent visibility; Mailings/Developer default hidden. Discord integration removed. Caption glyphs and ribbon overflow controls gain explicit geometry/frames. Finder retains the signed Classic bundle icon. See docs/classic-ui.md.

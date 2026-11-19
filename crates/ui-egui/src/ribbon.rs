@@ -197,6 +197,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
                 const MORE_WIDTH: f32 = 64.0;
+                const TABS_WIDTH: f32 = 64.0;
                 let active_width = ui.ctx().fonts_mut(|f| f.layout_no_wrap(tl!(&app.ui.tab).to_string(), medium(12.5), t.text).size().x) + 18.0;
                 let mut active_seen = false;
                 let mut overflow = Vec::new();
@@ -211,7 +212,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     let w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(shown.to_string(), medium(12.5), t.text).size().x) + 18.0;
                     let active = app.ui.tab == tab && !app.ui.backstage;
                     let reserve = if !active_seen && !active { active_width } else { 0.0 };
-                    if t.is_classic() && ui.available_width() < w + MORE_WIDTH + reserve {
+                    if t.is_classic() && ui.available_width() < w + MORE_WIDTH + TABS_WIDTH + reserve {
                         overflow.push((tab, shown));
                         continue;
                     }
@@ -268,6 +269,24 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     .response
                     .on_hover_text("More tool tabs");
                 }
+                ui.menu_button(tl!("Tabs…"), |ui| {
+                    ui.label(tl!("Visible tool tabs"));
+                    for entry in &user_tabs {
+                        let mut visible = !entry.hidden;
+                        let label = if entry.custom { entry.name.as_str() } else { tl!(&entry.name) };
+                        if ui.checkbox(&mut visible, label).changed() {
+                            let key = if visible { "show" } else { "hide" };
+                            let _ = app.run("tools.customizeRibbon", json!({key: entry.name}));
+                        }
+                    }
+                    ui.separator();
+                    if ui.button(tl!("Customize tabs and groups…")).clicked() {
+                        let _ = app.run("tools.customizeRibbon", json!({}));
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text(tl!("Show, hide or reorder tool tabs"));
                 if !t.is_classic() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Share, Editing mode, Comments.
@@ -367,13 +386,13 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             let step = 160.0;
             let mut next = None;
             if offset > 1.0 {
-                let left = Rect::from_min_max(r.left_top(), pos2(r.left() + 18.0, r.bottom()));
+                let left = Rect::from_min_max(r.left_top(), pos2(r.left() + 26.0, r.bottom()));
                 if edge_cue(ui, left, "‹", tl!("Scroll ribbon left"), &t) {
                     next = Some(offset - step);
                 }
             }
             if overflow - offset > 1.0 {
-                let right = Rect::from_min_max(pos2(r.right() - 18.0, r.top()), r.right_bottom());
+                let right = Rect::from_min_max(pos2(r.right() - 26.0, r.top()), r.right_bottom());
                 if edge_cue(ui, right, "›", tl!("Scroll ribbon right"), &t) {
                     next = Some(offset + step);
                 }
@@ -427,9 +446,22 @@ fn two_lines(label: &str) -> String {
 /// A chevron over a ribbon edge that is also a button; `true` on the frame it is clicked.
 fn edge_cue(ui: &mut Ui, rect: Rect, glyph: &str, hint: &str, t: &Tokens) -> bool {
     let resp = ui.interact(rect, ui.id().with(glyph), Sense::click()).on_hover_text(hint);
-    let ink = if resp.hovered() { t.text } else { t.text_dim };
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), hint));
+    // An opaque rail covers clipped tools and separates the scroll action from their labels.
     ui.painter().rect_filled(rect, 0.0, t.ribbon);
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, egui::FontId::proportional(18.0), ink);
+    ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+    let button = Rect::from_center_size(rect.center(), vec2(22.0, 28.0));
+    ui.painter().rect_filled(button, 0.0, if resp.hovered() { t.hover } else { t.ribbon });
+    crate::theme::bevel(
+        ui.painter(),
+        button,
+        if resp.is_pointer_button_down_on() { crate::theme::Edge::Sunken } else { crate::theme::Edge::Raised },
+        t,
+    );
+    ui.painter().text(button.center(), Align2::CENTER_CENTER, glyph, semibold(20.0), t.text);
+    if resp.has_focus() {
+        ui.painter().rect_stroke(button.shrink(3.0), 0.0, egui::Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+    }
     resp.clicked()
 }
 
@@ -1789,7 +1821,6 @@ fn help(app: &mut WordApp, ui: &mut Ui) {
     group(ui, "Help", None, app, |ui, app| {
         big(ui, app, "update", "App updates", crate::app_updates::COMMAND, json!({}), false);
         big(ui, app, "help", "Help", "ui.dialog", json!({"name": "about"}), false);
-        big(ui, app, "discord", "Community\nDiscord", "ui.discord", json!({}), false);
     });
     group(ui, "Agents", None, app, |ui, app| {
         big(ui, app, "macros", "Commands", "ui.dialog", json!({"name": "commands"}), false);
@@ -2591,6 +2622,7 @@ mod tests {
         for lang in crate::i18n::Lang::all() {
             h.state_mut().run("ui.language", json!({"value": lang.code()})).unwrap();
             for tab in TABS.iter().filter(|t| **t != "File") {
+                h.state_mut().session.ribbon.set_hidden(tab, false).unwrap();
                 h.state_mut().run("ui.tab", json!({"tab": tab})).unwrap();
                 h.run_steps(2);
                 crate::widgets::TALL_GROUPS.with(|g| g.borrow_mut().clear());

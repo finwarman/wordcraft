@@ -24,6 +24,7 @@ pub const CONTEXTUAL_TABS: [&str; 7] =
 pub const DEFAULT_QAT: [&str; 3] = ["file.save", "edit.undo", "edit.redo"];
 
 /// Limits on what a (possibly hand-edited) saved layout can hold.
+const DEFAULT_HIDDEN_TABS: [&str; 2] = ["Mailings", "Developer"];
 const MAX_TABS: usize = 64;
 const MAX_GROUPS: usize = 64;
 const MAX_COMMANDS: usize = 200;
@@ -87,7 +88,10 @@ fn reserved(name: &str) -> bool {
 }
 
 fn default_tabs() -> Vec<TabEntry> {
-    TABS.iter().skip(1).map(|t| TabEntry { name: (*t).to_string(), custom: false, hidden: false, groups: Vec::new() }).collect()
+    TABS.iter()
+        .skip(1)
+        .map(|t| TabEntry { name: (*t).to_string(), custom: false, hidden: DEFAULT_HIDDEN_TABS.contains(t), groups: Vec::new() })
+        .collect()
 }
 
 /// `base`, or `base 2`, `base 3`… whichever `taken` doesn't have yet.
@@ -168,7 +172,7 @@ impl RibbonLayout {
                 continue;
             }
             let at = TABS.get(1..i).and_then(|before| before.iter().rev().find_map(|b| tabs.iter().position(|t| !t.custom && t.name == *b)));
-            let entry = TabEntry { name: (*name).to_string(), custom: false, hidden: false, groups: Vec::new() };
+            let entry = TabEntry { name: (*name).to_string(), custom: false, hidden: DEFAULT_HIDDEN_TABS.contains(name), groups: Vec::new() };
             tabs.insert(at.map_or(0, |p| p + 1), entry);
         }
         self.tabs = if tabs == default_tabs() { Vec::new() } else { tabs };
@@ -468,6 +472,21 @@ mod tests {
         assert_eq!(s.ribbon, RibbonLayout::default());
         s.run("tools.customizeRibbon", &json!({})).unwrap();
         assert_eq!(s.ui_requests.last(), Some(&json!({"open": "customizeRibbon"})));
+    }
+
+    #[test]
+    fn default_tabs_preserve_choices() {
+        let mut layout = RibbonLayout::default();
+        for name in DEFAULT_HIDDEN_TABS {
+            assert!(layout.tabs().iter().any(|tab| tab.name == name && tab.hidden));
+            layout.set_hidden(name, false).unwrap();
+        }
+        let restored: RibbonLayout = serde_json::from_value(serde_json::to_value(&layout).unwrap()).unwrap();
+        for name in DEFAULT_HIDDEN_TABS {
+            assert!(restored.tabs().iter().any(|tab| tab.name == name && !tab.hidden));
+        }
+        let partial = RibbonLayout::from_value(&json!({"tabs":[{"name":"Home"}]}));
+        assert!(partial.tabs().iter().any(|tab| tab.name == "Developer" && tab.hidden));
     }
 
     #[test]
