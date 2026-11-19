@@ -105,15 +105,13 @@ pub fn enabled(app: &WordApp, id: &str) -> bool {
 pub(crate) fn bg(ui: &Ui, r: Rect, resp: &Response, checked: bool, t: &Tokens) {
     if t.is_classic() {
         let down = resp.is_pointer_button_down_on() || checked;
-        let fill = if down {
-            t.pressed
-        } else if resp.hovered() {
-            t.hover
-        } else {
-            t.ribbon
-        };
-        ui.painter().rect_filled(r, 0.0, fill);
-        crate::theme::bevel(ui.painter(), r, if down { crate::theme::Edge::Sunken } else { crate::theme::Edge::Raised }, t);
+        if down || resp.hovered() {
+            ui.painter().rect_filled(r, 0.0, if down { t.checked } else { t.hover });
+            crate::theme::bevel(ui.painter(), r, if down { crate::theme::Edge::Sunken } else { crate::theme::Edge::Raised }, t);
+        }
+        if checked {
+            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+        }
         if resp.has_focus() {
             ui.painter().rect_stroke(r.shrink(3.0), 0.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
         }
@@ -132,6 +130,45 @@ pub(crate) fn bg(ui: &Ui, r: Rect, resp: &Response, checked: bool, t: &Tokens) {
     if checked {
         ui.painter().rect_stroke(r, CornerRadius::same(4), Stroke::new(1.0, t.accent.linear_multiply(0.5)), egui::StrokeKind::Inside);
     }
+}
+
+const TOGGLE_IDS: &[&str] = &[
+    "format.bold",
+    "format.italic",
+    "format.underline",
+    "format.strikethrough",
+    "format.subscript",
+    "format.superscript",
+    "format.border",
+    "view.marks",
+    "para.alignLeft",
+    "para.alignCenter",
+    "para.alignRight",
+    "para.justify",
+    "para.ltr",
+    "para.rtl",
+    "draw.select",
+    "draw.lasso",
+    "draw.eraser",
+    "draw.pen",
+    "draw.pencil",
+    "draw.highlighter",
+];
+enum ToolState {
+    Disabled,
+    Idle,
+    Selected,
+}
+fn tool_info(resp: &Response, id: &str, label: &str, state: ToolState) {
+    let enabled = !matches!(state, ToolState::Disabled);
+    let checked = matches!(state, ToolState::Selected);
+    resp.widget_info(|| {
+        if checked || TOGGLE_IDS.contains(&id) {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, checked, label)
+        } else {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label)
+        }
+    });
 }
 
 /// Runs a ribbon button's command, then hands keyboard focus back to the document so typing
@@ -178,10 +215,24 @@ fn big_button(ui: &mut Ui, app: &mut WordApp, icon: &str, label: &str, id: &str,
     let t = Tokens::get(ui.ctx());
     let galley_w =
         label.split('\n').map(|l| ui.ctx().fonts_mut(|f| f.layout_no_wrap(l.to_string(), regular(11.5), t.text).size().x)).fold(0.0, f32::max);
-    let w = (galley_w + 12.0).max(44.0);
-    let (r, resp) = ui.allocate_exact_size(vec2(w, CONTENT_H), Sense::click());
-    keytip_badge(ui, r, id, &label.replace('\n', " "));
+    let marker_w = if menu { DROPDOWN + 3.0 } else { 0.0 };
+    let w = (galley_w + marker_w + 12.0).max(44.0);
     let on = enabled(app, id);
+    let resp = ui.add_enabled(on, |ui: &mut Ui| ui.allocate_exact_size(vec2(w, CONTENT_H), Sense::click()).1);
+    let r = resp.rect;
+    keytip_badge(ui, r, id, &label.replace('\n', " "));
+    tool_info(
+        &resp,
+        id,
+        &label.replace('\n', " "),
+        if !on {
+            ToolState::Disabled
+        } else if checked {
+            ToolState::Selected
+        } else {
+            ToolState::Idle
+        },
+    );
     bg(ui, r, &resp, checked, &t);
     let ic = Rect::from_center_size(pos2(r.center().x, r.min.y + BIG_ICON_Y), vec2(32.0, 32.0));
     let (c, a) = if on { (t.icon, t.accent) } else { (t.text_disabled, t.text_disabled) };
@@ -205,9 +256,22 @@ pub fn small(ui: &mut Ui, app: &mut WordApp, icon: &str, label: Option<&str>, ti
     let (label, tip) = (label.map(|l| tl!(l)), tl!(tip));
     let t = Tokens::get(ui.ctx());
     let text_w = label.map(|l| ui.ctx().fonts_mut(|f| f.layout_no_wrap(l.to_string(), regular(11.5), t.text).size().x) + 6.0).unwrap_or(0.0);
-    let (r, resp) = ui.allocate_exact_size(vec2(24.0 + text_w, 22.0), Sense::click());
-    keytip_badge(ui, r, id, tip);
     let on = enabled(app, id);
+    let resp = ui.add_enabled(on, |ui: &mut Ui| ui.allocate_exact_size(vec2(24.0 + text_w, 22.0), Sense::click()).1);
+    let r = resp.rect;
+    keytip_badge(ui, r, id, tip);
+    tool_info(
+        &resp,
+        id,
+        tip,
+        if !on {
+            ToolState::Disabled
+        } else if checked {
+            ToolState::Selected
+        } else {
+            ToolState::Idle
+        },
+    );
     bg(ui, r, &resp, checked, &t);
     let ic = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(17.0, 17.0));
     let (c, a) = if on { (t.icon, t.accent) } else { (t.text_disabled, t.text_disabled) };
@@ -220,7 +284,6 @@ pub fn small(ui: &mut Ui, app: &mut WordApp, icon: &str, label: Option<&str>, ti
     if resp.clicked() && on {
         run_from_ribbon(app, id, params);
     }
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, on, tip));
     resp
 }
 
@@ -238,21 +301,41 @@ pub fn split(
 ) {
     let tip = tl!(tip);
     let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
+    let on = enabled(app, id);
+    let resp = ui.add_enabled(on, |ui: &mut Ui| ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click()).1);
+    let r = resp.rect;
     keytip_badge(ui, r, id, tip);
-    let (ar, aresp) = ui.allocate_exact_size(vec2(11.0, 22.0), Sense::click());
+    let aresp = ui.add_enabled(on, |ui: &mut Ui| ui.allocate_exact_size(vec2(11.0, 22.0), Sense::click()).1);
+    let ar = aresp.rect;
     bg(ui, r, &resp, checked, &t);
     bg(ui, ar, &aresp, false, &t);
     let ic = Rect::from_center_size(r.center(), vec2(17.0, 17.0));
-    icons::paint(ui.painter(), ic, icon, t.icon, t.accent);
+    let (ink, accent) = if on { (t.icon, t.accent) } else { (t.text_disabled, t.text_disabled) };
+    icons::paint(ui.painter(), ic, icon, ink, accent);
     if let Some(sw) = swatch {
         ui.painter().rect_filled(Rect::from_min_max(pos2(r.min.x + 4.0, r.max.y - 5.0), pos2(r.max.x - 4.0, r.max.y - 2.0)), 0.0, sw);
     }
-    icons::paint(ui.painter(), Rect::from_center_size(ar.center(), vec2(DROPDOWN, DROPDOWN)), "dropdown", t.icon, t.accent);
+    icons::paint(ui.painter(), Rect::from_center_size(ar.center(), vec2(DROPDOWN, DROPDOWN)), "dropdown", ink, accent);
+    tool_info(
+        &resp,
+        id,
+        tip,
+        if !on {
+            ToolState::Disabled
+        } else if checked {
+            ToolState::Selected
+        } else {
+            ToolState::Idle
+        },
+    );
+    aresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, on, format!("{tip} options")));
     let resp = tooltip(app, resp, tip, id);
     command_menu(&resp, app, id);
-    if resp.clicked() {
+    if resp.clicked() && on {
         run_from_ribbon(app, id, params);
+    }
+    if !on {
+        return;
     }
     egui::Popup::menu(&aresp).show(|ui| {
         ui.set_min_width(180.0);
@@ -289,7 +372,8 @@ pub fn menu_button(
             .map(|l| ui.ctx().fonts_mut(|f| f.layout_no_wrap(l.to_string(), regular(11.5), t.text).size().x))
             .fold(0.0, f32::max);
         let w = (galley_w + 22.0).max(44.0);
-        let (r, resp) = ui.allocate_exact_size(vec2(w, CONTENT_H), Sense::click());
+        let resp = ui.add_enabled(on, |ui: &mut Ui| ui.allocate_exact_size(vec2(w, CONTENT_H), Sense::click()).1);
+        let r = resp.rect;
         keytip_badge(ui, r, "menu", tip);
         bg(ui, r, &resp, false, &t);
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.center().x, r.min.y + BIG_ICON_Y), vec2(32.0, 32.0)), icon, c, a);
@@ -302,7 +386,8 @@ pub fn menu_button(
         resp
     } else {
         let text_w = label.map(|l| ui.ctx().fonts_mut(|f| f.layout_no_wrap(l.to_string(), regular(11.5), t.text).size().x) + 6.0).unwrap_or(0.0);
-        let (r, resp) = ui.allocate_exact_size(vec2(24.0 + text_w + 10.0, 22.0), Sense::click());
+        let resp = ui.add_enabled(on, |ui: &mut Ui| ui.allocate_exact_size(vec2(24.0 + text_w + 10.0, 22.0), Sense::click()).1);
+        let r = resp.rect;
         keytip_badge(ui, r, "menu", tip);
         bg(ui, r, &resp, false, &t);
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(17.0, 17.0)), icon, c, a);
@@ -312,6 +397,8 @@ pub fn menu_button(
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.max.x - 6.0, r.center().y), vec2(DROPDOWN, DROPDOWN)), "dropdown", c, c);
         resp
     };
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, on, tip));
+    ui.ctx().accesskit_node_builder(resp.id, |node| node.set_has_popup(egui::accesskit::HasPopup::Menu));
     let resp = resp.on_hover_text(tip);
     if !on {
         return;
@@ -338,7 +425,8 @@ pub fn group(ui: &mut Ui, title: &str, launcher: Option<&str>, app: &mut WordApp
 /// A ribbon group whose title is shown as is (a custom group's name, Customize Ribbon).
 pub fn group_titled(ui: &mut Ui, id_title: &str, title: &str, launcher: Option<&str>, app: &mut WordApp, add: impl FnOnce(&mut Ui, &mut WordApp)) {
     let t = Tokens::get(ui.ctx());
-    let label_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(title.to_string(), regular(11.0), t.group_label).size().x);
+    let label_font = if t.is_classic() { crate::theme::semibold(11.0) } else { regular(11.0) };
+    let label_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(title.to_string(), label_font.clone(), t.group_label).size().x);
     let start = ui.cursor().min;
     let inner = ui.vertical(|ui| {
         ui.set_min_width(label_w + if launcher.is_some() { 22.0 } else { 10.0 });
@@ -355,11 +443,14 @@ pub fn group_titled(ui: &mut Ui, id_title: &str, title: &str, launcher: Option<&
     });
     let r = inner.response.rect;
     let r = Rect::from_min_max(start, pos2(r.max.x, start.y + CONTENT_H + LABEL_H));
-    if t.is_classic() {
-        crate::theme::bevel(ui.painter(), r.expand(2.0), crate::theme::Edge::Raised, &t);
-    }
     let title_y = r.max.y - LABEL_H / 2.0;
-    ui.painter().text(pos2(r.center().x, title_y), Align2::CENTER_CENTER, title, regular(11.0), t.group_label);
+    ui.painter().text(
+        pos2(r.center().x - if launcher.is_some() { 6.0 } else { 0.0 }, title_y),
+        Align2::CENTER_CENTER,
+        title,
+        label_font,
+        t.group_label,
+    );
     if let Some(cmd) = launcher {
         let lr = Rect::from_center_size(pos2(r.max.x - 6.0, title_y), vec2(11.0, 11.0));
         let resp = ui.interact(lr, ui.id().with(("launch", id_title)), Sense::click());
@@ -604,6 +695,16 @@ fn combo_impl(
         }
         let te = egui::TextEdit::singleline(&mut text).id(te_id).desired_width(width - 16.0).font(regular(12.0)).margin(vec2(4.0, 3.0));
         let resp = ui.add(te);
+        let field_name = match id {
+            "font" => Some("Font"),
+            "size" => Some("Font size"),
+            "outlineLevel" => Some("Outline level"),
+            "outlineShowLevel" => Some("Show outline levels"),
+            _ => None,
+        };
+        if let Some(label) = field_name {
+            ui.ctx().accesskit_node_builder(resp.id, |node| node.set_label(tl!(label)));
+        }
         keytip_badge(ui, resp.rect, "combo", id);
         focused = resp.has_focus();
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));

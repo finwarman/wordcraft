@@ -196,6 +196,10 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
+                const MORE_WIDTH: f32 = 64.0;
+                let active_width = ui.ctx().fonts_mut(|f| f.layout_no_wrap(tl!(&app.ui.tab).to_string(), medium(12.5), t.text).size().x) + 18.0;
+                let mut active_seen = false;
+                let mut overflow = Vec::new();
                 for (tab, custom) in &tabs {
                     let (tab, custom) = (tab.as_str(), *custom);
                     if t.is_classic() && tab == "File" {
@@ -205,16 +209,37 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     // A custom tab's name is the user's own text: shown as typed.
                     let shown = if custom { tab } else { tl!(tab) };
                     let w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(shown.to_string(), medium(12.5), t.text).size().x) + 18.0;
+                    let active = app.ui.tab == tab && !app.ui.backstage;
+                    let reserve = if !active_seen && !active { active_width } else { 0.0 };
+                    if t.is_classic() && ui.available_width() < w + MORE_WIDTH + reserve {
+                        overflow.push((tab, shown));
+                        continue;
+                    }
+                    active_seen |= active;
                     let (r, resp) = ui.allocate_exact_size(vec2(w, 30.0), Sense::click());
                     if app.ui.keytips == crate::keytips::Phase::Tabs && app.ui.keytip_prefix.is_empty() {
                         crate::keytips::record_tab(r, tab, &mut app.keytip_rects);
                     }
-                    let active = app.ui.tab == tab && !app.ui.backstage;
+                    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, shown));
+                    ui.ctx().accesskit_node_builder(resp.id, |node| {
+                        node.set_role(egui::accesskit::Role::Tab);
+                        node.set_selected(active);
+                    });
                     if t.is_classic() {
-                        ui.painter().rect_filled(r, 0.0, if active { t.checked } else { t.tab_strip });
-                        crate::theme::bevel(ui.painter(), r, if active { crate::theme::Edge::Sunken } else { crate::theme::Edge::Raised }, &t);
-                    }
-                    if resp.hovered() && !active {
+                        let top = if active { 2.0 } else { 5.0 };
+                        let tab_rect = Rect::from_min_max(pos2(r.min.x, r.min.y + top), r.max);
+                        if active {
+                            ui.painter().rect_filled(tab_rect, 0.0, t.ribbon);
+                            crate::theme::bevel(ui.painter(), tab_rect, crate::theme::Edge::Raised, &t);
+                            ui.painter().rect_filled(
+                                Rect::from_min_max(pos2(tab_rect.min.x + 2.0, tab_rect.max.y - 2.0), pos2(tab_rect.max.x - 2.0, tab_rect.max.y)),
+                                0.0,
+                                t.ribbon,
+                            );
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(tab_rect, 0.0, t.hover);
+                        }
+                    } else if resp.hovered() && !active {
                         ui.painter().rect_filled(r.shrink2(vec2(0.0, 4.0)), 4.0, t.hover);
                     }
                     let color = if contextual || active { t.accent_text } else { t.text };
@@ -231,42 +256,56 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     }
                     resp.context_menu(|ui| crate::widgets::customize_menu_items(ui, app));
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Share, Editing mode, Comments.
-                    let share = tl!("Share");
-                    let share_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(share.to_string(), medium(12.0), t.text).size().x);
-                    let (r, resp) = ui.allocate_exact_size(vec2((share_w + 36.0).max(74.0), 24.0), Sense::click());
-                    ui.painter().rect_filled(r, t.radius(4.0), if resp.hovered() { t.accent_text } else { t.accent });
-                    icons::paint(
-                        ui.painter(),
-                        Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(14.0, 14.0)),
-                        "share",
-                        t.on_accent,
-                        t.on_accent,
-                    );
-                    ui.painter().text(pos2(r.min.x + 26.0, r.center().y), Align2::LEFT_CENTER, share, medium(12.0), t.on_accent);
-                    if resp.on_hover_text(tl!("Export a copy to share (PDF, Word document)")).clicked() {
-                        let _ = app.run("ui.backstage", json!({"value": true, "page": "export"}));
-                    }
-                    ui.add_space(6.0);
-                    let track = app.session.doc.settings.track_changes;
-                    let mode =
-                        crate::widgets::icon_text_menu_button(ui, "pencil", if track { tl!("Reviewing") } else { tl!("Editing") }, regular(12.0));
-                    egui::Popup::menu(&mode).show(|ui| {
-                        if ui.selectable_label(!track, tl!(tl!("Editing — edit the document directly"))).clicked() {
-                            let _ = app.run("review.trackChanges", json!({"value": false}));
-                            ui.close();
+                if t.is_classic() && !overflow.is_empty() {
+                    ui.menu_button(tl!("More"), |ui| {
+                        for (tab, label) in overflow {
+                            if ui.selectable_label(app.ui.tab == tab, label).clicked() {
+                                let _ = app.run("ui.tab", json!({"tab":tab}));
+                                ui.close();
+                            }
                         }
-                        if ui.selectable_label(track, tl!(tl!("Reviewing — edits become suggestions"))).clicked() {
-                            let _ = app.run("review.trackChanges", json!({"value": true}));
-                            ui.close();
+                    })
+                    .response
+                    .on_hover_text("More tool tabs");
+                }
+                if !t.is_classic() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Share, Editing mode, Comments.
+                        let share = tl!("Share");
+                        let share_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(share.to_string(), medium(12.0), t.text).size().x);
+                        let (r, resp) = ui.allocate_exact_size(vec2((share_w + 36.0).max(74.0), 24.0), Sense::click());
+                        ui.painter().rect_filled(r, t.radius(4.0), if resp.hovered() { t.accent_text } else { t.accent });
+                        icons::paint(
+                            ui.painter(),
+                            Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(14.0, 14.0)),
+                            "share",
+                            t.on_accent,
+                            t.on_accent,
+                        );
+                        ui.painter().text(pos2(r.min.x + 26.0, r.center().y), Align2::LEFT_CENTER, share, medium(12.0), t.on_accent);
+                        if resp.on_hover_text(tl!("Export a copy to share (PDF, Word document)")).clicked() {
+                            let _ = app.run("ui.backstage", json!({"value": true, "page": "export"}));
+                        }
+                        ui.add_space(6.0);
+                        let track = app.session.doc.settings.track_changes;
+                        let mode =
+                            crate::widgets::icon_text_menu_button(ui, "pencil", if track { tl!("Reviewing") } else { tl!("Editing") }, regular(12.0));
+                        egui::Popup::menu(&mode).show(|ui| {
+                            if ui.selectable_label(!track, tl!(tl!("Editing — edit the document directly"))).clicked() {
+                                let _ = app.run("review.trackChanges", json!({"value": false}));
+                                ui.close();
+                            }
+                            if ui.selectable_label(track, tl!(tl!("Reviewing — edits become suggestions"))).clicked() {
+                                let _ = app.run("review.trackChanges", json!({"value": true}));
+                                ui.close();
+                            }
+                        });
+                        ui.add_space(4.0);
+                        if crate::widgets::icon_text_button(ui, "comment", tl!("Comments"), regular(12.0)).clicked() {
+                            let _ = app.run("view.commentsPane", json!({}));
                         }
                     });
-                    ui.add_space(4.0);
-                    if crate::widgets::icon_text_button(ui, "comment", tl!("Comments"), regular(12.0)).clicked() {
-                        let _ = app.run("view.commentsPane", json!({}));
-                    }
-                });
+                }
             });
         });
     if app.ui.ribbon_collapsed {

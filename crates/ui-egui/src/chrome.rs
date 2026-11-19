@@ -10,6 +10,7 @@ use crate::{WordApp, icons};
 fn qat_button(ui: &mut Ui, app: &mut WordApp, icon: &str, tip: &str, id: &str, enabled: bool) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
     if resp.hovered() && enabled {
         ui.painter().rect_filled(r, t.radius(4.0), t.hover);
     }
@@ -369,6 +370,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
 }
 
 pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
+    const FULL_STATUS_WIDTH: f32 = 800.0;
     let t = Tokens::get(ui.ctx());
     egui::Panel::bottom("status")
         .exact_size(26.0)
@@ -381,6 +383,7 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(14.0, 0.0);
+                let compact = ui.available_width() < FULL_STATUS_WIDTH;
                 let l = app.session.layout();
                 let page = l.caret_on(&app.session.sel.focus, app.session.page_hint).map(|c| c.page + 1).unwrap_or(1);
                 let st = |ui: &mut Ui, s: &str| {
@@ -389,6 +392,7 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                     let w = text_width(ui.painter(), s, &font, track, t.text_dim);
                     let (r, resp) = ui.allocate_exact_size(vec2(w + 1.0, TypeRung::Caption.line_height()), Sense::click());
                     paint_text(ui.painter(), pos2(r.min.x, r.min.y), Align2::LEFT_TOP, s, &font, track, t.text_dim);
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), s));
                     resp
                 };
                 if st(ui, &crate::i18n::fmt(tl!("Page {page} of {pages}"), &[("page", &page.to_string()), ("pages", &l.pages.len().to_string())]))
@@ -408,29 +412,31 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                 if st(ui, &wtxt).clicked() {
                     let _ = app.run("ui.dialog", json!({"name": "wordCount"}));
                 }
-                if app.session.sel.focus.story != StoryRef::Body && !crate::canvas::in_text_box(app) {
-                    st(ui, tl!("Editing header/footer"));
-                }
-                // The language at the caret; a click sets the proofing language (Review › Language).
-                let lang = crate::ribbon::caret_language(app);
-                let resp = st(ui, &lang).on_hover_text(tl!("Language"));
-                egui::Popup::menu(&resp).show(|ui| {
-                    ui.set_min_width(200.0);
-                    crate::ribbon::language_menu(ui, app);
-                });
-                if app.session.doc.settings.track_changes {
-                    st(ui, tl!("Track Changes: On"));
-                }
-                if app.session.prefs.overtype && st(ui, tl!("Overtype")).on_hover_text(tl!("Click to switch back to inserting")).clicked() {
-                    let _ = app.run("text.overtype", json!({"value": false}));
-                }
-                if let Some((msg, at)) = &app.status_msg
-                    && crate::now_ms() - at < 6000.0
-                {
-                    let font = TypeRung::Caption.regular();
-                    let track = TypeRung::Caption.tracking();
-                    paint_text(ui.painter(), pos2(ui.cursor().min.x, ui.cursor().min.y), Align2::LEFT_TOP, msg, &font, track, t.accent_text);
-                    ui.allocate_space(vec2(text_width(ui.painter(), msg, &font, track, t.accent_text) + 1.0, TypeRung::Caption.line_height()));
+                if !compact {
+                    if app.session.sel.focus.story != StoryRef::Body && !crate::canvas::in_text_box(app) {
+                        st(ui, tl!("Editing header/footer"));
+                    }
+                    // The language at the caret; a click sets the proofing language (Review › Language).
+                    let lang = crate::ribbon::caret_language(app);
+                    let resp = st(ui, &lang).on_hover_text(tl!("Language"));
+                    egui::Popup::menu(&resp).show(|ui| {
+                        ui.set_min_width(200.0);
+                        crate::ribbon::language_menu(ui, app);
+                    });
+                    if app.session.doc.settings.track_changes {
+                        st(ui, tl!("Track Changes: On"));
+                    }
+                    if app.session.prefs.overtype && st(ui, tl!("Overtype")).on_hover_text(tl!("Click to switch back to inserting")).clicked() {
+                        let _ = app.run("text.overtype", json!({"value": false}));
+                    }
+                    if let Some((msg, at)) = &app.status_msg
+                        && crate::now_ms() - at < 6000.0
+                    {
+                        let font = TypeRung::Caption.regular();
+                        let track = TypeRung::Caption.tracking();
+                        paint_text(ui.painter(), pos2(ui.cursor().min.x, ui.cursor().min.y), Align2::LEFT_TOP, msg, &font, track, t.accent_text);
+                        ui.allocate_space(vec2(text_width(ui.painter(), msg, &font, track, t.accent_text) + 1.0, TypeRung::Caption.line_height()));
+                    }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
@@ -442,6 +448,7 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                     let zw = text_width(ui.painter(), &ztxt, &zfont, ztrack, t.text_dim);
                     let (zr, zresp) = ui.allocate_exact_size(vec2(zw + 1.0, TypeRung::Caption.line_height()), Sense::click());
                     paint_text(ui.painter(), pos2(zr.min.x, zr.min.y), Align2::LEFT_TOP, &ztxt, &zfont, ztrack, t.text_dim);
+                    zresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Zoom"));
                     if zresp.clicked() && !reading {
                         let _ = app.run("ui.dialog", json!({ "name": "zoom" }));
                     }
@@ -452,13 +459,16 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                             let _ = app.run("view.zoomIn", json!({}));
                         }
                     }
-                    // Reading zoom changes only reading presentation, never the normal view zoom.
-                    let mut v = if reading { app.session.view.read_zoom } else { app.canvas.scale / crate::canvas::PX_PER_PT };
-                    let slider = egui::Slider::new(&mut v, if reading { 0.75..=1.5 } else { 0.1..=5.0 }).logarithmic(!reading).show_value(false);
-                    ui.spacing_mut().slider_width = 110.0;
-                    if ui.add(slider).changed() {
-                        let command = if reading { "view.readTextSize" } else { "view.zoom" };
-                        let _ = app.run(command, json!({"value": (v * 100.0).round()}));
+                    // The slider is optional on narrow windows; plus/minus and Zoom remain.
+                    if !compact {
+                        // Reading zoom changes only reading presentation, never the normal view zoom.
+                        let mut v = if reading { app.session.view.read_zoom } else { app.canvas.scale / crate::canvas::PX_PER_PT };
+                        let slider = egui::Slider::new(&mut v, if reading { 0.75..=1.5 } else { 0.1..=5.0 }).logarithmic(!reading).show_value(false);
+                        ui.spacing_mut().slider_width = 110.0;
+                        if ui.add(slider).changed() {
+                            let command = if reading { "view.readTextSize" } else { "view.zoom" };
+                            let _ = app.run(command, json!({"value": (v * 100.0).round()}));
+                        }
                     }
                     if small_icon(ui, "minus", tl!("Zoom Out")) {
                         if reading {
@@ -466,6 +476,9 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                         } else {
                             let _ = app.run("view.zoomOut", json!({}));
                         }
+                    }
+                    if compact {
+                        return;
                     }
                     ui.add_space(10.0);
                     let mode = app.session.view.mode;

@@ -244,11 +244,15 @@ fn main() -> eframe::Result {
     let mut control_port: Option<u16> = std::env::var("WORDCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
     let mut sample = false;
+    let mut background = false;
+    let mut start_screen = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
             "--sample" => sample = true,
+            "--background-ui" => background = true,
+            "--start-screen" => start_screen = true,
             "--version" => {
                 println!("wordcraft {} ({})", env!("CARGO_PKG_VERSION"), build_sha());
                 return Ok(());
@@ -273,7 +277,7 @@ fn main() -> eframe::Result {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("WordCraft")
-            .with_app_id("ai.storyteller.wordcraft")
+            .with_app_id("dev.f1nb0.wordcraft")
             .with_inner_size([1440.0, 920.0])
             .with_min_inner_size([760.0, 480.0])
             .with_drag_and_drop(true)
@@ -282,6 +286,16 @@ fn main() -> eframe::Result {
             .with_title_shown(false),
         ..Default::default()
     };
+    if background {
+        options.viewport = options.viewport.with_visible(false).with_active(false);
+        #[cfg(target_os = "macos")]
+        {
+            options.event_loop_builder = Some(Box::new(|builder| {
+                use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+                builder.with_activation_policy(ActivationPolicy::Accessory).with_activate_ignoring_other_apps(false).with_default_menu(false);
+            }));
+        }
+    }
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);
     }
@@ -344,7 +358,7 @@ fn main() -> eframe::Result {
             // Nothing to open (no files, no sample, no control channel driving the editor): start
             // on File › Home, as Word does (#766), unless the Start screen option is off. Files
             // macOS hands over later open on top of it and close it (`apple_events`).
-            if files.is_empty() && !sample && control_port.is_none() {
+            if start_screen || (files.is_empty() && !sample && control_port.is_none()) {
                 app.start_screen();
             }
             for f in files {

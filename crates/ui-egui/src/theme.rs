@@ -362,7 +362,7 @@ impl Tokens {
             title_bar: c(p.navy),
             ribbon: c(p.face),
             tab_strip: c(p.face),
-            canvas: c(p.shadow),
+            canvas: c(p.workspace),
             panel: c(p.face),
             border: c(p.shadow),
             border_strong: c(p.dark),
@@ -379,8 +379,8 @@ impl Tokens {
             input: c(p.input),
             input_border: c(p.shadow),
             group_label: c(p.muted),
-            ruler: c(p.face),
-            ruler_margin: c(p.shadow),
+            ruler: c(p.ruler_face),
+            ruler_margin: c(p.ruler_margin),
             ruler_tick: c(p.ink),
             status_bar: c(p.face),
             selection: c(p.selection).gamma_multiply(0.28),
@@ -802,6 +802,9 @@ mod tests {
             for bg in [t.ribbon, t.menu, t.input] {
                 assert!(contrast(t.text, bg) >= 4.5);
                 assert!(contrast(t.text_dim, bg) >= 4.5);
+            }
+            for bg in [t.ruler, t.ruler_margin] {
+                assert!(contrast(t.ruler_tick, bg) >= 4.5);
             }
             assert!(contrast(t.caption_ink(), t.title_bar) >= 4.5);
             let style = ctx.global_style();

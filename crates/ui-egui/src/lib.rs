@@ -69,11 +69,14 @@ pub mod printing;
 pub mod read_aloud;
 pub mod ribbon;
 pub mod scroll;
+#[cfg(test)]
+mod skin_tests;
 pub mod system_clipboard;
 pub mod table_mouse;
 pub mod table_pen;
 pub mod table_resize;
 pub mod table_ruler;
+mod template_previews;
 pub mod theme;
 pub mod widgets;
 pub mod window_geometry;
@@ -282,7 +285,7 @@ impl Default for UiState {
             animations: theme::Animations::default(),
             legacy_dark: None,
             nav_tab: "headings".into(),
-            show_discord: true,
+            show_discord: false,
             author: String::new(),
             window: None,
             language: i18n::AUTO.into(),
@@ -386,6 +389,7 @@ pub struct WordApp {
     /// The Navigation pane's search box takes the keyboard on its next frame (Ctrl+F, #712).
     pub(crate) nav_search_focus: bool,
     styled: bool,
+    templates: template_previews::Previews,
     /// The CJK face order the installed UI fonts use (Chinese first, or Japanese first).
     fonts_hans: bool,
     fonts_classic: bool,
@@ -494,6 +498,7 @@ impl WordApp {
             keytip_rects: Vec::new(),
             nav_search_focus: false,
             styled: false,
+            templates: template_previews::Previews::default(),
             fonts_hans: false,
             fonts_classic: false,
             ui_faces: Vec::new(),
@@ -1337,6 +1342,9 @@ impl WordApp {
         // language names in Options, or a file name the caption is drawing. A file opened later
         // in this frame (dialog, drop, control channel) is picked up again at the end.
         self.poll_app_updates();
+        if !self.ui.backstage {
+            self.templates.release_idle(ctx);
+        }
         self.ensure_caption_fonts();
         self.install_ui_fonts(ctx, lang);
         if let Some(answer) = self.desktop_theme.take_change() {

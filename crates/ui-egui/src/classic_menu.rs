@@ -12,6 +12,7 @@ enum Action {
     Dialog(&'static str),
     Theme(Appearance),
     Start,
+    Export,
 }
 const FILE: &[(&str, Action)] = &[
     ("New", Action::Command("file.new")),
@@ -19,6 +20,7 @@ const FILE: &[(&str, Action)] = &[
     ("Save", Action::Command("file.save")),
     ("Save as…", Action::Command("file.saveAs")),
     ("Print…", Action::Command("file.print")),
+    ("Export / share…", Action::Export),
     ("Start page / recent files", Action::Start),
     ("Options…", Action::Command("file.options")),
 ];
@@ -30,6 +32,7 @@ const EDIT: &[(&str, Action)] = &[
     ("Paste", Action::Command("edit.paste")),
     ("Find", Action::Command("edit.find")),
     ("Replace…", Action::Dialog("replace")),
+    ("Track changes", Action::Command("review.trackChanges")),
 ];
 const VIEW: &[(&str, Action)] = &[
     ("Classic", Action::Theme(Appearance::Classic)),
@@ -38,6 +41,7 @@ const VIEW: &[(&str, Action)] = &[
     ("Dark", Action::Theme(Appearance::Dark)),
     ("System", Action::Theme(Appearance::System)),
     ("Collapse toolbar", Action::Command("ui.collapseRibbon")),
+    ("Comments", Action::Command("view.commentsPane")),
 ];
 const INSERT: &[(&str, Action)] =
     &[("Table…", Action::Dialog("insertTable")), ("Picture…", Action::Command("insert.picture")), ("Link…", Action::Dialog("link"))];
@@ -60,7 +64,12 @@ pub(crate) fn show(app: &mut WordApp, ui: &mut Ui) {
                                 Action::Command(id) => crate::widgets::enabled(app, id),
                                 _ => true,
                             };
-                            let selected = matches!(action, Action::Theme(value) if *value == app.ui.theme);
+                            let selected = match action {
+                                Action::Theme(value) => *value == app.ui.theme,
+                                Action::Command("review.trackChanges") => app.session.doc.settings.track_changes,
+                                Action::Command("view.commentsPane") => app.session.view.comments_pane,
+                                _ => false,
+                            };
                             if !ui.add_enabled(enabled, egui::Button::new(*label).selected(selected)).clicked() {
                                 continue;
                             }
@@ -79,6 +88,7 @@ fn run(app: &mut WordApp, action: Action) {
         Action::Dialog(name) => ("ui.dialog", json!({"name":name})),
         Action::Theme(appearance) => ("ui.theme", json!({"value":appearance.code()})),
         Action::Start => ("ui.tab", json!({"tab":"File"})),
+        Action::Export => ("ui.backstage", json!({"value":true,"page":"export"})),
     };
     crate::widgets::run_from_ribbon(app, id, params);
 }

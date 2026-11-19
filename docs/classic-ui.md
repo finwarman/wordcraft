@@ -23,7 +23,10 @@ The reference language is late-1990s desktop tooling: square surfaces, explicit 
 | --- | --- |
 | Caption | Dark field beneath white text, gradient only at the right end |
 | Toolbar / menu / dialog | Shared face, square corners, no blurred shadow |
-| Command | Raised bevel, recessed while pressed or selected |
+| Toolbar command | Flat at rest, raised on hover, recessed while pressed |
+| Toggle | Recessed with a dark outline while selected |
+| Tool category | Connected active tab; narrow windows expose remaining tabs through More |
+| Workspace / ruler | Muted page surround, pale ruler with distinct margin zones |
 | Input / document | White input, readable dark ink; stored document styling remains separate |
 | Focus | Existing keyboard routing and explicit focus outline |
 | Disabled / pending | Existing enabled predicates; update action coalesces while pending and recovers after an error |
@@ -32,7 +35,7 @@ The reference language is late-1990s desktop tooling: square surfaces, explicit 
 
 The native host loads at most two installed UI faces once on a worker, each capped at 2MiB. Font installation occurs on a profile/language/fallback change. Pink and Classic share that font profile. No proprietary font is bundled. The document renderer retains its own font selection.
 
-The menu bar dispatches existing commands. The ribbon remains available so the skin does not remove features. View or Interface Theme changes the skin; File opens documents, print settings, recent files and Options. Keyboard shortcuts, native file dialogs and save guards use their existing paths.
+Discord is hidden by default, including the Home footer. File, Edit and View hold export, editing mode and comments instead of duplicate prominent toolbar controls. The menu bar dispatches existing commands. The ribbon remains available so the skin does not remove features. View or Interface Theme changes the skin; File opens documents, print settings, recent files and Options. Keyboard shortcuts, native file dialogs and save guards use their existing paths.
 
 ## Fork identity and updates
 
@@ -42,4 +45,8 @@ Help / App updates opens `dev.f1nb0.launcher` on macOS, falling back to `https:/
 
 ## Qualification
 
-Use generated documents with headless `ui_shot` for Classic, Pink, dialogs and options. Check the shared-source digest and Mail's native hidden UI checks. Document conversion and the existing editing suite remain required. These checks do not establish live VoiceOver coverage or a whole-application startup, memory or leak budget.
+Use generated documents with headless `ui_shot` for Classic, Pink, dialogs and options. Check narrow, normal and wide windows at 100%, 150% and 200% interface size, including overflow, arrow space, toggle state and keyboard operation. The status strip retains page/word count and zoom in its compact layout. Check the shared-source digest and Mail's native hidden UI checks. Document conversion and the existing editing suite remain required. These checks do not establish live VoiceOver coverage or a whole-application startup, memory or leak budget.
+
+Native template thumbnails run one worker at a time, cache at most eight results (including failures), cap scale at 3x, and release five seconds after leaving Home. The first frame does not wait for thumbnail rasterization. WASM retains synchronous on-demand rendering.
+
+`scripts/qualify_native.py` measures first usable frames, RSS and physical footprint using synthetic hidden windows with preferences disabled. It does not flush OS caches or prove leak freedom. Keep startup and renderer memory limits in ticket2168 until native qualification is complete.

@@ -113,6 +113,9 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             }
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                 for (label, id) in [("About", "about"), ("Discord community", "discord")] {
+                    if id == "discord" && !app.ui.show_discord {
+                        continue;
+                    }
                     let (r, resp) = ui.allocate_exact_size(vec2(200.0, 32.0), Sense::click());
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tl!(label)));
                     if resp.hovered() {
@@ -160,6 +163,10 @@ fn template_tile(ui: &mut Ui, app: &mut WordApp, label: &str, template: &str) {
         // The label sits right under the thumbnail whatever row gap the gallery uses.
         ui.spacing_mut().item_spacing.y = 0.0;
         let (r, resp) = ui.allocate_exact_size(vec2(150.0, 194.0), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tl!(label)));
+        if resp.has_focus() {
+            ui.painter().rect_stroke(r.expand(3.0), 0.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
+        }
         ui.painter().rect(
             r,
             2.0,
@@ -167,30 +174,17 @@ fn template_tile(ui: &mut Ui, app: &mut WordApp, label: &str, template: &str) {
             Stroke::new(if resp.hovered() { 2.0 } else { 1.0 }, if resp.hovered() { t.accent } else { t.border_strong }),
             egui::StrokeKind::Inside,
         );
-        let ppp = ui.ctx().pixels_per_point();
-        let key = format!("tpl:{template}:{ppp}");
         let region = app.session.region();
-        let tex = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(egui::Id::new(&key))).or_else(|| {
-            let mut s = wordcraft_engine::Session::new(wordcraft_doc::Document::new());
-            // The blank tile shows the region's paper (#838).
-            s.system_region = region;
-            let _ = s.run("file.new", &json!({"template": template}));
-            let l = s.export_layout();
-            let page = l.pages.first()?;
-            let img = wordcraft_render::render_page(&s.doc, page, 150.0 / page.w * ppp, &crate::canvas::screen_render_options());
-            let px = img.to_straight();
-            let h = ui.ctx().load_texture(
-                &key,
-                egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &px),
-                egui::TextureOptions::LINEAR,
-            );
-            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(&key), h.clone()));
-            Some(h)
-        });
+        let tex = app.templates.get(ui.ctx(), template, region);
+        if tex.is_none() {
+            icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(42.0, 56.0)), "blankPage", t.text_dim, t.accent);
+        }
         if let Some(h) = tex {
             ui.painter().image(h.id(), r.shrink(1.0), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
-        ui.label(egui::RichText::new(tl!(label)).font(regular(12.5)));
+        let caption = ui.painter().layout_no_wrap(tl!(label).to_string(), regular(12.5), t.text);
+        let (label_rect, _) = ui.allocate_exact_size(vec2(150.0, caption.size().y), Sense::hover());
+        ui.painter().galley(label_rect.min, caption, t.text);
         if resp.clicked() {
             let _ = app.run("file.new", json!({"template": template}));
             app.ui.backstage = false;
