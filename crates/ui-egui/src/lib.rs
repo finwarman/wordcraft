@@ -1364,6 +1364,9 @@ impl WordApp {
         };
         if self.applied_theme != Some(effective) {
             theme::apply(ctx, effective);
+            if self.integrated_titlebar {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!effective.classic()));
+            }
             self.applied_theme = Some(effective);
             self.applied_animations = None;
         }

@@ -20,7 +20,11 @@ const PAGES: [(&str, &str); 9] = [
 
 pub fn show(app: &mut WordApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    let mac = app.integrated_titlebar;
+    let square = app.integrated_titlebar && t.is_classic();
+    let mac = app.integrated_titlebar && !square;
+    if square {
+        crate::chrome::file_caption(app, ui);
+    }
     egui::Panel::left("backstage_nav")
         .exact_size(200.0)
         // Fixed width, as in Word: without this egui shows a resize handle that does nothing (#502).
@@ -32,7 +36,21 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             bottom: 12,
         }))
         .show(ui, |ui| {
-            let back = if mac {
+            let back = if square {
+                let (rect, response) = ui.allocate_exact_size(vec2(200.0, 36.0), Sense::click());
+                if response.hovered() {
+                    ui.painter().rect_filled(rect, 0.0, t.hover);
+                }
+                icons::paint(
+                    ui.painter(),
+                    Rect::from_center_size(pos2(rect.min.x + 23.0, rect.center().y), vec2(18.0, 18.0)),
+                    "chevronLeft",
+                    t.text,
+                    t.text,
+                );
+                ui.painter().text(pos2(rect.min.x + 42.0, rect.center().y), Align2::LEFT_CENTER, tl!("Back to document"), medium(13.0), t.text);
+                response
+            } else if mac {
                 // macOS (#222): the Backstage covers the title bar, so its top band is the title
                 // bar: the back button sits beside the traffic lights, centred with them and as far
                 // from them as the title bar's own controls, and the rest of the band drags the window.
@@ -62,6 +80,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 );
                 resp
             };
+            back.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tl!("Back to document")));
             // Escape in the built-in file browser closes only the browser.
             if back.clicked() || (!app.file_dialog_open() && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
                 app.ui.backstage = false;
@@ -70,10 +89,10 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             ui.add_space(if mac { 12.0 } else { 6.0 });
             for (id, label) in PAGES {
                 let (r, resp) = ui.allocate_exact_size(vec2(200.0, 38.0), Sense::click());
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tl!(label)));
                 let active = app.ui.backstage_page == id;
+                resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, tl!(label)));
                 if active {
-                    ui.painter().rect_filled(r, 0.0, if t.is_classic() { t.checked } else { egui::Color32::from_white_alpha(46) });
+                    ui.painter().rect_filled(r, 0.0, if t.is_classic() { t.accent } else { egui::Color32::from_white_alpha(46) });
                     if t.is_classic() {
                         crate::theme::bevel(ui.painter(), r, crate::theme::Edge::Sunken, &t);
                     }
@@ -85,7 +104,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     Align2::LEFT_CENTER,
                     tl!(label),
                     if active { semibold(14.0) } else { medium(14.0) },
-                    if t.is_classic() { t.text } else { egui::Color32::WHITE },
+                    if t.is_classic() && !active { t.text } else { t.on_accent },
                 );
                 if resp.clicked() {
                     match id {

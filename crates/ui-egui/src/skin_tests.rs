@@ -67,3 +67,37 @@ fn scaled_status_does_not_overlap() {
         assert!(page.x1 <= words.x0 && words.x1 < zoom.x0, "{skin}: {page:?} {words:?} {zoom:?}");
     }
 }
+
+#[test]
+fn chrome_actions_are_named() {
+    let mut h = harness([1440.0, 900.0]);
+    h.run_steps(4);
+    for label in ["Customize Quick Access Toolbar", "Undo History", "User settings", "Search commands and help", "Zoom In", "Zoom Out", "Focus"] {
+        assert_eq!(h.get_by_label(label).accesskit_node().role(), Role::Button, "{label}");
+    }
+    assert_eq!(h.get_by_role_and_label(Role::CheckBox, "AutoSave").accesskit_node().toggled(), Some(Toggled::False));
+    h.get_by_label("User settings").click_accesskit();
+    h.run_steps(4);
+    assert!(h.state().ui.backstage);
+    assert_eq!(h.state().ui.backstage_page, "options");
+}
+
+#[test]
+fn square_chrome_close_is_guarded() {
+    let mut h = harness([760.0, 600.0]);
+    h.state_mut().start_screen();
+    h.run_steps(4);
+    let back = h.get_by_label("Back to document").accesskit_node().bounding_box().unwrap();
+    let close = h.get_by_label("Close window").accesskit_node().bounding_box().unwrap();
+    assert!(back.y0 >= close.y1, "Back must be below the caption controls");
+    h.get_by_label("Back to document").focus();
+    h.run_steps(1);
+    h.key_press(egui::Key::Space);
+    h.run_steps(4);
+    assert!(!h.state().ui.backstage);
+    h.state_mut().run("text.insert", json!({"text":"Unsaved synthetic text"})).unwrap();
+    h.get_by_label("Close window").click_accesskit();
+    h.run_steps(4);
+    assert!(!h.state().quit_requested);
+    assert_eq!(h.state().dialog.as_ref().map(crate::dialogs::Dialog::name), Some("saveChanges"));
+}

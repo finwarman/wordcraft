@@ -70,6 +70,12 @@ def run(binary, cycles, idle, scene):
         else:
             raise RuntimeError('First usable native UI frame deadline exceeded')
         startup_ms = (time.perf_counter() - started) * 1000
+        while state.get('uiFonts', {}).get('pending', False):
+            if time.perf_counter() - started >= START_LIMIT:
+                raise RuntimeError('Installed UI fonts deadline exceeded')
+            time.sleep(POLL)
+            state = request('ui.inspect', {})
+        fonts_ready_ms = (time.perf_counter() - started) * 1000
         time.sleep(1)
         memory = [{'cycle': 0, 'rssBytes': rss(process.pid)}]
         timings = []
@@ -83,10 +89,12 @@ def run(binary, cycles, idle, scene):
                 memory.append({'cycle': cycle + 1, 'rssBytes': rss(process.pid)})
         time.sleep(idle)
         memory.append({'cycle': cycles, 'idleSeconds': idle, 'rssBytes': rss(process.pid)})
-        result = {'startupFirstFrameMs': startup_ms, 'memory': memory, 'roundTripSamples': len(timings)}
+        result = {'startupFirstFrameMs': startup_ms, 'fontsReadyMs': fonts_ready_ms, 'uiFonts': state.get('uiFonts'), 'memory': memory, 'roundTripSamples': len(timings)}
         if timings:
             result['themeDialogRoundTripP95Ms'] = sorted(timings)[int(len(timings) * .95) - 1]
-        result['settledFrame'] = request('ui.inspect', {})['perf']
+        settled = request('ui.inspect', {})
+        result['settledFrame'] = settled['perf']
+        result['textures'] = settled.get('textures')
         # OS process memory includes GPU mappings and shared pages; RSS is not a leak verdict.
         vmmap = subprocess.run(['vmmap', '-summary', str(process.pid)], capture_output=True, text=True, timeout=15)
         result['vmmapSummary'] = vmmap.stdout

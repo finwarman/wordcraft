@@ -46,6 +46,11 @@ fn err(e: impl std::fmt::Display) -> Outcome {
 pub fn inspect(app: &mut WordApp, ctx: &egui::Context) -> Value {
     let r = ctx.content_rect();
     let caret = crate::canvas::caret_screen(app).map(|(p, h)| json!({"x": p.x, "y": p.y, "h": h}));
+    let (texture_count, texture_bytes) = {
+        let manager = ctx.tex_manager();
+        let manager = manager.read();
+        (manager.num_allocated(), manager.allocated().fold(0usize, |sum, (_, texture)| sum.saturating_add(texture.bytes_used())))
+    };
     json!({
         "ui": app.prefs(),
         "view": app.session.view,
@@ -61,6 +66,9 @@ pub fn inspect(app: &mut WordApp, ctx: &egui::Context) -> Value {
         "title": app.title_stem(),
         "dirty": app.session.dirty,
         "perf": {"frameMs": app.frame_ms, "renderMs": app.canvas.render_ms, "layoutMs": app.session.layout().ms},
+        "textures": {"count":texture_count, "bytes":texture_bytes},
+        "uiFonts": {"pending":app.ui_face_request.is_some(), "faces":app.ui_faces.len(),
+            "bytes":app.ui_faces.iter().map(|face| face.data().len()).sum::<usize>()},
     })
 }
 

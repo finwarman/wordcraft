@@ -29,6 +29,7 @@ const EDGE_MAX_DT: f32 = 0.1;
 /// Page textures are kept for pages within this many viewport heights of the view; farther ones
 /// are rendered again when they come back.
 const TEXTURE_KEEP_SCREENS: f32 = 3.0;
+const PAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct CanvasState {
     textures: HashMap<usize, (u64, TextureHandle)>,
@@ -138,6 +139,31 @@ pub struct CanvasState {
 }
 
 impl CanvasState {
+    /// Evict distant pages first. Visible pages keep full resolution even above the budget.
+    fn trim_textures(&mut self, visible: &[usize], viewport: Rect, budget: usize) {
+        let mut bytes = self.textures.values().fold(0usize, |sum, (_, texture)| sum.saturating_add(texture.byte_size()));
+        if bytes <= budget {
+            return;
+        }
+        let mut candidates: Vec<_> = self
+            .textures
+            .iter()
+            .filter(|(page, _)| !visible.contains(page))
+            .map(|(page, (_, texture))| {
+                let distance = self.page_rects.get(*page).map_or(f32::INFINITY, |rect| rect.center().distance_sq(viewport.center()));
+                (*page, distance, texture.byte_size())
+            })
+            .collect();
+        candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        for (page, _, size) in candidates {
+            if bytes <= budget {
+                break;
+            }
+            self.textures.remove(&page);
+            bytes = bytes.saturating_sub(size);
+        }
+    }
+
     /// The cached rendering of a page.
     pub(crate) fn page_texture(&self, page: usize) -> Option<&TextureHandle> {
         self.textures.get(&page).map(|(_, t)| t)
@@ -910,6 +936,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         let mut rendered = 0;
         let t0 = crate::now_ms();
         let mut rects = Vec::with_capacity(geo.rects.len());
+        let mut visible_pages = Vec::new();
         let content_origin = ui.min_rect().min;
         let view = view_key(app, dim_body);
         for (i, pr) in geo.rects.iter().enumerate() {
@@ -920,6 +947,9 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             // Hide White Space shows only a band of the page; everything below paints into it.
             let band_of = |r: Rect| Rect::from_min_max(pos2(r.min.x - 4.0, r.min.y + band_top), pos2(r.max.x + 4.0, r.min.y + band_bot));
             let visible = band_of(sr).intersects(ui.clip_rect().expand(200.0));
+            if visible {
+                visible_pages.push(i);
+            }
             // Only pages on screen or with a texture need their key (#811).
             let cached = app.canvas.textures.contains_key(&i);
             let key = if visible || cached { page_key(app, &layout, i, view, scale_px) } else { 0 };
@@ -1053,6 +1083,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         let near = clip.expand2(vec2(clip.width(), clip.height() * TEXTURE_KEEP_SCREENS));
         app.canvas.textures.retain(|k, _| *k < n && geo.rects.get(*k).is_some_and(|r| r.translate(content_origin.to_vec2()).intersects(near)));
         app.canvas.page_rects = rects.clone();
+        app.canvas.trim_textures(&visible_pages, clip, PAGE_CACHE_BYTES);
         balloons(app, ui, &painter, &rects, &layout, geo.scale);
         // Find › Reading Highlight.
         let marks: Vec<(Pos, Pos)> = app.session.find_highlights().iter().take(5000).cloned().collect();
@@ -3295,6 +3326,25 @@ mod tests {
         for bad in [0.0, -3.0, f32::NAN, f32::INFINITY] {
             assert_eq!(drawing_grid_step(bad, PX_PER_PT), grid);
         }
+    }
+
+    #[test]
+    fn cache_pressure_keeps_visible() {
+        let ctx = egui::Context::default();
+        let mut canvas = CanvasState::default();
+        for page in 0..5 {
+            let texture = ctx.load_texture("page", egui::ColorImage::new([1, 1], vec![Color32::WHITE]), egui::TextureOptions::LINEAR);
+            canvas.textures.insert(page, (0, texture));
+            canvas.page_rects.push(Rect::from_min_size(pos2(0.0, page as f32 * 100.0), vec2(50.0, 90.0)));
+        }
+        let viewport = canvas.page_rects[0];
+        canvas.trim_textures(&[0], viewport, 8);
+        assert_eq!(canvas.textures.len(), 2);
+        assert!(canvas.textures.contains_key(&0));
+        assert!(canvas.textures.contains_key(&1));
+        // Full-resolution pages in view survive even if they exceed the cache budget.
+        canvas.trim_textures(&[0, 1], viewport, 1);
+        assert_eq!(canvas.textures.len(), 2);
     }
 
     #[test]

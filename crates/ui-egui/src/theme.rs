@@ -399,6 +399,9 @@ impl Tokens {
     pub(crate) fn caption_ink(&self) -> Color32 {
         if self.classic { self.on_accent } else { self.text }
     }
+    pub(crate) fn caption_muted(&self) -> Color32 {
+        if self.classic { self.title_end } else { self.text_disabled }
+    }
     pub fn get(ctx: &egui::Context) -> Tokens {
         match ctx.data(|d| d.get_temp::<Appearance>(egui::Id::new("classic_theme"))) {
             Some(Appearance::Classic) => Self::classic(shared::CLASSIC),
@@ -807,6 +810,8 @@ mod tests {
                 assert!(contrast(t.ruler_tick, bg) >= 4.5);
             }
             assert!(contrast(t.caption_ink(), t.title_bar) >= 4.5);
+            assert!(contrast(t.title_end, t.title_bar) >= 3.0, "disabled caption icons remain visible");
+            assert!(contrast(t.on_accent, t.accent) >= 4.5, "selected File navigation remains readable");
             let style = ctx.global_style();
             assert_eq!(style.visuals.window_corner_radius, egui::CornerRadius::ZERO);
             assert!(contrast(style.visuals.weak_text_color(), t.ribbon) >= 4.5);

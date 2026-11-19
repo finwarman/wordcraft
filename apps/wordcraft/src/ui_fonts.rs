@@ -10,7 +10,8 @@ pub(super) fn hook(ctx: &egui::Context) -> wordcraft_ui_egui::theme::UiFontHook 
     Box::new(move || {
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        let repaint = ctx.clone();
+        let worker = std::thread::Builder::new().name("classic-ui-fonts".into()).spawn(move || {
             let db = FontDb::global();
             let mut faces = Vec::new();
             for family in FAMILIES {
@@ -28,6 +29,9 @@ pub(super) fn hook(ctx: &egui::Context) -> wordcraft_ui_egui::theme::UiFontHook 
             let _ = tx.send(faces);
             ctx.request_repaint();
         });
+        if worker.is_err() {
+            repaint.request_repaint();
+        }
         rx
     })
 }

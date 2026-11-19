@@ -286,6 +286,12 @@ fn main() -> eframe::Result {
             .with_title_shown(false),
         ..Default::default()
     };
+    #[cfg(target_os = "macos")]
+    {
+        // Metal then needs at most two drawables, rather than three. Keep vsync.
+        options.wgpu_options.surface = eframe::SurfaceConfig::LOW_LATENCY;
+        options.viewport = options.viewport.with_decorations(false);
+    }
     if background {
         options.viewport = options.viewport.with_visible(false).with_active(false);
         #[cfg(target_os = "macos")]

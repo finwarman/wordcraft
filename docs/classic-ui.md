@@ -50,3 +50,15 @@ Use generated documents with headless `ui_shot` for Classic, Pink, dialogs and o
 Native template thumbnails run one worker at a time, cache at most eight results (including failures), cap scale at 3x, and release five seconds after leaving Home. The first frame does not wait for thumbnail rasterization. WASM retains synchronous on-demand rendering.
 
 `scripts/qualify_native.py` measures first usable frames, RSS and physical footprint using synthetic hidden windows with preferences disabled. It does not flush OS caches or prove leak freedom. Keep startup and renderer memory limits in ticket2168 until native qualification is complete.
+
+## 2168 graphics and accessibility pass
+
+On macOS, Classic/Pink use a square application frame with named minimize, maximize and close controls. Close uses the existing unsaved-document guard. Home has the same caption and a separate Back to document row. Light/Dark/System keep native decorations. Caption commands use light ink; disabled commands use the lighter caption-end colour and remain disabled to keyboard/accessibility actions. The user icon opens Options. Compact captions reduce search to an icon rather than overlapping the window controls.
+
+The macOS surface uses egui-wgpu LOW_LATENCY with vsync. In repeated 1440x920/2x synthetic Metal probes, limiting the drawable queue saved 21,463,040 bytes when a third drawable was used. This is a resource-allocation result, not a whole-process reduction or input-latency claim. See [wgpu surface behavior](https://wgpu.rs/doc/wgpu/api/surface/type.SurfaceConfiguration.html). Page textures have a 64 MiB cache budget with farthest offscreen eviction; visible pages retain full resolution and can exceed that budget. No document/export quality reduction is used.
+
+`graphics_probe` is a non-activating synthetic example that records owned texture sizes and the default Metal device's allocation, plus optional UI callback intervals. It reads no user preferences or documents. Hidden-window callbacks can run without presentation, so their cadence is not display FPS. Metal allocation and process physical footprint measure different things; [Apple's device-memory definition](https://developer.apple.com/documentation/metal/mtldevice/recommendedmaxworkingsetsize) does not include every driver/process allocation.
+
+Native qualification now reports installed UI-face count/bytes/readiness and aggregate texture metadata through explicit ui.inspect calls. The native font worker remains enabled with WORDCRAFT_NO_PREFS; only preferences, the personal dictionary and custom added fonts are disabled. Earlier notes calling these bundled-font-only native runs were incorrect. The separate graphics example uses Services::default and bundled UI fallbacks.
+
+Keyboard/AccessKit regression checks cover named caption/status controls, AutoSave state, User settings, Back placement/keyboard activation and Close's unsaved prompt. The native macOS tree is inspected after installation. Live VoiceOver speech and a long idle/scrolling soak remain separate 2168 gates.

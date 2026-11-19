@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** trivial (the Font list no longer keeps every previewed font in memory, #848; previously trivial: table column and row markers on the rulers, #700; previously trivial: table borders and the resize handle drag on the page, #217; previously trivial: formatting revisions landed, #41; previously trivial: Draw Table and Eraser landed, #303; previously minor: beta distance restated: ~15 points, ~150–230 h; previously: first version; every known shortfall from the 2026-10-10 re-measure, ranked) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
-> **Fin fork update:** 2026-11-19. Fin fork UI qualification: shared Classic/Pink skin is implemented; native hidden-window startup and RSS/physical-footprint baselines are collected under2168. Graphics memory remains substantial; live VoiceOver, installed-font startup and longer memory soaks remain open. Existing Word parity gaps and estimates are unchanged. See [classic-ui.md](classic-ui.md).
+> **Fin fork update:** 2026-11-19. Fin fork UI qualification: shared Classic/Pink skin is implemented; native hidden-window startup and RSS/physical-footprint baselines are collected under2168. Graphics memory remains substantial; live VoiceOver, installed-font startup and longer memory soaks remain open. Existing Word parity gaps and estimates are unchanged. See [classic-ui.md](classic-ui.md). Graphics follow-up: bounded page textures and a smaller Metal drawable queue; square macOS Classic/Pink chrome and additional named/keyboard controls. Whole-process driver memory and live VoiceOver remain open.
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
