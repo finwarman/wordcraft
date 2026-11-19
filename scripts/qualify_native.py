@@ -20,7 +20,7 @@ def rss(pid):
     return int(result.strip()) * 1024
 
 
-def run(binary, cycles, idle, scene):
+def run(binary, cycles, idle, scene, zoom, turns, capture):
     with socket.socket() as port_socket:
         port_socket.bind(('127.0.0.1', 0))
         port = port_socket.getsockname()[1]
@@ -77,8 +77,31 @@ def run(binary, cycles, idle, scene):
             state = request('ui.inspect', {})
         fonts_ready_ms = (time.perf_counter() - started) * 1000
         time.sleep(1)
+        zoom_ms = None
+        if zoom:
+            before = time.perf_counter()
+            command('view.zoom', {'value': zoom})
+            for _ in range(200):
+                time.sleep(POLL)
+                state = request('ui.inspect', {})
+                if abs(state.get('scale', 0) - zoom / 100 * 96 / 72) < .01:
+                    break
+            else:
+                raise RuntimeError('Zoom frame deadline exceeded')
+            zoom_ms = (time.perf_counter() - before) * 1000
         memory = [{'cycle': 0, 'rssBytes': rss(process.pid)}]
         timings = []
+        navigation = []
+        if capture:
+            request('ui.screenshot', {'path': str(capture)})
+        for turn in range(turns):
+            command('caret.pageDown' if turn % 20 < 10 else 'caret.pageUp')
+            time.sleep(.05)
+            if (turn + 1) % 10 == 0:
+                state = request('ui.inspect', {})
+                navigation.append({'turn': turn + 1, 'rssBytes': rss(process.pid), 'textures': state.get('textures'), 'perf': state.get('perf')})
+        if capture and turns:
+            request('ui.screenshot', {'path': str(capture.with_stem(capture.stem + '-navigation'))})
         for cycle in range(cycles):
             before = time.perf_counter()
             command('ui.theme', {'value': 'pink' if cycle % 2 else 'classic'})
@@ -89,12 +112,13 @@ def run(binary, cycles, idle, scene):
                 memory.append({'cycle': cycle + 1, 'rssBytes': rss(process.pid)})
         time.sleep(idle)
         memory.append({'cycle': cycles, 'idleSeconds': idle, 'rssBytes': rss(process.pid)})
-        result = {'startupFirstFrameMs': startup_ms, 'fontsReadyMs': fonts_ready_ms, 'uiFonts': state.get('uiFonts'), 'memory': memory, 'roundTripSamples': len(timings)}
+        result = {'startupFirstFrameMs': startup_ms, 'fontsReadyMs': fonts_ready_ms, 'uiFonts': state.get('uiFonts'), 'zoomFrameMs': zoom_ms, 'memory': memory, 'navigation': navigation, 'roundTripSamples': len(timings)}
         if timings:
             result['themeDialogRoundTripP95Ms'] = sorted(timings)[int(len(timings) * .95) - 1]
         settled = request('ui.inspect', {})
         result['settledFrame'] = settled['perf']
         result['textures'] = settled.get('textures')
+        result['scale'] = settled.get('scale')
         # OS process memory includes GPU mappings and shared pages; RSS is not a leak verdict.
         vmmap = subprocess.run(['vmmap', '-summary', str(process.pid)], capture_output=True, text=True, timeout=15)
         result['vmmapSummary'] = vmmap.stdout
@@ -121,11 +145,19 @@ def main():
     parser.add_argument('--scene', choices=['sample','start'], default='sample')
     parser.add_argument('--cycles', type=int, default=200)
     parser.add_argument('--idle', type=int, default=5)
+    parser.add_argument('--zoom', type=int, choices=range(10, 501))
+    parser.add_argument('--turns', type=int, default=0)
+    parser.add_argument('--capture-dir', type=Path)
     args = parser.parse_args()
-    if not 1 <= args.runs <= 10 or not 0 <= args.cycles <= 1000 or not 0 <= args.idle <= 30:
+    if not 1 <= args.runs <= 10 or not 0 <= args.cycles <= 1000 or not 0 <= args.turns <= 1000 or not 0 <= args.idle <= 30:
         parser.error('Probe bounds exceeded')
-    results = [run(args.binary.resolve(), args.cycles if index == 0 else 0, args.idle, args.scene) for index in range(args.runs)]
-    report = {'scene': args.scene, 'binarySha256': hashlib.sha256(args.binary.read_bytes()).hexdigest(), 'runs': results,
+    if (args.zoom or args.turns) and args.scene == 'start':
+        parser.error('Zoom/navigation requires a document scene')
+    if args.capture_dir:
+        args.capture_dir.mkdir(parents=True, exist_ok=True)
+    results = [run(args.binary.resolve(), args.cycles if index == 0 else 0, args.idle, args.scene, args.zoom, args.turns if index == 0 else 0,
+                   (args.capture_dir.resolve() / f'{index}.png') if args.capture_dir else None) for index in range(args.runs)]
+    report = {'scene': args.scene, 'zoom': args.zoom, 'binarySha256': hashlib.sha256(args.binary.read_bytes()).hexdigest(), 'runs': results,
               'startupMedianMs': statistics.median(value['startupFirstFrameMs'] for value in results),
               'limits': 'Native hidden window, synthetic document/start screen, no preferences, loopback readiness includes 20ms polling. OS caches are not flushed. RSS and vmmap snapshots do not prove leak freedom. No mail/provider access.'}
     args.output.parent.mkdir(parents=True, exist_ok=True)

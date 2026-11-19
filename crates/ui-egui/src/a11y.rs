@@ -641,6 +641,33 @@ mod tests {
         let run = nodes[&s.focus.node];
         assert_eq!(run.role(), Role::TextRun);
         assert_eq!(run.value(), Some("Read this "));
+
+        // A viewport crop at high zoom must not crop the accessible document or its caret.
+        app.run("view.zoom", json!({"value": 500})).unwrap();
+        let mut zoomed = None;
+        for i in 4..8 {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+                    time: Some(i as f64 * 0.1),
+                    ..Default::default()
+                },
+                |ui| {
+                    app.logic(ui.ctx());
+                    app.ui(ui);
+                },
+            );
+            out.textures_delta.clear();
+            zoomed = out.platform_output.accesskit_update.take();
+        }
+        let zoomed = zoomed.expect("zoomed AccessKit output");
+        let (_, document) = zoomed.nodes.iter().find(|(_, n)| n.role() == Role::Document).expect("zoomed document");
+        let selection = document.text_selection().expect("zoomed caret");
+        assert_eq!(selection, s);
+        let (_, run) = zoomed.nodes.iter().find(|(id, _)| *id == selection.focus.node).expect("zoomed run");
+        assert_eq!(run.value(), Some("Read this "));
+        assert!(run.bounds().unwrap().height() > nodes[&s.focus.node].bounds().unwrap().height() * 4.0);
+        assert!(zoomed.nodes.len() < MAX_NODES);
     }
 
     /// Hostile layouts and junk geometry don't panic and the tree stays bounded.

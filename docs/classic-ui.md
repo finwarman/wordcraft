@@ -63,6 +63,10 @@ Native qualification now reports installed UI-face count/bytes/readiness and agg
 
 Keyboard/AccessKit regression checks cover named caption/status controls, AutoSave state, User settings, Back placement/keyboard activation and Close's unsaved prompt. The native macOS tree is inspected after installation. Live VoiceOver speech and a long idle/scrolling soak remain separate 2168 gates.
 
+Page rasters now cover the visible viewport plus bounded prefetch/padding, rather than allocating whole high-zoom pages. Integer pixel origins retain device resolution. A crop is reused until scrolling leaves its padding. Paper, hit testing, selection, accessibility and export still use whole-page geometry. Object-drag previews show the cached portion of large objects without stretching a cropped edge. Extremely large viewports retain a texture-limit fallback.
+
+The synthetic native 500% scene reduced aggregate textures from209,163,456 to31,069,376bytes, about85%. Its zoom frame fell from109-122ms to30-33ms including20ms control polling. This is a hidden-window result, not input-to-display latency. Physical footprint fell from about1.0-1.2GB to528-574MB in these short samples. Driver allocation remains substantial. Startup samples include a first observed1.5s run and a178ms warm run; they do not establish a startup improvement. The crop comparison allows at most two colour levels of CPU edge rounding. AccessKit checks preserve full text and the caret at500% zoom. Live VoiceOver and longer real-document scrolling remain open.
+
 ## 2181 icons and controls
 
 The displayed app name is WordCraft; the Fin installation filename, bundle identifier, profile and update identity remain separate. Original Classic/Pink document-and-pencil artwork uses the shared palette. A bounded pair of native images is decoded only on demand. The Dock redraws only when the theme changes and restores from the saved theme at launch. Finder and the closed-app icon remain Classic: custom Finder metadata failed strict signature verification in a disposable qualification bundle. Signed resources are never changed at runtime.

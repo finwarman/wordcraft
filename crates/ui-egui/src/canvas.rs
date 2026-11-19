@@ -1,5 +1,5 @@
 //! The document canvas: pages on a grey background, rendered by the engine into textures (one
-//! per page, re-rendered only when the page's content changes), with the caret, selection,
+//! per page, padded around the viewport and reused while it covers the view), with the caret, selection,
 //! rulers and mouse editing drawn by egui on top.
 
 use std::collections::HashMap;
@@ -30,9 +30,36 @@ const EDGE_MAX_DT: f32 = 0.1;
 /// are rendered again when they come back.
 const TEXTURE_KEEP_SCREENS: f32 = 3.0;
 const PAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const RASTER_PAD: u32 = 256;
+const RASTER_PREFETCH: f32 = 200.0;
+/// The CPU renderer caps either raster dimension at 16000 pixels.
+const RASTER_SIDE_LIMIT: f32 = 16000.0;
+
+struct PageRaster {
+    key: u64,
+    texture: TextureHandle,
+    region: wordcraft_render::PixelRegion,
+    scale: f32,
+}
+
+fn raster_region(size: [u32; 2], view: Rect) -> wordcraft_render::PixelRegion {
+    let mut origin = [0; 2];
+    let mut extent = [0; 2];
+    for axis in 0..2 {
+        let start = (view.min[axis].floor().max(0.0) as u32).saturating_sub(RASTER_PAD) / RASTER_PAD * RASTER_PAD;
+        let end = (view.max[axis].ceil().max(0.0) as u32).saturating_add(RASTER_PAD).div_ceil(RASTER_PAD).saturating_mul(RASTER_PAD);
+        origin[axis] = start.min(size[axis].saturating_sub(1));
+        extent[axis] = end.min(size[axis]).saturating_sub(origin[axis]).max(1);
+    }
+    wordcraft_render::PixelRegion { origin, size: extent }
+}
+
+fn region_covers(region: wordcraft_render::PixelRegion, view: Rect) -> bool {
+    (0..2).all(|axis| region.origin[axis] as f32 <= view.min[axis] && region.origin[axis].saturating_add(region.size[axis]) as f32 >= view.max[axis])
+}
 
 pub struct CanvasState {
-    textures: HashMap<usize, (u64, TextureHandle)>,
+    textures: HashMap<usize, PageRaster>,
     /// Page content fingerprints of the current layout, for the texture cache (#811).
     pub(crate) page_keys: PageKeys,
     /// Whether the document has tracked formatting changes, moves and deletions, by document
@@ -141,7 +168,7 @@ pub struct CanvasState {
 impl CanvasState {
     /// Evict distant pages first. Visible pages keep full resolution even above the budget.
     fn trim_textures(&mut self, visible: &[usize], viewport: Rect, budget: usize) {
-        let mut bytes = self.textures.values().fold(0usize, |sum, (_, texture)| sum.saturating_add(texture.byte_size()));
+        let mut bytes = self.textures.values().fold(0usize, |sum, raster| sum.saturating_add(raster.texture.byte_size()));
         if bytes <= budget {
             return;
         }
@@ -149,9 +176,9 @@ impl CanvasState {
             .textures
             .iter()
             .filter(|(page, _)| !visible.contains(page))
-            .map(|(page, (_, texture))| {
+            .map(|(page, raster)| {
                 let distance = self.page_rects.get(*page).map_or(f32::INFINITY, |rect| rect.center().distance_sq(viewport.center()));
-                (*page, distance, texture.byte_size())
+                (*page, distance, raster.texture.byte_size())
             })
             .collect();
         candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
@@ -165,8 +192,15 @@ impl CanvasState {
     }
 
     /// The cached rendering of a page.
-    pub(crate) fn page_texture(&self, page: usize) -> Option<&TextureHandle> {
-        self.textures.get(&page).map(|(_, t)| t)
+    pub(crate) fn page_texture(&self, page: usize) -> Option<(&TextureHandle, Rect)> {
+        self.textures.get(&page).map(|raster| {
+            let region = raster.region;
+            let rect = Rect::from_min_size(
+                pos2(region.origin[0] as f32, region.origin[1] as f32) / raster.scale,
+                vec2(region.size[0] as f32, region.size[1] as f32) / raster.scale,
+            );
+            (&raster.texture, rect)
+        })
     }
 
     /// How many pages have a cached rendering.
@@ -943,17 +977,36 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             let sr = pr.translate(content_origin.to_vec2());
             let Some(page) = layout.pages.get(i) else { continue };
             let (band_top, band_bot) = geo.bands.get(i).copied().unwrap_or((0.0, sr.height()));
-            let scale_px = (geo.scale * ppp).min(max_tex / page.w.max(1.0)).min(max_tex / page.h.clamp(1.0, 1e6)).max(0.05);
+            // Crop at device resolution. Only an oversized viewport needs downsampling.
+            let clip = ui.clip_rect();
+            let current_scale = geo.scale * ppp;
+            let raster_limit = max_tex.min(RASTER_SIDE_LIMIT);
+            let crop_room = (raster_limit - 4.0 * RASTER_PAD as f32).max(1.0);
+            let scale_px = if page.w * current_scale <= raster_limit && page.h * current_scale <= raster_limit {
+                current_scale
+            } else {
+                current_scale
+                    .min(geo.scale * crop_room / (clip.width() + 2.0 * RASTER_PREFETCH))
+                    .min(geo.scale * crop_room / (clip.height() + 2.0 * RASTER_PREFETCH))
+                    .max(0.05)
+            };
+            let full_size = [(page.w * scale_px).ceil().max(1.0) as u32, (page.h.min(1e6) * scale_px).ceil().max(1.0) as u32];
+            let crop_view = clip.expand(RASTER_PREFETCH).intersect(sr);
+            let pixel_view = Rect::from_min_max(
+                (crop_view.min - sr.min).to_pos2() * (scale_px / geo.scale),
+                (crop_view.max - sr.min).to_pos2() * (scale_px / geo.scale),
+            );
             // Hide White Space shows only a band of the page; everything below paints into it.
             let band_of = |r: Rect| Rect::from_min_max(pos2(r.min.x - 4.0, r.min.y + band_top), pos2(r.max.x + 4.0, r.min.y + band_bot));
-            let visible = band_of(sr).intersects(ui.clip_rect().expand(200.0));
+            let visible = band_of(sr).intersects(clip.expand(RASTER_PREFETCH));
             if visible {
                 visible_pages.push(i);
             }
             // Only pages on screen or with a texture need their key (#811).
             let cached = app.canvas.textures.contains_key(&i);
             let key = if visible || cached { page_key(app, &layout, i, view, scale_px) } else { 0 };
-            let mut fresh = cached && app.canvas.textures.get(&i).is_some_and(|(k, _)| *k == key);
+            let mut fresh = cached
+                && app.canvas.textures.get(&i).is_some_and(|raster| raster.key == key && (!visible || region_covers(raster.region, pixel_view)));
             // Render before placing the page: a page re-rendered in this frame (a zoom step, an
             // edit) then sits on the pixel grid in this frame too, rather than a frame later.
             if visible && !fresh && (rendered < 2 || !app.canvas.textures.contains_key(&i) && rendered < 4) {
@@ -969,17 +1022,20 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 opts.dark_paper = dark_paper;
                 opts.display.dim_header = !dim_body;
                 opts.display.dim_body = dim_body;
-                let img = wordcraft_render::render_page(&app.session.doc, page, scale_px, &opts);
+                let region = raster_region(full_size, pixel_view);
+                let img = wordcraft_render::render_pixels(&app.session.doc, page, scale_px, region, &opts);
                 let px = img.to_straight();
                 let ci = egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &px);
                 match app.canvas.textures.get_mut(&i) {
-                    Some((k, tex)) => {
-                        tex.set(ci, egui::TextureOptions::LINEAR);
-                        *k = key;
+                    Some(raster) => {
+                        raster.texture.set(ci, egui::TextureOptions::LINEAR);
+                        raster.key = key;
+                        raster.region = region;
+                        raster.scale = scale_px;
                     }
                     None => {
                         let tex = ui.ctx().load_texture(format!("page{i}"), ci, egui::TextureOptions::LINEAR);
-                        app.canvas.textures.insert(i, (key, tex));
+                        app.canvas.textures.insert(i, PageRaster { key, texture: tex, region, scale: scale_px });
                     }
                 }
                 rendered += 1;
@@ -987,9 +1043,8 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             } else if visible && !fresh {
                 ui.ctx().request_repaint();
             }
-            let current_scale = geo.scale * ppp;
             let visual_sr = if fresh && (scale_px - current_scale).abs() <= 0.0001_f32.max(current_scale.abs() * 0.0001) {
-                app.canvas.textures.get(&i).map_or(sr, |(_, tex)| texel_aligned_rect(sr, tex.size_vec2(), ppp))
+                texel_aligned_rect(sr, vec2(full_size[0] as f32, full_size[1] as f32), ppp)
             } else {
                 sr
             };
@@ -1006,8 +1061,11 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             // Shadow and paper.
             painter.rect_filled(visual_sr.translate(vec2(0.0, 2.0)).expand(1.5), 1.0, t.page_shadow);
             painter.rect_filled(visual_sr, 0.0, if dark_page { Color32::from_gray(dark_paper) } else { Color32::WHITE });
-            if let Some((_, tex)) = app.canvas.textures.get(&i) {
-                painter.image(tex.id(), visual_sr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            if let Some(raster) = app.canvas.textures.get(&i) {
+                let factor = geo.scale / raster.scale;
+                let at = visual_sr.min + vec2(raster.region.origin[0] as f32, raster.region.origin[1] as f32) * factor;
+                let crop = Rect::from_min_size(at, raster.texture.size_vec2() * factor);
+                painter.image(raster.texture.id(), crop, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             }
             let page_scale = page_screen_scale(visual_sr, page, geo.scale);
             // Header/footer editing chrome.
@@ -3334,7 +3392,9 @@ mod tests {
         let mut canvas = CanvasState::default();
         for page in 0..5 {
             let texture = ctx.load_texture("page", egui::ColorImage::new([1, 1], vec![Color32::WHITE]), egui::TextureOptions::LINEAR);
-            canvas.textures.insert(page, (0, texture));
+            canvas
+                .textures
+                .insert(page, PageRaster { key: 0, texture, region: wordcraft_render::PixelRegion { origin: [0; 2], size: [1; 2] }, scale: 1.0 });
             canvas.page_rects.push(Rect::from_min_size(pos2(0.0, page as f32 * 100.0), vec2(50.0, 90.0)));
         }
         let viewport = canvas.page_rects[0];
@@ -3345,6 +3405,22 @@ mod tests {
         // Full-resolution pages in view survive even if they exceed the cache budget.
         canvas.trim_textures(&[0, 1], viewport, 1);
         assert_eq!(canvas.textures.len(), 2);
+    }
+
+    #[test]
+    fn viewport_raster_reuses_padding() {
+        let size = [8160, 10560];
+        let view = Rect::from_min_size(pos2(1250.5, 2100.25), vec2(2400.0, 1600.0));
+        let region = raster_region(size, view);
+        assert!(region_covers(region, view));
+        assert!(region_covers(region, view.translate(vec2(120.0, 120.0))));
+        assert!(!region_covers(region, view.translate(vec2(700.0, 700.0))));
+        assert!(region.size[0] * region.size[1] < size[0] * size[1] / 8);
+        let bottom = Rect::from_min_max(pos2(8000.0, 10400.0), pos2(8160.0, 10560.0));
+        let end = raster_region(size, bottom);
+        assert!(region_covers(end, bottom));
+        assert_eq!(end.origin[0] + end.size[0], size[0]);
+        assert_eq!(end.origin[1] + end.size[1], size[1]);
     }
 
     #[test]

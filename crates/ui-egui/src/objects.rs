@@ -321,15 +321,24 @@ pub fn paint(app: &WordApp, painter: &Painter, t: &Tokens, layout: &DocLayout, p
         let pixels = (d.picture && !turned) || d.drag.grab == Grab::Move;
         if !pixels {
             frame::paint_outline(painter, t, to, d.drag.deg);
-        } else if let (Some(tex), Some(pg)) = (app.canvas.page_texture(d.object.page), layout.pages.get(d.object.page)) {
+        } else if let Some((tex, crop)) = app.canvas.page_texture(d.object.page) {
             // A turned object's pixels fill its rotated bounds, which move with it.
             let r = d.object.bounds();
             let (dx, dy) = (d.drag.rect.x - d.drag.start.x, d.drag.rect.y - d.drag.start.y);
             let moved = wordcraft_geom::Rect::new(r.x + dx, r.y + dy, r.w, r.h);
             let to = if turned { screen(pages, scale, d.drag.to_page, moved).unwrap_or(to) } else { to };
-            let (w, h) = (pg.w.max(1.0), pg.h.max(1.0));
-            let uv = Rect::from_min_max(egui::pos2(r.x / w, r.y / h), egui::pos2(r.right() / w, r.bottom() / h));
-            painter.image(tex.id(), to, uv, Color32::from_white_alpha(PREVIEW_OPACITY));
+            let source = Rect::from_min_max(egui::pos2(r.x, r.y), egui::pos2(r.right(), r.bottom()));
+            let part = source.intersect(crop);
+            if part.is_positive() && source.is_positive() {
+                // A large object's offscreen pixels are absent from the viewport cache.
+                // Move only the available pixels, rather than stretching its cropped edge.
+                let uv = Rect::from_min_max(((part.min - crop.min) / crop.size()).to_pos2(), ((part.max - crop.min) / crop.size()).to_pos2());
+                let target = Rect::from_min_max(
+                    to.min + (part.min - source.min) / source.size() * to.size(),
+                    to.min + (part.max - source.min) / source.size() * to.size(),
+                );
+                painter.image(tex.id(), target, uv, Color32::from_white_alpha(PREVIEW_OPACITY));
+            }
         }
         frame::paint(painter, t, to, d.drag.deg, false, false, false);
         return;

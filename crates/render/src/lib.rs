@@ -406,6 +406,20 @@ pub fn render_page(doc: &Document, page: &Page, scale: f32, opts: &RenderOptions
     render_region(doc, page, w, h, Affine::scale(scale as f64), opts)
 }
 
+/// A crop in full-page raster pixels. Integer origins preserve the whole-page pixel grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PixelRegion {
+    pub origin: [u32; 2],
+    pub size: [u32; 2],
+}
+
+/// Render only the requested pixels, at the same resolution as a whole-page rendering.
+pub fn render_pixels(doc: &Document, page: &Page, scale: f32, region: PixelRegion, opts: &RenderOptions) -> Rendered {
+    let scale = if scale.is_finite() && scale > 0.0 { scale as f64 } else { 1.0 };
+    let view = Affine::new([scale, 0.0, 0.0, scale, -(region.origin[0] as f64), -(region.origin[1] as f64)]);
+    render_region(doc, page, region.size[0], region.size[1], view, opts)
+}
+
 /// Render a page into a `w`×`h` raster with `view` (page points → pixels).
 pub fn render_region(doc: &Document, page: &Page, w: u32, h: u32, view: Affine, opts: &RenderOptions) -> Rendered {
     let (w16, h16) = (w.clamp(1, MAX_SIDE) as u16, h.clamp(1, MAX_SIDE) as u16);
@@ -944,6 +958,34 @@ pub fn render_area(doc: &Document, page: &Page, x: f32, y: f32, w: f32, h: f32, 
 mod tests {
     use super::*;
     use wordcraft_layout::{LayoutCache, LayoutOptions, layout};
+
+    #[test]
+    fn pixel_crop_keeps_page_grid() {
+        let d = Document::from_text(&"Text across the viewport, with punctuation and numbers 123.\n".repeat(18));
+        let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions::default());
+        for scale in [1.0, 1.333, 3.5] {
+            let opts = RenderOptions::default();
+            let full = render_page(&d, &l.pages[0], scale, &opts);
+            let region = PixelRegion { origin: [137, 259], size: [371, 223] };
+            let crop = render_pixels(&d, &l.pages[0], scale, region, &opts);
+            assert_eq!([crop.width, crop.height], region.size);
+            let mut max_delta = 0;
+            let mut total_delta = 0u64;
+            for y in 0..crop.height {
+                for x in 0..crop.width {
+                    let expected = full.pixel(x + region.origin[0], y + region.origin[1]);
+                    for (actual, expected) in crop.pixel(x, y).into_iter().zip(expected) {
+                        let delta = actual.abs_diff(expected);
+                        max_delta = max_delta.max(delta);
+                        total_delta += delta as u64;
+                    }
+                }
+            }
+            // The CPU rasterizer's translated edge arithmetic can differ by one colour level.
+            assert!(max_delta <= 2, "{scale}: max delta {max_delta}, total {total_delta}");
+            assert!((total_delta as f64 / (crop.width * crop.height * 4) as f64) < 0.02);
+        }
+    }
 
     #[test]
     fn renders_text_dark_pixels() {
